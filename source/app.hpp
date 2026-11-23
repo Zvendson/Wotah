@@ -11,8 +11,8 @@
  */
 #pragma once
 
-#include "device.hpp"
-#include "window.hpp"
+#include "platform/window.hpp"
+#include "render/device.hpp"
 
 #include <memory>
 

@@ -2,9 +2,9 @@
  * @file window.cpp
  * The window on top of GLFW 3.4.
  */
-#include "window.hpp"
+#include "platform/window.hpp"
 
-#include "logger.hpp"
+#include "core/logger.hpp"
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>

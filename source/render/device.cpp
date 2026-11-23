@@ -2,10 +2,10 @@
  * @file device.cpp
  * Creates and frees the Vulkan instance, surface, GPU choice, logical device and queue.
  */
-#include "device.hpp"
+#include "render/device.hpp"
 
-#include "logger.hpp"
-#include "window.hpp"
+#include "core/logger.hpp"
+#include "platform/window.hpp"
 
 #include <vulkan/vulkan.h>
 

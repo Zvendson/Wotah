@@ -5,7 +5,7 @@
  */
 #include "app.hpp"
 
-#include "logger.hpp"
+#include "core/logger.hpp"
 
 #include <vulkan/vulkan.h>
 

@@ -3,9 +3,9 @@
  * The log on top of spdlog: one asynchronous logger whose single writer thread feeds a colored console sink and a
  * file sink next to the executable.
  */
-#include "logger.hpp"
+#include "core/logger.hpp"
 
-#include "utils.hpp"
+#include "core/utils.hpp"
 
 #include <spdlog/async.h>
 #include <spdlog/async_logger.h>

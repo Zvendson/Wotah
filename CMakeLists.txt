@@ -55,15 +55,16 @@ add_executable(square
     source/main.cpp
     source/app.hpp
     source/app.cpp
-    source/utils.hpp
-    source/utils.cpp
-    source/logger.hpp
-    source/logger.cpp
-    source/window.hpp
-    source/window.cpp
-    source/device.hpp
-    source/device.cpp
-    source/vulkan_handles.hpp
+    source/core/utils.hpp
+    source/core/utils.cpp
+    source/core/logger.hpp
+    source/core/logger.cpp
+    source/platform/window.hpp
+    source/platform/window.cpp
+    source/render/device.hpp
+    source/render/device.cpp
+    source/render/vulkan_handles.hpp
     ${SHADERS})
-target_include_directories(square PRIVATE ${SHADER_OUT})
+# Project headers are included by their path from source/, e.g. "core/logger.hpp".
+target_include_directories(square PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/source ${SHADER_OUT})
 target_link_libraries(square PRIVATE Vulkan::Vulkan glfw spdlog::spdlog)
