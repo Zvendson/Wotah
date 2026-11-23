@@ -18,17 +18,13 @@
  */
 #pragma once
 
+#include "vulkan_handles.hpp"
+
 #include <cstdint>
 #include <span>
 #include <string>
 
 struct GLFWwindow;
-
-// Vulkan's handle types, declared exactly as vulkan_core.h declares them on 64-bit systems (VK_DEFINE_HANDLE and
-// VK_DEFINE_NON_DISPATCHABLE_HANDLE), so this header needs no Vulkan include. window.cpp sees both declarations, so
-// a mismatch is a compile error there.
-typedef struct VkInstance_T* VkInstance;
-typedef struct VkSurfaceKHR_T* VkSurfaceKHR;
 
 namespace Wotah
 {

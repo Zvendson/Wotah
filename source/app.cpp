@@ -11,8 +11,6 @@
 
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
-#include <span>
 #include <vector>
 
 static const uint32_t kVertSpv[] = {
@@ -63,21 +61,10 @@ static constexpr Wotah::WindowSize SquareWindowSize{600, 600};
 /** The window's title and the application name Vulkan is told. */
 static constexpr const char* AppName = "Vulkan Square";
 
-/** Every Vulkan object the application creates, in creation order; null handles mean "not created (yet)". */
+/** The Vulkan objects the application creates on top of the device, in creation order; null handles mean "not created
+ *  (yet)". */
 struct Wotah::App::State
 {
-    /** The Vulkan instance and the window's surface. */
-    VkInstance Instance = VK_NULL_HANDLE;
-    VkSurfaceKHR Surface = VK_NULL_HANDLE;
-
-    /** The chosen GPU and its queue family that can both draw and present. */
-    VkPhysicalDevice Gpu = VK_NULL_HANDLE;
-    uint32_t QueueFamily = 0;
-
-    /** The logical device and its one queue. */
-    VkDevice Device = VK_NULL_HANDLE;
-    VkQueue Queue = VK_NULL_HANDLE;
-
     /** The swapchain, its images and one view per image. */
     VkSurfaceFormatKHR Format{};
     VkExtent2D Extent{};
@@ -121,118 +108,23 @@ bool Wotah::App::Create()
         return false;
     }
 
-    // ---- Instance ------------------------------------------------------------
-    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    app.pApplicationName = AppName;
-    app.apiVersion = VK_API_VERSION_1_3;
-
-    const std::span<const char* const> windowExtensions = m_window.GetRequiredInstanceExtensions();
-    if (windowExtensions.empty())
+    // ---- Instance, surface, GPU and device ------------------------------------
+    if (!m_device.Create(m_window, AppName))
     {
         return false;
     }
-
-    VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
-    ici.pApplicationInfo = &app;
-    ici.enabledExtensionCount = static_cast<uint32_t>(windowExtensions.size()); // GLFW gave it as a uint32_t
-    ici.ppEnabledExtensionNames = windowExtensions.data();
-
-#ifndef NDEBUG
-    // Enable validation in debug builds if the SDK's layer is installed.
-    const char* validation = "VK_LAYER_KHRONOS_validation";
-    uint32_t layerCount = 0;
-    vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
-    std::vector<VkLayerProperties> layers(layerCount);
-    vkEnumerateInstanceLayerProperties(&layerCount, layers.data());
-    for (const auto& l : layers)
-    {
-        if (std::strcmp(l.layerName, validation) == 0)
-        {
-            ici.enabledLayerCount = 1;
-            ici.ppEnabledLayerNames = &validation;
-        }
-    }
-#endif
-
-    VK_CHECK(vkCreateInstance(&ici, nullptr, &state.Instance));
-    state.Surface = m_window.CreateSurface(state.Instance);
-    if (state.Surface == VK_NULL_HANDLE)
-    {
-        return false;
-    }
-
-    // ---- Pick a GPU + a queue family that can draw and present ---------------
-    uint32_t gpuCount = 0;
-    vkEnumeratePhysicalDevices(state.Instance, &gpuCount, nullptr);
-    std::vector<VkPhysicalDevice> gpus(gpuCount);
-    vkEnumeratePhysicalDevices(state.Instance, &gpuCount, gpus.data());
-
-    for (VkPhysicalDevice d : gpus)
-    {
-        VkPhysicalDeviceProperties props;
-        vkGetPhysicalDeviceProperties(d, &props);
-        if (props.apiVersion < VK_API_VERSION_1_3)
-        {
-            continue;
-        }
-
-        uint32_t qfCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(d, &qfCount, nullptr);
-        std::vector<VkQueueFamilyProperties> qfs(qfCount);
-        vkGetPhysicalDeviceQueueFamilyProperties(d, &qfCount, qfs.data());
-        for (uint32_t i = 0; i < qfCount && state.Gpu == VK_NULL_HANDLE; ++i)
-        {
-            VkBool32 canPresent = VK_FALSE;
-            vkGetPhysicalDeviceSurfaceSupportKHR(d, i, state.Surface, &canPresent);
-            if ((qfs[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && canPresent)
-            {
-                state.Gpu = d;
-                state.QueueFamily = i;
-            }
-        }
-        if (state.Gpu != VK_NULL_HANDLE)
-        {
-            break;
-        }
-    }
-    if (state.Gpu == VK_NULL_HANDLE)
-    {
-        Logger::Error("No Vulkan 1.3 GPU with graphics + present support found");
-        return false;
-    }
-    VkPhysicalDeviceProperties gpuProperties;
-    vkGetPhysicalDeviceProperties(state.Gpu, &gpuProperties);
-    Logger::Info("Using GPU {}", gpuProperties.deviceName);
-
-    // ---- Logical device ------------------------------------------------------
-    float priority = 1.0f;
-    VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-    qci.queueFamilyIndex = state.QueueFamily;
-    qci.queueCount = 1;
-    qci.pQueuePriorities = &priority;
-
-    VkPhysicalDeviceVulkan13Features features13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-    features13.dynamicRendering = VK_TRUE;
-
-    const char* deviceExt = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-    VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-    dci.pNext = &features13;
-    dci.queueCreateInfoCount = 1;
-    dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = 1;
-    dci.ppEnabledExtensionNames = &deviceExt;
-
-    VK_CHECK(vkCreateDevice(state.Gpu, &dci, nullptr, &state.Device));
-    vkGetDeviceQueue(state.Device, state.QueueFamily, 0, &state.Queue);
+    const VkDevice device = m_device.GetHandle();
+    const VkPhysicalDevice gpu = m_device.GetGpu();
+    const VkSurfaceKHR surface = m_device.GetSurface();
 
     // ---- Swapchain -----------------------------------------------------------
     VkSurfaceCapabilitiesKHR caps;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(state.Gpu, state.Surface, &caps);
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &caps);
 
     uint32_t fmtCount = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(state.Gpu, state.Surface, &fmtCount, nullptr);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &fmtCount, nullptr);
     std::vector<VkSurfaceFormatKHR> formats(fmtCount);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(state.Gpu, state.Surface, &fmtCount, formats.data());
+    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &fmtCount, formats.data());
     state.Format = formats[0];
 
     state.Extent = caps.currentExtent;
@@ -249,7 +141,7 @@ bool Wotah::App::Create()
     }
 
     VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
-    sci.surface = state.Surface;
+    sci.surface = surface;
     sci.minImageCount = imageCount;
     sci.imageFormat = state.Format.format;
     sci.imageColorSpace = state.Format.colorSpace;
@@ -262,11 +154,11 @@ bool Wotah::App::Create()
     sci.presentMode = VK_PRESENT_MODE_FIFO_KHR; // vsync, always supported
     sci.clipped = VK_TRUE;
 
-    VK_CHECK(vkCreateSwapchainKHR(state.Device, &sci, nullptr, &state.Swapchain));
+    VK_CHECK(vkCreateSwapchainKHR(device, &sci, nullptr, &state.Swapchain));
 
-    vkGetSwapchainImagesKHR(state.Device, state.Swapchain, &imageCount, nullptr);
+    vkGetSwapchainImagesKHR(device, state.Swapchain, &imageCount, nullptr);
     state.Images.resize(imageCount);
-    vkGetSwapchainImagesKHR(state.Device, state.Swapchain, &imageCount, state.Images.data());
+    vkGetSwapchainImagesKHR(device, state.Swapchain, &imageCount, state.Images.data());
 
     // Views are created one by one, so a failure part way leaves only real handles behind for Destroy.
     state.Views.reserve(imageCount);
@@ -278,13 +170,13 @@ bool Wotah::App::Create()
         vci.format = state.Format.format;
         vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         VkImageView view;
-        VK_CHECK(vkCreateImageView(state.Device, &vci, nullptr, &view));
+        VK_CHECK(vkCreateImageView(device, &vci, nullptr, &view));
         state.Views.push_back(view);
     }
 
     // ---- Pipeline ------------------------------------------------------------
-    VkShaderModule vert = createShader(state.Device, kVertSpv, sizeof(kVertSpv));
-    VkShaderModule frag = createShader(state.Device, kFragSpv, sizeof(kFragSpv));
+    VkShaderModule vert = createShader(device, kVertSpv, sizeof(kVertSpv));
+    VkShaderModule frag = createShader(device, kFragSpv, sizeof(kFragSpv));
 
     VkPipelineShaderStageCreateInfo stages[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
@@ -327,7 +219,7 @@ bool Wotah::App::Create()
     dynamic.pDynamicStates = dynamicStates;
 
     VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    VK_CHECK(vkCreatePipelineLayout(state.Device, &lci, nullptr, &state.PipelineLayout));
+    VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &state.PipelineLayout));
 
     // Dynamic rendering: tell the pipeline the attachment format instead of a render pass.
     VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
@@ -347,35 +239,35 @@ bool Wotah::App::Create()
     pci.pDynamicState = &dynamic;
     pci.layout = state.PipelineLayout;
 
-    VK_CHECK(vkCreateGraphicsPipelines(state.Device, VK_NULL_HANDLE, 1, &pci, nullptr, &state.Pipeline));
-    vkDestroyShaderModule(state.Device, vert, nullptr);
-    vkDestroyShaderModule(state.Device, frag, nullptr);
+    VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pci, nullptr, &state.Pipeline));
+    vkDestroyShaderModule(device, vert, nullptr);
+    vkDestroyShaderModule(device, frag, nullptr);
 
     // ---- Command buffer + sync -----------------------------------------------
     VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    cpci.queueFamilyIndex = state.QueueFamily;
-    VK_CHECK(vkCreateCommandPool(state.Device, &cpci, nullptr, &state.CommandPool));
+    cpci.queueFamilyIndex = m_device.GetQueueFamily();
+    VK_CHECK(vkCreateCommandPool(device, &cpci, nullptr, &state.CommandPool));
 
     VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cbai.commandPool = state.CommandPool;
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbai.commandBufferCount = 1;
-    VK_CHECK(vkAllocateCommandBuffers(state.Device, &cbai, &state.CommandBuffer));
+    VK_CHECK(vkAllocateCommandBuffers(device, &cbai, &state.CommandBuffer));
 
     VkSemaphoreCreateInfo semInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    VK_CHECK(vkCreateSemaphore(state.Device, &semInfo, nullptr, &state.ImageAvailable));
+    VK_CHECK(vkCreateSemaphore(device, &semInfo, nullptr, &state.ImageAvailable));
     state.RenderFinished.reserve(imageCount);
     for (uint32_t i = 0; i < imageCount; ++i)
     {
         VkSemaphore semaphore;
-        VK_CHECK(vkCreateSemaphore(state.Device, &semInfo, nullptr, &semaphore));
+        VK_CHECK(vkCreateSemaphore(device, &semInfo, nullptr, &semaphore));
         state.RenderFinished.push_back(semaphore);
     }
 
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    VK_CHECK(vkCreateFence(state.Device, &fenceInfo, nullptr, &state.FrameFence));
+    VK_CHECK(vkCreateFence(device, &fenceInfo, nullptr, &state.FrameFence));
     return true;
 }
 
@@ -387,6 +279,8 @@ void Wotah::App::Start()
 void Wotah::App::Run()
 {
     State& state = *m_state;
+    const VkDevice device = m_device.GetHandle();
+    const VkQueue queue = m_device.GetQueue();
     VkCommandBuffer cmd = state.CommandBuffer;
 
     Start();
@@ -400,16 +294,16 @@ void Wotah::App::Run()
             break;
         }
 
-        vkWaitForFences(state.Device, 1, &state.FrameFence, VK_TRUE, UINT64_MAX);
+        vkWaitForFences(device, 1, &state.FrameFence, VK_TRUE, UINT64_MAX);
 
         uint32_t idx;
-        VkResult acq = vkAcquireNextImageKHR(state.Device, state.Swapchain, UINT64_MAX, state.ImageAvailable,
+        VkResult acq = vkAcquireNextImageKHR(device, state.Swapchain, UINT64_MAX, state.ImageAvailable,
                                              VK_NULL_HANDLE, &idx);
         if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR)
         {
             continue;
         }
-        vkResetFences(state.Device, 1, &state.FrameFence);
+        vkResetFences(device, 1, &state.FrameFence);
 
         vkResetCommandBuffer(cmd, 0);
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -457,7 +351,7 @@ void Wotah::App::Run()
         submit.pCommandBuffers = &cmd;
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &state.RenderFinished[idx];
-        VK_CHECK(vkQueueSubmit(state.Queue, 1, &submit, state.FrameFence));
+        VK_CHECK(vkQueueSubmit(queue, 1, &submit, state.FrameFence));
 
         VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         present.waitSemaphoreCount = 1;
@@ -465,7 +359,7 @@ void Wotah::App::Run()
         present.swapchainCount = 1;
         present.pSwapchains = &state.Swapchain;
         present.pImageIndices = &idx;
-        vkQueuePresentKHR(state.Queue, &present);
+        vkQueuePresentKHR(queue, &present);
     }
 
     Stop();
@@ -473,41 +367,34 @@ void Wotah::App::Run()
 
 void Wotah::App::Stop()
 {
-    if (m_state->Device != VK_NULL_HANDLE)
-    {
-        vkDeviceWaitIdle(m_state->Device);
-    }
+    m_device.WaitUntilIdle();
 }
 
 void Wotah::App::Destroy()
 {
     State& state = *m_state;
+    const VkDevice device = m_device.GetHandle();
 
-    // Children before their parents: the device's objects, the device, the surface, the instance, the window.
+    // Children before their parents: the objects made on the device, the device, the window, then the log.
     // vkDestroy* accepts VK_NULL_HANDLE (Vulkan spec, "Object Lifetime"), so a part-way Create is fine.
-    if (state.Device != VK_NULL_HANDLE)
+    if (device != VK_NULL_HANDLE)
     {
-        vkDestroyFence(state.Device, state.FrameFence, nullptr);
+        vkDestroyFence(device, state.FrameFence, nullptr);
         for (VkSemaphore semaphore : state.RenderFinished)
         {
-            vkDestroySemaphore(state.Device, semaphore, nullptr);
+            vkDestroySemaphore(device, semaphore, nullptr);
         }
-        vkDestroySemaphore(state.Device, state.ImageAvailable, nullptr);
-        vkDestroyCommandPool(state.Device, state.CommandPool, nullptr); // frees the command buffer too
-        vkDestroyPipeline(state.Device, state.Pipeline, nullptr);
-        vkDestroyPipelineLayout(state.Device, state.PipelineLayout, nullptr);
+        vkDestroySemaphore(device, state.ImageAvailable, nullptr);
+        vkDestroyCommandPool(device, state.CommandPool, nullptr); // frees the command buffer too
+        vkDestroyPipeline(device, state.Pipeline, nullptr);
+        vkDestroyPipelineLayout(device, state.PipelineLayout, nullptr);
         for (VkImageView view : state.Views)
         {
-            vkDestroyImageView(state.Device, view, nullptr);
+            vkDestroyImageView(device, view, nullptr);
         }
-        vkDestroySwapchainKHR(state.Device, state.Swapchain, nullptr);
-        vkDestroyDevice(state.Device, nullptr);
+        vkDestroySwapchainKHR(device, state.Swapchain, nullptr);
     }
-    if (state.Instance != VK_NULL_HANDLE)
-    {
-        vkDestroySurfaceKHR(state.Instance, state.Surface, nullptr);
-        vkDestroyInstance(state.Instance, nullptr);
-    }
+    m_device.Destroy();
     m_window.Destroy();
     Logger::Destroy(); // last, so everything above can still log
 

@@ -11,6 +11,7 @@
  */
 #pragma once
 
+#include "device.hpp"
 #include "window.hpp"
 
 #include <memory>
@@ -52,8 +53,13 @@ namespace Wotah
         /** The Vulkan handles; defined in app.cpp so this header stays free of Vulkan. */
         struct State;
 
+        // Order matters: members are destroyed in reverse, so the device goes before the window its surface is on.
+
         /** The window everything is drawn into. */
         Window m_window;
+
+        /** The Vulkan instance, surface, GPU, device and queue. */
+        Device m_device;
 
         std::unique_ptr<State> m_state;
     };
