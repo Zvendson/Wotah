@@ -1,7 +1,7 @@
 /**
  * @file app.cpp
- * The whole program for now: a minimal Vulkan 1.3 "hello square" that draws one orange square in the
- * center of a window. Uses dynamic rendering (no VkRenderPass / VkFramebuffer) and no vertex buffer.
+ * The application: a minimal Vulkan 1.3 "hello square" that draws one orange square in the center of a window.
+ * Uses dynamic rendering (no VkRenderPass / VkFramebuffer) and no vertex buffer.
  */
 #include "app.hpp"
 
@@ -55,14 +55,72 @@ static void transition(VkCommandBuffer cmd, VkImage image,
     vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
-int Wotah::RunApp() {
+/** Everything the application creates, in creation order; null handles mean "not created (yet)". */
+struct Wotah::App::State
+{
+    /** The window the square is drawn into. */
+    GLFWwindow* Window = nullptr;
+
+    /** The Vulkan instance and the window's surface. */
+    VkInstance Instance = VK_NULL_HANDLE;
+    VkSurfaceKHR Surface = VK_NULL_HANDLE;
+
+    /** The chosen GPU and its queue family that can both draw and present. */
+    VkPhysicalDevice Gpu = VK_NULL_HANDLE;
+    uint32_t QueueFamily = 0;
+
+    /** The logical device and its one queue. */
+    VkDevice Device = VK_NULL_HANDLE;
+    VkQueue Queue = VK_NULL_HANDLE;
+
+    /** The swapchain, its images and one view per image. */
+    VkSurfaceFormatKHR Format{};
+    VkExtent2D Extent{};
+    VkSwapchainKHR Swapchain = VK_NULL_HANDLE;
+    std::vector<VkImage> Images;
+    std::vector<VkImageView> Views;
+
+    /** The pipeline that draws the square. */
+    VkPipelineLayout PipelineLayout = VK_NULL_HANDLE;
+    VkPipeline Pipeline = VK_NULL_HANDLE;
+
+    /** One command buffer and its sync objects: one frame in flight. */
+    VkCommandPool CommandPool = VK_NULL_HANDLE;
+    VkCommandBuffer CommandBuffer = VK_NULL_HANDLE;
+    VkSemaphore ImageAvailable = VK_NULL_HANDLE;
+    std::vector<VkSemaphore> RenderFinished; // one per swapchain image
+    VkFence FrameFence = VK_NULL_HANDLE;
+};
+
+Wotah::App::App()
+    : m_state(std::make_unique<State>())
+{
+}
+
+Wotah::App::~App()
+{
+    Stop();
+    Destroy();
+}
+
+bool Wotah::App::Create()
+{
+    State& state = *m_state;
+
     // ---- Window --------------------------------------------------------------
-    if (!glfwInit()) return 1;
+    if (!glfwInit())
+    {
+        return false;
+    }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE); // fixed size => no swapchain recreation
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);   // shown by Start, once everything is ready
     // Square window, so the [-0.5, 0.5] quad in the shader is a real square on screen.
-    GLFWwindow* window = glfwCreateWindow(600, 600, "Vulkan Square", nullptr, nullptr);
-    if (!window) return 1;
+    state.Window = glfwCreateWindow(600, 600, "Vulkan Square", nullptr, nullptr);
+    if (!state.Window)
+    {
+        return false;
+    }
 
     // ---- Instance ------------------------------------------------------------
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -84,56 +142,63 @@ int Wotah::RunApp() {
     vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
     std::vector<VkLayerProperties> layers(layerCount);
     vkEnumerateInstanceLayerProperties(&layerCount, layers.data());
-    for (const auto& l : layers) {
-        if (std::strcmp(l.layerName, validation) == 0) {
+    for (const auto& l : layers)
+    {
+        if (std::strcmp(l.layerName, validation) == 0)
+        {
             ici.enabledLayerCount = 1;
             ici.ppEnabledLayerNames = &validation;
         }
     }
 #endif
 
-    VkInstance instance;
-    VK_CHECK(vkCreateInstance(&ici, nullptr, &instance));
-
-    VkSurfaceKHR surface;
-    VK_CHECK(glfwCreateWindowSurface(instance, window, nullptr, &surface));
+    VK_CHECK(vkCreateInstance(&ici, nullptr, &state.Instance));
+    VK_CHECK(glfwCreateWindowSurface(state.Instance, state.Window, nullptr, &state.Surface));
 
     // ---- Pick a GPU + a queue family that can draw and present ---------------
     uint32_t gpuCount = 0;
-    vkEnumeratePhysicalDevices(instance, &gpuCount, nullptr);
+    vkEnumeratePhysicalDevices(state.Instance, &gpuCount, nullptr);
     std::vector<VkPhysicalDevice> gpus(gpuCount);
-    vkEnumeratePhysicalDevices(instance, &gpuCount, gpus.data());
+    vkEnumeratePhysicalDevices(state.Instance, &gpuCount, gpus.data());
 
-    VkPhysicalDevice gpu = VK_NULL_HANDLE;
-    uint32_t queueFamily = 0;
-    for (VkPhysicalDevice d : gpus) {
+    for (VkPhysicalDevice d : gpus)
+    {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(d, &props);
-        if (props.apiVersion < VK_API_VERSION_1_3) continue;
+        if (props.apiVersion < VK_API_VERSION_1_3)
+        {
+            continue;
+        }
 
         uint32_t qfCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(d, &qfCount, nullptr);
         std::vector<VkQueueFamilyProperties> qfs(qfCount);
         vkGetPhysicalDeviceQueueFamilyProperties(d, &qfCount, qfs.data());
-        for (uint32_t i = 0; i < qfCount && gpu == VK_NULL_HANDLE; ++i) {
+        for (uint32_t i = 0; i < qfCount && state.Gpu == VK_NULL_HANDLE; ++i)
+        {
             VkBool32 canPresent = VK_FALSE;
-            vkGetPhysicalDeviceSurfaceSupportKHR(d, i, surface, &canPresent);
-            if ((qfs[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && canPresent) {
-                gpu = d;
-                queueFamily = i;
+            vkGetPhysicalDeviceSurfaceSupportKHR(d, i, state.Surface, &canPresent);
+            if ((qfs[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && canPresent)
+            {
+                state.Gpu = d;
+                state.QueueFamily = i;
             }
         }
-        if (gpu != VK_NULL_HANDLE) break;
+        if (state.Gpu != VK_NULL_HANDLE)
+        {
+            break;
+        }
     }
-    if (gpu == VK_NULL_HANDLE) {
+    if (state.Gpu == VK_NULL_HANDLE)
+    {
         std::fprintf(stderr, "No Vulkan 1.3 GPU with graphics + present support found\n");
-        return 1;
+        return false;
     }
 
     // ---- Logical device ------------------------------------------------------
     float priority = 1.0f;
     VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-    qci.queueFamilyIndex = queueFamily;
+    qci.queueFamilyIndex = state.QueueFamily;
     qci.queueCount = 1;
     qci.pQueuePriorities = &priority;
 
@@ -148,37 +213,39 @@ int Wotah::RunApp() {
     dci.enabledExtensionCount = 1;
     dci.ppEnabledExtensionNames = &deviceExt;
 
-    VkDevice device;
-    VK_CHECK(vkCreateDevice(gpu, &dci, nullptr, &device));
-    VkQueue queue;
-    vkGetDeviceQueue(device, queueFamily, 0, &queue);
+    VK_CHECK(vkCreateDevice(state.Gpu, &dci, nullptr, &state.Device));
+    vkGetDeviceQueue(state.Device, state.QueueFamily, 0, &state.Queue);
 
     // ---- Swapchain -----------------------------------------------------------
     VkSurfaceCapabilitiesKHR caps;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &caps);
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(state.Gpu, state.Surface, &caps);
 
     uint32_t fmtCount = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &fmtCount, nullptr);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(state.Gpu, state.Surface, &fmtCount, nullptr);
     std::vector<VkSurfaceFormatKHR> formats(fmtCount);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &fmtCount, formats.data());
-    VkSurfaceFormatKHR format = formats[0];
+    vkGetPhysicalDeviceSurfaceFormatsKHR(state.Gpu, state.Surface, &fmtCount, formats.data());
+    state.Format = formats[0];
 
-    VkExtent2D extent = caps.currentExtent;
-    if (extent.width == UINT32_MAX) { // e.g. Wayland: surface size is chosen by us
+    state.Extent = caps.currentExtent;
+    if (state.Extent.width == UINT32_MAX) // e.g. Wayland: surface size is chosen by us
+    {
         int w, h;
-        glfwGetFramebufferSize(window, &w, &h);
-        extent = {(uint32_t)w, (uint32_t)h};
+        glfwGetFramebufferSize(state.Window, &w, &h);
+        state.Extent = {(uint32_t)w, (uint32_t)h};
     }
 
     uint32_t imageCount = caps.minImageCount + 1;
-    if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) imageCount = caps.maxImageCount;
+    if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount)
+    {
+        imageCount = caps.maxImageCount;
+    }
 
     VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
-    sci.surface = surface;
+    sci.surface = state.Surface;
     sci.minImageCount = imageCount;
-    sci.imageFormat = format.format;
-    sci.imageColorSpace = format.colorSpace;
-    sci.imageExtent = extent;
+    sci.imageFormat = state.Format.format;
+    sci.imageColorSpace = state.Format.colorSpace;
+    sci.imageExtent = state.Extent;
     sci.imageArrayLayers = 1;
     sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -187,26 +254,29 @@ int Wotah::RunApp() {
     sci.presentMode = VK_PRESENT_MODE_FIFO_KHR; // vsync, always supported
     sci.clipped = VK_TRUE;
 
-    VkSwapchainKHR swapchain;
-    VK_CHECK(vkCreateSwapchainKHR(device, &sci, nullptr, &swapchain));
+    VK_CHECK(vkCreateSwapchainKHR(state.Device, &sci, nullptr, &state.Swapchain));
 
-    vkGetSwapchainImagesKHR(device, swapchain, &imageCount, nullptr);
-    std::vector<VkImage> images(imageCount);
-    vkGetSwapchainImagesKHR(device, swapchain, &imageCount, images.data());
+    vkGetSwapchainImagesKHR(state.Device, state.Swapchain, &imageCount, nullptr);
+    state.Images.resize(imageCount);
+    vkGetSwapchainImagesKHR(state.Device, state.Swapchain, &imageCount, state.Images.data());
 
-    std::vector<VkImageView> views(imageCount);
-    for (uint32_t i = 0; i < imageCount; ++i) {
+    // Views are created one by one, so a failure part way leaves only real handles behind for Destroy.
+    state.Views.reserve(imageCount);
+    for (uint32_t i = 0; i < imageCount; ++i)
+    {
         VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        vci.image = images[i];
+        vci.image = state.Images[i];
         vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        vci.format = format.format;
+        vci.format = state.Format.format;
         vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        VK_CHECK(vkCreateImageView(device, &vci, nullptr, &views[i]));
+        VkImageView view;
+        VK_CHECK(vkCreateImageView(state.Device, &vci, nullptr, &view));
+        state.Views.push_back(view);
     }
 
     // ---- Pipeline ------------------------------------------------------------
-    VkShaderModule vert = createShader(device, kVertSpv, sizeof(kVertSpv));
-    VkShaderModule frag = createShader(device, kFragSpv, sizeof(kFragSpv));
+    VkShaderModule vert = createShader(state.Device, kVertSpv, sizeof(kVertSpv));
+    VkShaderModule frag = createShader(state.Device, kFragSpv, sizeof(kFragSpv));
 
     VkPipelineShaderStageCreateInfo stages[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
@@ -237,8 +307,8 @@ int Wotah::RunApp() {
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
     VkPipelineColorBlendAttachmentState blendAttachment{};
-    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    blendAttachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     blend.attachmentCount = 1;
     blend.pAttachments = &blendAttachment;
@@ -249,13 +319,12 @@ int Wotah::RunApp() {
     dynamic.pDynamicStates = dynamicStates;
 
     VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    VkPipelineLayout layout;
-    VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &layout));
+    VK_CHECK(vkCreatePipelineLayout(state.Device, &lci, nullptr, &state.PipelineLayout));
 
     // Dynamic rendering: tell the pipeline the attachment format instead of a render pass.
     VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachmentFormats = &format.format;
+    renderingInfo.pColorAttachmentFormats = &state.Format.format;
 
     VkGraphicsPipelineCreateInfo pci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     pci.pNext = &renderingInfo;
@@ -268,122 +337,175 @@ int Wotah::RunApp() {
     pci.pMultisampleState = &multisample;
     pci.pColorBlendState = &blend;
     pci.pDynamicState = &dynamic;
-    pci.layout = layout;
+    pci.layout = state.PipelineLayout;
 
-    VkPipeline pipeline;
-    VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pci, nullptr, &pipeline));
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
+    VK_CHECK(vkCreateGraphicsPipelines(state.Device, VK_NULL_HANDLE, 1, &pci, nullptr, &state.Pipeline));
+    vkDestroyShaderModule(state.Device, vert, nullptr);
+    vkDestroyShaderModule(state.Device, frag, nullptr);
 
     // ---- Command buffer + sync -----------------------------------------------
     VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    cpci.queueFamilyIndex = queueFamily;
-    VkCommandPool pool;
-    VK_CHECK(vkCreateCommandPool(device, &cpci, nullptr, &pool));
+    cpci.queueFamilyIndex = state.QueueFamily;
+    VK_CHECK(vkCreateCommandPool(state.Device, &cpci, nullptr, &state.CommandPool));
 
     VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    cbai.commandPool = pool;
+    cbai.commandPool = state.CommandPool;
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbai.commandBufferCount = 1;
-    VkCommandBuffer cmd;
-    VK_CHECK(vkAllocateCommandBuffers(device, &cbai, &cmd));
+    VK_CHECK(vkAllocateCommandBuffers(state.Device, &cbai, &state.CommandBuffer));
 
     VkSemaphoreCreateInfo semInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    VkSemaphore imageAvailable;
-    VK_CHECK(vkCreateSemaphore(device, &semInfo, nullptr, &imageAvailable));
-    std::vector<VkSemaphore> renderFinished(imageCount); // one per swapchain image
-    for (auto& s : renderFinished) VK_CHECK(vkCreateSemaphore(device, &semInfo, nullptr, &s));
+    VK_CHECK(vkCreateSemaphore(state.Device, &semInfo, nullptr, &state.ImageAvailable));
+    state.RenderFinished.reserve(imageCount);
+    for (uint32_t i = 0; i < imageCount; ++i)
+    {
+        VkSemaphore semaphore;
+        VK_CHECK(vkCreateSemaphore(state.Device, &semInfo, nullptr, &semaphore));
+        state.RenderFinished.push_back(semaphore);
+    }
 
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    VkFence frameFence;
-    VK_CHECK(vkCreateFence(device, &fenceInfo, nullptr, &frameFence));
+    VK_CHECK(vkCreateFence(state.Device, &fenceInfo, nullptr, &state.FrameFence));
+    return true;
+}
 
-    // ---- Main loop (one frame in flight) -------------------------------------
-    while (!glfwWindowShouldClose(window)) {
+void Wotah::App::Start()
+{
+    glfwShowWindow(m_state->Window);
+}
+
+void Wotah::App::Run()
+{
+    State& state = *m_state;
+    VkCommandBuffer cmd = state.CommandBuffer;
+
+    Start();
+
+    // One frame in flight.
+    while (!glfwWindowShouldClose(state.Window))
+    {
         glfwPollEvents();
-        while (glfwGetWindowAttrib(window, GLFW_ICONIFIED)) glfwWaitEvents(); // minimized
+        while (glfwGetWindowAttrib(state.Window, GLFW_ICONIFIED)) // minimized
+        {
+            glfwWaitEvents();
+        }
 
-        vkWaitForFences(device, 1, &frameFence, VK_TRUE, UINT64_MAX);
+        vkWaitForFences(state.Device, 1, &state.FrameFence, VK_TRUE, UINT64_MAX);
 
         uint32_t idx;
-        VkResult acq = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailable,
+        VkResult acq = vkAcquireNextImageKHR(state.Device, state.Swapchain, UINT64_MAX, state.ImageAvailable,
                                              VK_NULL_HANDLE, &idx);
-        if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) continue;
-        vkResetFences(device, 1, &frameFence);
+        if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR)
+        {
+            continue;
+        }
+        vkResetFences(state.Device, 1, &state.FrameFence);
 
         vkResetCommandBuffer(cmd, 0);
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(cmd, &begin);
 
-        transition(cmd, images[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                   0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        transition(cmd, state.Images[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0,
+                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
 
         VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-        color.imageView = views[idx];
+        color.imageView = state.Views[idx];
         color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         color.clearValue.color = {{0.1f, 0.1f, 0.1f, 1.0f}}; // dark gray background
 
         VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-        ri.renderArea = {{0, 0}, extent};
+        ri.renderArea = {{0, 0}, state.Extent};
         ri.layerCount = 1;
         ri.colorAttachmentCount = 1;
         ri.pColorAttachments = &color;
 
         vkCmdBeginRendering(cmd, &ri);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        VkViewport viewport{0.0f, 0.0f, (float)extent.width, (float)extent.height, 0.0f, 1.0f};
-        VkRect2D scissor{{0, 0}, extent};
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state.Pipeline);
+        VkViewport viewport{0.0f, 0.0f, (float)state.Extent.width, (float)state.Extent.height, 0.0f, 1.0f};
+        VkRect2D scissor{{0, 0}, state.Extent};
         vkCmdSetViewport(cmd, 0, 1, &viewport);
         vkCmdSetScissor(cmd, 0, 1, &scissor);
         vkCmdDraw(cmd, 6, 1, 0, 0); // 6 vertices = 2 triangles = 1 square
         vkCmdEndRendering(cmd);
 
-        transition(cmd, images[idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0,
-                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        transition(cmd, state.Images[idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         vkEndCommandBuffer(cmd);
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         submit.waitSemaphoreCount = 1;
-        submit.pWaitSemaphores = &imageAvailable;
+        submit.pWaitSemaphores = &state.ImageAvailable;
         submit.pWaitDstStageMask = &waitStage;
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &cmd;
         submit.signalSemaphoreCount = 1;
-        submit.pSignalSemaphores = &renderFinished[idx];
-        VK_CHECK(vkQueueSubmit(queue, 1, &submit, frameFence));
+        submit.pSignalSemaphores = &state.RenderFinished[idx];
+        VK_CHECK(vkQueueSubmit(state.Queue, 1, &submit, state.FrameFence));
 
         VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         present.waitSemaphoreCount = 1;
-        present.pWaitSemaphores = &renderFinished[idx];
+        present.pWaitSemaphores = &state.RenderFinished[idx];
         present.swapchainCount = 1;
-        present.pSwapchains = &swapchain;
+        present.pSwapchains = &state.Swapchain;
         present.pImageIndices = &idx;
-        vkQueuePresentKHR(queue, &present);
+        vkQueuePresentKHR(state.Queue, &present);
     }
 
-    // ---- Cleanup -------------------------------------------------------------
-    vkDeviceWaitIdle(device);
-    vkDestroyFence(device, frameFence, nullptr);
-    for (auto s : renderFinished) vkDestroySemaphore(device, s, nullptr);
-    vkDestroySemaphore(device, imageAvailable, nullptr);
-    vkDestroyCommandPool(device, pool, nullptr);
-    vkDestroyPipeline(device, pipeline, nullptr);
-    vkDestroyPipelineLayout(device, layout, nullptr);
-    for (auto v : views) vkDestroyImageView(device, v, nullptr);
-    vkDestroySwapchainKHR(device, swapchain, nullptr);
-    vkDestroyDevice(device, nullptr);
-    vkDestroySurfaceKHR(instance, surface, nullptr);
-    vkDestroyInstance(instance, nullptr);
-    glfwDestroyWindow(window);
-    glfwTerminate();
-    return 0;
+    Stop();
+}
+
+void Wotah::App::Stop()
+{
+    if (m_state->Device != VK_NULL_HANDLE)
+    {
+        vkDeviceWaitIdle(m_state->Device);
+    }
+}
+
+void Wotah::App::Destroy()
+{
+    State& state = *m_state;
+
+    // Children before their parents: the device's objects, the device, the surface, the instance, the window.
+    // vkDestroy* accepts VK_NULL_HANDLE (Vulkan spec, "Object Lifetime"), so a part-way Create is fine.
+    if (state.Device != VK_NULL_HANDLE)
+    {
+        vkDestroyFence(state.Device, state.FrameFence, nullptr);
+        for (VkSemaphore semaphore : state.RenderFinished)
+        {
+            vkDestroySemaphore(state.Device, semaphore, nullptr);
+        }
+        vkDestroySemaphore(state.Device, state.ImageAvailable, nullptr);
+        vkDestroyCommandPool(state.Device, state.CommandPool, nullptr); // frees the command buffer too
+        vkDestroyPipeline(state.Device, state.Pipeline, nullptr);
+        vkDestroyPipelineLayout(state.Device, state.PipelineLayout, nullptr);
+        for (VkImageView view : state.Views)
+        {
+            vkDestroyImageView(state.Device, view, nullptr);
+        }
+        vkDestroySwapchainKHR(state.Device, state.Swapchain, nullptr);
+        vkDestroyDevice(state.Device, nullptr);
+    }
+    if (state.Instance != VK_NULL_HANDLE)
+    {
+        vkDestroySurfaceKHR(state.Instance, state.Surface, nullptr);
+        vkDestroyInstance(state.Instance, nullptr);
+    }
+    if (state.Window != nullptr)
+    {
+        glfwDestroyWindow(state.Window);
+    }
+    glfwTerminate(); // allowed even when glfwInit never ran (GLFW docs, glfwTerminate)
+
+    // Everything is gone; forget the handles so a second Destroy does nothing.
+    state = State{};
 }
