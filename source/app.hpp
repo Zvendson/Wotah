@@ -29,7 +29,7 @@ namespace Wotah
         App();
         ~App();
 
-        App(const App&) = delete;
+        App(const App&)            = delete;
         App& operator=(const App&) = delete;
 
         /** Starts the log, opens the window (still hidden) and creates every Vulkan object; false when one failed. */
@@ -38,16 +38,20 @@ namespace Wotah
         /** Starts, draws frames until the window is closed, and stops. */
         void Run();
 
-        /** Frees every Vulkan object and the window, then closes the log; safe to call more than once or after a failed
-         *  Create. */
+        /**
+         * Frees every Vulkan object and the window, then closes the log; safe to call more than once or after a failed
+         * Create.
+         */
         void Destroy();
 
     private:
         /** Shows the window; the first thing Run does. */
         void Start();
 
-        /** Waits until the GPU has finished the last frame, so nothing is destroyed while in use; the last thing Run
-         *  does. */
+        /**
+         * Waits until the GPU has finished the last frame, so nothing is destroyed while in use; the last thing Run
+         * does.
+         */
         void Stop();
 
         /** The Vulkan handles; defined in app.cpp so this header stays free of Vulkan. */

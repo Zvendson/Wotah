@@ -31,7 +31,7 @@ namespace Wotah
     /** A size in pixels. */
     struct WindowSize
     {
-        uint32_t Width = 0;
+        uint32_t Width  = 0;
         uint32_t Height = 0;
     };
 
@@ -45,11 +45,13 @@ namespace Wotah
         Window() = default;
         ~Window();
 
-        Window(const Window&) = delete;
+        Window(const Window&)            = delete;
         Window& operator=(const Window&) = delete;
 
-        /** Starts GLFW and opens a fixed-size window without an OpenGL context, still hidden; false (and logged)
-         *  when that fails. */
+        /**
+         * Starts GLFW and opens a fixed-size window without an OpenGL context, still hidden; false (and logged)
+         * when that fails.
+         */
         [[nodiscard]] bool Create(const WindowSize& size, const std::string& title);
 
         /** Closes the window and stops GLFW; safe to call more than once or after a failed Create. */
@@ -61,19 +63,25 @@ namespace Wotah
         /** Whether the user asked to close the window. */
         [[nodiscard]] bool ShouldClose() const;
 
-        /** Handles the waiting window events. While the window is minimized it sleeps until the window comes back or
-         *  is closed, so no frames are drawn for nothing. */
+        /**
+         * Handles the waiting window events. While the window is minimized it sleeps until the window comes back or
+         * is closed, so no frames are drawn for nothing.
+         */
         void PollEvents();
 
         /** The size of the drawable area in pixels; it can differ from the window size on high-DPI screens. */
         [[nodiscard]] WindowSize GetFramebufferSize() const;
 
-        /** The Vulkan instance extensions this window needs for a surface; empty (and logged) when Vulkan is not
-         *  available. */
+        /**
+         * The Vulkan instance extensions this window needs for a surface; empty (and logged) when Vulkan is not
+         * available.
+         */
         [[nodiscard]] std::span<const char* const> GetRequiredInstanceExtensions() const;
 
-        /** Creates a surface for the window; the caller owns it and frees it with vkDestroySurfaceKHR. A null
-         *  handle (and a logged reason) when that fails. */
+        /**
+         * Creates a surface for the window; the caller owns it and frees it with vkDestroySurfaceKHR. A null
+         * handle (and a logged reason) when that fails.
+         */
         [[nodiscard]] VkSurfaceKHR CreateSurface(VkInstance instance) const;
 
     private:

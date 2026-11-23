@@ -28,8 +28,10 @@ namespace Wotah
         Critical,
     };
 
-    /** Lines below this level are skipped before they are even formatted: everything in debug builds, Info and up in
-     *  release builds. */
+    /**
+     * Lines below this level are skipped before they are even formatted: everything in debug builds, Info and up in
+     * release builds.
+     */
 #ifdef NDEBUG
     inline constexpr LogLevel MinimumLogLevel = LogLevel::Info;
 #else
@@ -46,12 +48,16 @@ namespace Wotah
     public:
         Logger() = delete;
 
-        /** Starts the writer thread and opens the console and the log file (overwritten on every start). A file that
-         *  cannot be opened is logged as an error; the console keeps working. */
+        /**
+         * Starts the writer thread and opens the console and the log file (overwritten on every start). A file that
+         * cannot be opened is logged as an error; the console keeps working.
+         */
         static void Create();
 
-        /** Logs how many lines were dropped (if any), writes every waiting line, closes the log file and stops the
-         *  writer thread; safe to call more than once. */
+        /**
+         * Logs how many lines were dropped (if any), writes every waiting line, closes the log file and stops the
+         * writer thread; safe to call more than once.
+         */
         static void Destroy();
 
         /** Very detailed lines for following the program step by step. */

@@ -5,9 +5,9 @@
 #include "utils.hpp"
 
 #ifdef _WIN32
-    #define NOMINMAX
-    #define WIN32_LEAN_AND_MEAN
-    #include <windows.h>
+#    define NOMINMAX
+#    define WIN32_LEAN_AND_MEAN
+#    include <windows.h>
 #endif
 
 #include <string>
@@ -19,8 +19,10 @@ namespace
     /** The first buffer size for GetModuleFileNameW: MAX_PATH covers most paths. */
     constexpr DWORD FirstPathBufferSize = MAX_PATH;
 
-    /** The retry's buffer size: the longest path Windows allows (32 767 UTF-16 units, "Maximum Path Length
-     *  Limitation" in the Win32 docs) plus the terminating zero. */
+    /**
+     * The retry's buffer size: the longest path Windows allows (32 767 UTF-16 units, "Maximum Path Length
+     * Limitation" in the Win32 docs) plus the terminating zero.
+     */
     constexpr DWORD MaxPathBufferSize = 32768;
 
     /** The executable's full path, from GetModuleFileNameW; empty on failure. */
@@ -50,7 +52,7 @@ namespace
     std::filesystem::path FindExecutablePath()
     {
         // Linux keeps a link to the running executable at /proc/self/exe (proc(5)).
-        std::error_code error;
+        std::error_code       error;
         std::filesystem::path path = std::filesystem::read_symlink("/proc/self/exe", error);
         if (error)
         {

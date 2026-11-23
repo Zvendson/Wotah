@@ -23,8 +23,10 @@
 
 namespace
 {
-    /** "[16:20:00][info] message": %H:%M:%S is the 24-hour local time, %^...%$ colors the level name %l on the
-     *  console (the file gets no color codes), %v is the message. Flags: spdlog wiki, "Custom formatting". */
+    /**
+     * "[16:20:00][info] message": %H:%M:%S is the 24-hour local time, %^...%$ colors the level name %l on the
+     * console (the file gets no color codes), %v is the message. Flags: spdlog wiki, "Custom formatting".
+     */
     constexpr const char* LinePattern = "[%H:%M:%S][%^%l%$] %v";
 
     /** The log file's name; it is written next to the executable. */
@@ -33,8 +35,10 @@ namespace
     /** The logger's name inside spdlog; it is never registered, so it only shows up in spdlog's own error messages. */
     constexpr const char* LoggerName = "wotah";
 
-    /** How many lines may wait for the writer thread. When the queue is full the oldest waiting line is dropped, so a
-     *  burst of lines never makes the program wait. */
+    /**
+     * How many lines may wait for the writer thread. When the queue is full the oldest waiting line is dropped, so a
+     * burst of lines never makes the program wait.
+     */
     constexpr std::size_t QueueSize = 8192;
 
     /** One writer thread, so lines reach the console and the file in the order they were logged. */
@@ -82,7 +86,7 @@ void Wotah::Logger::Create()
     // and the reason is logged once that logger exists.
     const std::optional<std::filesystem::path> folder = FindExecutableDirectory();
     const std::filesystem::path filePath = folder ? *folder / LogFileName : std::filesystem::path(LogFileName);
-    std::string fileError;
+    std::string                 fileError;
     try
     {
         constexpr bool Truncate = true; // every start begins a fresh file

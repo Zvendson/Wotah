@@ -52,8 +52,8 @@ bool Wotah::Window::Create(const WindowSize& size, const std::string& title)
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // Vulkan draws, so no OpenGL context
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);   // fixed size, so the swapchain never needs to be made again
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);     // shown by Show, once everything is ready
-    m_window = glfwCreateWindow(static_cast<int>(size.Width), static_cast<int>(size.Height), title.c_str(), nullptr,
-                                nullptr);
+    m_window =
+        glfwCreateWindow(static_cast<int>(size.Width), static_cast<int>(size.Height), title.c_str(), nullptr, nullptr);
     if (m_window == nullptr)
     {
         Logger::Error("Could not open the window");
@@ -96,19 +96,19 @@ void Wotah::Window::PollEvents()
 
 Wotah::WindowSize Wotah::Window::GetFramebufferSize() const
 {
-    int width = 0;
+    int width  = 0;
     int height = 0;
     glfwGetFramebufferSize(m_window, &width, &height);
 
     WindowSize size;
-    size.Width = ToPixels(width);
+    size.Width  = ToPixels(width);
     size.Height = ToPixels(height);
     return size;
 }
 
 std::span<const char* const> Wotah::Window::GetRequiredInstanceExtensions() const
 {
-    uint32_t count = 0;
+    uint32_t     count = 0;
     const char** names = glfwGetRequiredInstanceExtensions(&count);
     if (names == nullptr)
     {
@@ -120,8 +120,8 @@ std::span<const char* const> Wotah::Window::GetRequiredInstanceExtensions() cons
 
 VkSurfaceKHR Wotah::Window::CreateSurface(VkInstance instance) const
 {
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    const VkResult result = glfwCreateWindowSurface(instance, m_window, nullptr, &surface);
+    VkSurfaceKHR   surface = VK_NULL_HANDLE;
+    const VkResult result  = glfwCreateWindowSurface(instance, m_window, nullptr, &surface);
     if (result != VK_SUCCESS)
     {
         Logger::Error("Could not create the window's Vulkan surface (VkResult {})", static_cast<int>(result));

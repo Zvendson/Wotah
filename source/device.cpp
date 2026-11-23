@@ -26,15 +26,17 @@ namespace
     constexpr bool WantsValidation = true;
 #endif
 
-    /** The one queue's priority; with a single queue any value in [0, 1] works the same (Vulkan spec, "Queue
-     *  Priority"). */
+    /**
+     * The one queue's priority; with a single queue any value in [0, 1] works the same (Vulkan spec, "Queue
+     * Priority").
+     */
     constexpr float QueuePriority = 1.0f;
 
     /** A GPU and the queue family on it that can both draw and present to the surface. */
     struct GpuChoice
     {
-        VkPhysicalDevice Gpu = VK_NULL_HANDLE;
-        uint32_t QueueFamily = 0;
+        VkPhysicalDevice Gpu         = VK_NULL_HANDLE;
+        uint32_t         QueueFamily = 0;
     };
 
     /** True for VK_SUCCESS; anything else is logged with what was being done. */
@@ -57,8 +59,9 @@ namespace
             return false;
         }
         std::vector<VkLayerProperties> layers(count);
-        const VkResult result = vkEnumerateInstanceLayerProperties(&count, layers.data());
-        if (result != VK_SUCCESS && result != VK_INCOMPLETE) // VK_INCOMPLETE: a layer appeared meanwhile; check the rest
+        const VkResult                 result = vkEnumerateInstanceLayerProperties(&count, layers.data());
+        if (result != VK_SUCCESS &&
+            result != VK_INCOMPLETE) // VK_INCOMPLETE: a layer appeared meanwhile; check the rest
         {
             return false;
         }
@@ -85,18 +88,18 @@ namespace
 
         VkApplicationInfo appInfo{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         appInfo.pApplicationName = appName.c_str();
-        appInfo.apiVersion = VK_API_VERSION_1_3;
+        appInfo.apiVersion       = VK_API_VERSION_1_3;
 
         VkInstanceCreateInfo createInfo{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
-        createInfo.pApplicationInfo = &appInfo;
-        createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size()); // GLFW gave it as a uint32_t
+        createInfo.pApplicationInfo        = &appInfo;
+        createInfo.enabledExtensionCount   = static_cast<uint32_t>(extensions.size()); // GLFW gave it as a uint32_t
         createInfo.ppEnabledExtensionNames = extensions.data();
 
         if constexpr (WantsValidation)
         {
             if (HasValidationLayer())
             {
-                createInfo.enabledLayerCount = 1;
+                createInfo.enabledLayerCount   = 1;
                 createInfo.ppEnabledLayerNames = &ValidationLayerName;
                 Wotah::Logger::Debug("Vulkan validation is on");
             }
@@ -147,7 +150,7 @@ namespace
             return std::nullopt;
         }
         std::vector<VkPhysicalDevice> gpus(count);
-        const VkResult result = vkEnumeratePhysicalDevices(instance, &count, gpus.data());
+        const VkResult                result = vkEnumeratePhysicalDevices(instance, &count, gpus.data());
         if (result != VK_INCOMPLETE && !Succeeded(result, "list the GPUs")) // VK_INCOMPLETE: a GPU appeared meanwhile
         {
             return std::nullopt;
@@ -167,7 +170,7 @@ namespace
             {
                 Wotah::Logger::Info("Using GPU {}", properties.deviceName);
                 GpuChoice choice;
-                choice.Gpu = gpu;
+                choice.Gpu         = gpu;
                 choice.QueueFamily = *family;
                 return choice;
             }
@@ -180,19 +183,19 @@ namespace
     {
         VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
         queueInfo.queueFamilyIndex = choice.QueueFamily;
-        queueInfo.queueCount = 1;
+        queueInfo.queueCount       = 1;
         queueInfo.pQueuePriorities = &QueuePriority;
 
         // Dynamic rendering draws without VkRenderPass / VkFramebuffer; it is core in Vulkan 1.3 but still opt-in.
         VkPhysicalDeviceVulkan13Features features13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
         features13.dynamicRendering = VK_TRUE;
 
-        const char* const swapchainExtension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+        const char* const  swapchainExtension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         VkDeviceCreateInfo createInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-        createInfo.pNext = &features13;
-        createInfo.queueCreateInfoCount = 1;
-        createInfo.pQueueCreateInfos = &queueInfo;
-        createInfo.enabledExtensionCount = 1;
+        createInfo.pNext                   = &features13;
+        createInfo.queueCreateInfoCount    = 1;
+        createInfo.pQueueCreateInfos       = &queueInfo;
+        createInfo.enabledExtensionCount   = 1;
         createInfo.ppEnabledExtensionNames = &swapchainExtension;
 
         VkDevice device = VK_NULL_HANDLE;
@@ -229,7 +232,7 @@ bool Wotah::Device::Create(const Window& window, const std::string& appName)
         Logger::Error("No Vulkan 1.3 GPU with graphics + present support found");
         return false;
     }
-    m_gpu = choice->Gpu;
+    m_gpu         = choice->Gpu;
     m_queueFamily = choice->QueueFamily;
 
     m_device = CreateLogicalDevice(*choice);
@@ -255,12 +258,12 @@ void Wotah::Device::Destroy()
         vkDestroyInstance(m_instance, nullptr);
     }
 
-    m_instance = VK_NULL_HANDLE;
-    m_surface = VK_NULL_HANDLE;
-    m_gpu = VK_NULL_HANDLE;
+    m_instance    = VK_NULL_HANDLE;
+    m_surface     = VK_NULL_HANDLE;
+    m_gpu         = VK_NULL_HANDLE;
     m_queueFamily = 0;
-    m_device = VK_NULL_HANDLE;
-    m_queue = VK_NULL_HANDLE;
+    m_device      = VK_NULL_HANDLE;
+    m_queue       = VK_NULL_HANDLE;
 }
 
 void Wotah::Device::WaitUntilIdle() const

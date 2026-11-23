@@ -34,12 +34,14 @@ namespace Wotah
         Device() = default;
         ~Device();
 
-        Device(const Device&) = delete;
+        Device(const Device&)            = delete;
         Device& operator=(const Device&) = delete;
 
-        /** Creates the instance (with the validation layer in debug builds, when installed), the window's surface, picks
-         *  the first Vulkan 1.3 GPU that can draw and present to it, and creates the logical device with dynamic
-         *  rendering; false (and logged) when one step fails. The window must outlive the device. */
+        /**
+         * Creates the instance (with the validation layer in debug builds, when installed), the window's surface,
+         * picks the first Vulkan 1.3 GPU that can draw and present to it, and creates the logical device with dynamic
+         * rendering; false (and logged) when one step fails. The window must outlive the device.
+         */
         [[nodiscard]] bool Create(const Window& window, const std::string& appName);
 
         /** Frees the device, the surface and the instance; safe to call more than once or after a failed Create. */
@@ -68,11 +70,11 @@ namespace Wotah
 
     private:
         // Declared in creation order; Destroy frees them in reverse.
-        VkInstance m_instance = nullptr;
-        VkSurfaceKHR m_surface = nullptr;
-        VkPhysicalDevice m_gpu = nullptr;
-        uint32_t m_queueFamily = 0;
-        VkDevice m_device = nullptr;
-        VkQueue m_queue = nullptr;
+        VkInstance       m_instance    = nullptr;
+        VkSurfaceKHR     m_surface     = nullptr;
+        VkPhysicalDevice m_gpu         = nullptr;
+        uint32_t         m_queueFamily = 0;
+        VkDevice         m_device      = nullptr;
+        VkQueue          m_queue       = nullptr;
     };
 } // namespace Wotah
