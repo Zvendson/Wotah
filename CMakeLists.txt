@@ -26,7 +26,7 @@ FetchContent_Declare(glfw
     GIT_TAG        3.4)
 FetchContent_MakeAvailable(glfw)
 
-# Compile GLSL -> SPIR-V as a C array initializer (*.inc) that main.cpp #includes,
+# Compile GLSL -> SPIR-V as a C array initializer (*.inc) that source/app.cpp #includes,
 # so there are no .spv files to locate at runtime.
 set(SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 foreach(stage vert frag)
@@ -41,6 +41,10 @@ foreach(stage vert frag)
     list(APPEND SHADERS ${out})
 endforeach()
 
-add_executable(square main.cpp ${SHADERS})
+add_executable(square
+    source/main.cpp
+    source/app.hpp
+    source/app.cpp
+    ${SHADERS})
 target_include_directories(square PRIVATE ${SHADER_OUT})
 target_link_libraries(square PRIVATE Vulkan::Vulkan glfw)

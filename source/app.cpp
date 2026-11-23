@@ -1,5 +1,10 @@
-// Minimal Vulkan 1.3 "hello square": one orange square in the center of a window.
-// Uses dynamic rendering (no VkRenderPass / VkFramebuffer) and no vertex buffer.
+/**
+ * @file app.cpp
+ * The whole program for now: a minimal Vulkan 1.3 "hello square" that draws one orange square in the
+ * center of a window. Uses dynamic rendering (no VkRenderPass / VkFramebuffer) and no vertex buffer.
+ */
+#include "app.hpp"
+
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
@@ -50,7 +55,7 @@ static void transition(VkCommandBuffer cmd, VkImage image,
     vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
-int main() {
+int Wotah::RunApp() {
     // ---- Window --------------------------------------------------------------
     if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
