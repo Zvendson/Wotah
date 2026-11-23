@@ -29,13 +29,14 @@ namespace Wotah
         App(const App&) = delete;
         App& operator=(const App&) = delete;
 
-        /** Opens the window (still hidden) and creates every Vulkan object; false when one of them failed. */
+        /** Starts the log, opens the window (still hidden) and creates every Vulkan object; false when one failed. */
         [[nodiscard]] bool Create();
 
         /** Starts, draws frames until the window is closed, and stops. */
         void Run();
 
-        /** Frees every Vulkan object and the window; safe to call more than once or after a failed Create. */
+        /** Frees every Vulkan object and the window, then closes the log; safe to call more than once or after a failed
+         *  Create. */
         void Destroy();
 
     private:

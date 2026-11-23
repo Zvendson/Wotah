@@ -5,11 +5,12 @@
  */
 #include "app.hpp"
 
+#include "logger.hpp"
+
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -25,7 +26,8 @@ static const uint32_t kFragSpv[] = {
     do {                                                                            \
         VkResult r_ = (call);                                                       \
         if (r_ != VK_SUCCESS) {                                                     \
-            std::fprintf(stderr, "%s failed (VkResult %d)\n", #call, (int)r_);      \
+            Wotah::Logger::Critical("{} failed (VkResult {})", #call, static_cast<int>(r_)); \
+            Wotah::Logger::Destroy(); /* writes the line out before the exit */     \
             std::exit(1);                                                           \
         }                                                                           \
     } while (0)
@@ -107,9 +109,13 @@ bool Wotah::App::Create()
 {
     State& state = *m_state;
 
+    // First, so every later step can log.
+    Logger::Create();
+
     // ---- Window --------------------------------------------------------------
     if (!glfwInit())
     {
+        Logger::Error("Could not start GLFW");
         return false;
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -119,6 +125,7 @@ bool Wotah::App::Create()
     state.Window = glfwCreateWindow(600, 600, "Vulkan Square", nullptr, nullptr);
     if (!state.Window)
     {
+        Logger::Error("Could not open the window");
         return false;
     }
 
@@ -191,9 +198,12 @@ bool Wotah::App::Create()
     }
     if (state.Gpu == VK_NULL_HANDLE)
     {
-        std::fprintf(stderr, "No Vulkan 1.3 GPU with graphics + present support found\n");
+        Logger::Error("No Vulkan 1.3 GPU with graphics + present support found");
         return false;
     }
+    VkPhysicalDeviceProperties gpuProperties;
+    vkGetPhysicalDeviceProperties(state.Gpu, &gpuProperties);
+    Logger::Info("Using GPU {}", gpuProperties.deviceName);
 
     // ---- Logical device ------------------------------------------------------
     float priority = 1.0f;
@@ -505,6 +515,7 @@ void Wotah::App::Destroy()
         glfwDestroyWindow(state.Window);
     }
     glfwTerminate(); // allowed even when glfwInit never ran (GLFW docs, glfwTerminate)
+    Logger::Destroy(); // last, so everything above can still log
 
     // Everything is gone; forget the handles so a second Destroy does nothing.
     state = State{};

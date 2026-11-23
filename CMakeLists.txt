@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(VulkanSquare CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Release keeps full optimizations but also emits debug info (PDB on MSVC, DWARF on GCC/Clang).
@@ -26,6 +26,16 @@ FetchContent_Declare(glfw
     GIT_TAG        3.4)
 FetchContent_MakeAvailable(glfw)
 
+# spdlog for logging, built as a static library (with its bundled fmt) so only logger.cpp compiles its headers.
+# Wide file names on Windows, so the log file opens next to the executable whatever characters its path has.
+if(WIN32)
+    set(SPDLOG_WCHAR_FILENAMES ON CACHE BOOL "" FORCE)
+endif()
+FetchContent_Declare(spdlog
+    GIT_REPOSITORY https://github.com/gabime/spdlog.git
+    GIT_TAG        v1.17.0)
+FetchContent_MakeAvailable(spdlog)
+
 # Compile GLSL -> SPIR-V as a C array initializer (*.inc) that source/app.cpp #includes,
 # so there are no .spv files to locate at runtime.
 set(SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
@@ -45,6 +55,10 @@ add_executable(square
     source/main.cpp
     source/app.hpp
     source/app.cpp
+    source/utils.hpp
+    source/utils.cpp
+    source/logger.hpp
+    source/logger.cpp
     ${SHADERS})
 target_include_directories(square PRIVATE ${SHADER_OUT})
-target_link_libraries(square PRIVATE Vulkan::Vulkan glfw)
+target_link_libraries(square PRIVATE Vulkan::Vulkan glfw spdlog::spdlog)
