@@ -59,6 +59,8 @@ add_executable(square
     source/utils.cpp
     source/logger.hpp
     source/logger.cpp
+    source/window.hpp
+    source/window.cpp
     ${SHADERS})
 target_include_directories(square PRIVATE ${SHADER_OUT})
 target_link_libraries(square PRIVATE Vulkan::Vulkan glfw spdlog::spdlog)

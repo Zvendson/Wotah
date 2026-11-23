@@ -11,6 +11,8 @@
  */
 #pragma once
 
+#include "window.hpp"
+
 #include <memory>
 
 namespace Wotah
@@ -47,8 +49,11 @@ namespace Wotah
          *  does. */
         void Stop();
 
-        /** The window and Vulkan handles; defined in app.cpp so this header stays free of GLFW and Vulkan. */
+        /** The Vulkan handles; defined in app.cpp so this header stays free of Vulkan. */
         struct State;
+
+        /** The window everything is drawn into. */
+        Window m_window;
 
         std::unique_ptr<State> m_state;
     };

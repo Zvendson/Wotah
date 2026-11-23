@@ -7,12 +7,12 @@
 
 #include "logger.hpp"
 
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
+#include <vulkan/vulkan.h>
 
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <span>
 #include <vector>
 
 static const uint32_t kVertSpv[] = {
@@ -57,12 +57,15 @@ static void transition(VkCommandBuffer cmd, VkImage image,
     vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
-/** Everything the application creates, in creation order; null handles mean "not created (yet)". */
+/** The window's size: square, so the [-0.5, 0.5] quad in the shader is a real square on screen. */
+static constexpr Wotah::WindowSize SquareWindowSize{600, 600};
+
+/** The window's title and the application name Vulkan is told. */
+static constexpr const char* AppName = "Vulkan Square";
+
+/** Every Vulkan object the application creates, in creation order; null handles mean "not created (yet)". */
 struct Wotah::App::State
 {
-    /** The window the square is drawn into. */
-    GLFWwindow* Window = nullptr;
-
     /** The Vulkan instance and the window's surface. */
     VkInstance Instance = VK_NULL_HANDLE;
     VkSurfaceKHR Surface = VK_NULL_HANDLE;
@@ -113,34 +116,26 @@ bool Wotah::App::Create()
     Logger::Create();
 
     // ---- Window --------------------------------------------------------------
-    if (!glfwInit())
+    if (!m_window.Create(SquareWindowSize, AppName))
     {
-        Logger::Error("Could not start GLFW");
-        return false;
-    }
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE); // fixed size => no swapchain recreation
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);   // shown by Start, once everything is ready
-    // Square window, so the [-0.5, 0.5] quad in the shader is a real square on screen.
-    state.Window = glfwCreateWindow(600, 600, "Vulkan Square", nullptr, nullptr);
-    if (!state.Window)
-    {
-        Logger::Error("Could not open the window");
         return false;
     }
 
     // ---- Instance ------------------------------------------------------------
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    app.pApplicationName = "Vulkan Square";
+    app.pApplicationName = AppName;
     app.apiVersion = VK_API_VERSION_1_3;
 
-    uint32_t extCount = 0;
-    const char** exts = glfwGetRequiredInstanceExtensions(&extCount);
+    const std::span<const char* const> windowExtensions = m_window.GetRequiredInstanceExtensions();
+    if (windowExtensions.empty())
+    {
+        return false;
+    }
 
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &app;
-    ici.enabledExtensionCount = extCount;
-    ici.ppEnabledExtensionNames = exts;
+    ici.enabledExtensionCount = static_cast<uint32_t>(windowExtensions.size()); // GLFW gave it as a uint32_t
+    ici.ppEnabledExtensionNames = windowExtensions.data();
 
 #ifndef NDEBUG
     // Enable validation in debug builds if the SDK's layer is installed.
@@ -160,7 +155,11 @@ bool Wotah::App::Create()
 #endif
 
     VK_CHECK(vkCreateInstance(&ici, nullptr, &state.Instance));
-    VK_CHECK(glfwCreateWindowSurface(state.Instance, state.Window, nullptr, &state.Surface));
+    state.Surface = m_window.CreateSurface(state.Instance);
+    if (state.Surface == VK_NULL_HANDLE)
+    {
+        return false;
+    }
 
     // ---- Pick a GPU + a queue family that can draw and present ---------------
     uint32_t gpuCount = 0;
@@ -239,9 +238,8 @@ bool Wotah::App::Create()
     state.Extent = caps.currentExtent;
     if (state.Extent.width == UINT32_MAX) // e.g. Wayland: surface size is chosen by us
     {
-        int w, h;
-        glfwGetFramebufferSize(state.Window, &w, &h);
-        state.Extent = {(uint32_t)w, (uint32_t)h};
+        const WindowSize framebufferSize = m_window.GetFramebufferSize();
+        state.Extent = {framebufferSize.Width, framebufferSize.Height};
     }
 
     uint32_t imageCount = caps.minImageCount + 1;
@@ -383,7 +381,7 @@ bool Wotah::App::Create()
 
 void Wotah::App::Start()
 {
-    glfwShowWindow(m_state->Window);
+    m_window.Show();
 }
 
 void Wotah::App::Run()
@@ -394,12 +392,12 @@ void Wotah::App::Run()
     Start();
 
     // One frame in flight.
-    while (!glfwWindowShouldClose(state.Window))
+    while (!m_window.ShouldClose())
     {
-        glfwPollEvents();
-        while (glfwGetWindowAttrib(state.Window, GLFW_ICONIFIED)) // minimized
+        m_window.PollEvents();
+        if (m_window.ShouldClose()) // closed while minimized: no frame for a window that is going away
         {
-            glfwWaitEvents();
+            break;
         }
 
         vkWaitForFences(state.Device, 1, &state.FrameFence, VK_TRUE, UINT64_MAX);
@@ -510,11 +508,7 @@ void Wotah::App::Destroy()
         vkDestroySurfaceKHR(state.Instance, state.Surface, nullptr);
         vkDestroyInstance(state.Instance, nullptr);
     }
-    if (state.Window != nullptr)
-    {
-        glfwDestroyWindow(state.Window);
-    }
-    glfwTerminate(); // allowed even when glfwInit never ran (GLFW docs, glfwTerminate)
+    m_window.Destroy();
     Logger::Destroy(); // last, so everything above can still log
 
     // Everything is gone; forget the handles so a second Destroy does nothing.
