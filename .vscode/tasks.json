@@ -1,0 +1,41 @@
+{
+    // Windows: one multi-config Visual Studio build dir  -> build/<Config>/square.exe
+    // Linux:   one single-config build dir per config    -> build/<Config>/square
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "configure Debug",
+            "type": "process",
+            "command": "cmake",
+            "windows": { "args": ["-S", "${workspaceFolder}", "-B", "${workspaceFolder}/build"] },
+            "linux": { "args": ["-S", "${workspaceFolder}", "-B", "${workspaceFolder}/build/Debug", "-DCMAKE_BUILD_TYPE=Debug"] },
+            "problemMatcher": []
+        },
+        {
+            "label": "build Debug",
+            "type": "process",
+            "command": "cmake",
+            "windows": { "args": ["--build", "${workspaceFolder}/build", "--config", "Debug"], "problemMatcher": "$msCompile" },
+            "linux": { "args": ["--build", "${workspaceFolder}/build/Debug"], "problemMatcher": "$gcc" },
+            "dependsOn": "configure Debug",
+            "group": { "kind": "build", "isDefault": true }
+        },
+        {
+            "label": "configure Release",
+            "type": "process",
+            "command": "cmake",
+            "windows": { "args": ["-S", "${workspaceFolder}", "-B", "${workspaceFolder}/build"] },
+            "linux": { "args": ["-S", "${workspaceFolder}", "-B", "${workspaceFolder}/build/Release", "-DCMAKE_BUILD_TYPE=Release"] },
+            "problemMatcher": []
+        },
+        {
+            "label": "build Release",
+            "type": "process",
+            "command": "cmake",
+            "windows": { "args": ["--build", "${workspaceFolder}/build", "--config", "Release"], "problemMatcher": "$msCompile" },
+            "linux": { "args": ["--build", "${workspaceFolder}/build/Release"], "problemMatcher": "$gcc" },
+            "dependsOn": "configure Release",
+            "group": "build"
+        }
+    ]
+}
