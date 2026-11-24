@@ -9,6 +9,7 @@ layout(push_constant) uniform PushConstants
 } push;
 
 layout(location = 0) out vec3 outNormal;
+layout(location = 1) out vec3 outCubePosition; // the point on the cube, -0.5 .. 0.5 per axis, for the black edges
 
 // The 8 corners, numbered by bits: x = bit 0, y = bit 1, z = bit 2 (0 means -0.5, 1 means +0.5).
 const vec3 Corners[8] = vec3[](
@@ -34,6 +35,8 @@ const vec3 Normals[6] = vec3[](
 
 void main()
 {
-    outNormal   = Normals[gl_VertexIndex / 6];
-    gl_Position = push.viewProjection * vec4(Corners[Indices[gl_VertexIndex]], 1.0);
+    vec3 corner     = Corners[Indices[gl_VertexIndex]];
+    outNormal       = Normals[gl_VertexIndex / 6];
+    outCubePosition = corner;
+    gl_Position     = push.viewProjection * vec4(corner, 1.0);
 }
