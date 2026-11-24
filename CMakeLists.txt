@@ -36,7 +36,7 @@ FetchContent_Declare(spdlog
     GIT_TAG        v1.17.0)
 FetchContent_MakeAvailable(spdlog)
 
-# Compile GLSL -> SPIR-V as a C array initializer (*.inc) that source/app.cpp #includes,
+# Compile GLSL -> SPIR-V as a C array initializer (*.inc) that the code #includes,
 # so there are no .spv files to locate at runtime.
 set(SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 foreach(stage vert frag)
@@ -63,6 +63,8 @@ add_executable(square
     source/platform/window.cpp
     source/render/device.hpp
     source/render/device.cpp
+    source/render/pipeline.hpp
+    source/render/pipeline.cpp
     source/render/swapchain.hpp
     source/render/swapchain.cpp
     source/render/vulkan_handles.hpp

@@ -6,6 +6,7 @@
 #include "app.hpp"
 
 #include "core/logger.hpp"
+#include "render/pipeline.hpp"
 #include "render/swapchain.hpp"
 
 #include <vulkan/vulkan.h>
@@ -15,10 +16,13 @@
 #include <optional>
 #include <vector>
 
-static const uint32_t kVertSpv[] = {
+/** The square's vertex shader (shaders/square.vert), compiled to SPIR-V by the build. */
+static constexpr uint32_t SquareVertexShader[] = {
 #include "square.vert.inc"
 };
-static const uint32_t kFragSpv[] = {
+
+/** The square's fragment shader (shaders/square.frag), compiled to SPIR-V by the build. */
+static constexpr uint32_t SquareFragmentShader[] = {
 #include "square.frag.inc"
 };
 
@@ -33,16 +37,6 @@ static const uint32_t kFragSpv[] = {
             std::exit(1);                                                                    \
         }                                                                                    \
     } while (0)
-
-static VkShaderModule createShader(VkDevice device, const uint32_t* code, size_t size)
-{
-    VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    ci.codeSize = size;
-    ci.pCode    = code;
-    VkShaderModule module;
-    VK_CHECK(vkCreateShaderModule(device, &ci, nullptr, &module));
-    return module;
-}
 
 static void transition(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to,
                        VkAccessFlags srcAccess, VkAccessFlags dstAccess, VkPipelineStageFlags srcStage,
@@ -76,8 +70,7 @@ struct Wotah::App::State
     Wotah::Swapchain Swapchain;
 
     /** The pipeline that draws the square. */
-    VkPipelineLayout PipelineLayout = VK_NULL_HANDLE;
-    VkPipeline       Pipeline       = VK_NULL_HANDLE;
+    Wotah::Pipeline Pipeline;
 
     /** One command buffer and its sync objects: one frame in flight. */
     VkCommandPool            CommandPool    = VK_NULL_HANDLE;
@@ -123,77 +116,18 @@ bool Wotah::App::Create()
     {
         return false;
     }
-    const uint32_t imageCount  = state.Swapchain.GetImageCount();
-    const VkFormat colorFormat = state.Swapchain.GetFormat();
+    const uint32_t imageCount = state.Swapchain.GetImageCount();
 
     // ---- Pipeline ------------------------------------------------------------
-    VkShaderModule vert = createShader(device, kVertSpv, sizeof(kVertSpv));
-    VkShaderModule frag = createShader(device, kFragSpv, sizeof(kFragSpv));
-
-    VkPipelineShaderStageCreateInfo stages[2] = {
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
-    };
-    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vert;
-    stages[0].pName  = "main";
-    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = frag;
-    stages[1].pName  = "main";
-
-    VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-    VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount  = 1;
-
-    VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode    = VK_CULL_MODE_NONE;
-    raster.lineWidth   = 1.0f;
-
-    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-    VkPipelineColorBlendAttachmentState blendAttachment{};
-    blendAttachment.colorWriteMask =
-        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    blend.attachmentCount = 1;
-    blend.pAttachments    = &blendAttachment;
-
-    VkDynamicState                   dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamic.dynamicStateCount = 2;
-    dynamic.pDynamicStates    = dynamicStates;
-
-    VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &state.PipelineLayout));
-
-    // Dynamic rendering: tell the pipeline the attachment format instead of a render pass.
-    VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    renderingInfo.colorAttachmentCount    = 1;
-    renderingInfo.pColorAttachmentFormats = &colorFormat;
-
-    VkGraphicsPipelineCreateInfo pci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    pci.pNext               = &renderingInfo;
-    pci.stageCount          = 2;
-    pci.pStages             = stages;
-    pci.pVertexInputState   = &vertexInput;
-    pci.pInputAssemblyState = &inputAssembly;
-    pci.pViewportState      = &viewportState;
-    pci.pRasterizationState = &raster;
-    pci.pMultisampleState   = &multisample;
-    pci.pColorBlendState    = &blend;
-    pci.pDynamicState       = &dynamic;
-    pci.layout              = state.PipelineLayout;
-
-    VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pci, nullptr, &state.Pipeline));
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
+    // The square's shaders make their own six vertices, so every other setting keeps its default.
+    PipelineSettings squareSettings;
+    squareSettings.VertexShader   = SquareVertexShader;
+    squareSettings.FragmentShader = SquareFragmentShader;
+    squareSettings.ColorFormat    = state.Swapchain.GetFormat();
+    if (!state.Pipeline.Create(m_device, squareSettings))
+    {
+        return false;
+    }
 
     // ---- Command buffer + sync -----------------------------------------------
     VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -282,7 +216,7 @@ void Wotah::App::Run()
         ri.pColorAttachments    = &color;
 
         vkCmdBeginRendering(cmd, &ri);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state.Pipeline);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state.Pipeline.GetHandle());
         VkViewport viewport{0.0f, 0.0f, (float)extent.width, (float)extent.height, 0.0f, 1.0f};
         VkRect2D   scissor{{0, 0}, extent};
         vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -334,9 +268,8 @@ void Wotah::App::Destroy()
         }
         vkDestroySemaphore(device, state.ImageAvailable, nullptr);
         vkDestroyCommandPool(device, state.CommandPool, nullptr); // frees the command buffer too
-        vkDestroyPipeline(device, state.Pipeline, nullptr);
-        vkDestroyPipelineLayout(device, state.PipelineLayout, nullptr);
     }
+    state.Pipeline.Destroy();
     state.Swapchain.Destroy();
     // Everything made on the device is gone; a fresh State forgets the handles, so a second Destroy does nothing.
     m_state = std::make_unique<State>();
