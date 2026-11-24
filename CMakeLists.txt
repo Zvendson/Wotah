@@ -44,23 +44,31 @@ FetchContent_Declare(glm
     GIT_TAG        1.0.3)
 FetchContent_MakeAvailable(glm)
 
-# Compile GLSL -> SPIR-V as a C array initializer (*.inc) that the code #includes,
-# so there are no .spv files to locate at runtime.
-set(SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
-foreach(stage vert frag)
-    set(src ${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.${stage})
-    set(out ${SHADER_OUT}/cube.${stage}.inc)
-    add_custom_command(
-        OUTPUT  ${out}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUT}
-        COMMAND ${Vulkan_GLSLC_EXECUTABLE} -mfmt=num ${src} -o ${out}
-        DEPENDS ${src}
-        COMMENT "Compiling cube.${stage}")
-    list(APPEND SHADERS ${out})
-endforeach()
+# Compile GLSL -> SPIR-V as a C array initializer (*.inc) that the code #includes, so there are no .spv files to locate
+# at runtime. Puts the generated files' paths into out_var; each shader becomes <output_dir>/<file name>.inc.
+function(wotah_compile_shaders out_var output_dir)
+    set(outputs "")
+    foreach(source ${ARGN})
+        get_filename_component(name ${source} NAME)
+        set(output ${output_dir}/${name}.inc)
+        add_custom_command(
+            OUTPUT  ${output}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${output_dir}
+            COMMAND ${Vulkan_GLSLC_EXECUTABLE} -mfmt=num ${source} -o ${output}
+            DEPENDS ${source}
+            COMMENT "Compiling ${name}")
+        list(APPEND outputs ${output})
+    endforeach()
+    set(${out_var} ${outputs} PARENT_SCOPE)
+endfunction()
 
-add_executable(square
-    source/main.cpp
+set(SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
+wotah_compile_shaders(SHADERS ${SHADER_OUT}
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag)
+
+# Everything but the entry point, so the program and the tests run the same code.
+add_library(wotah STATIC
     source/app.hpp
     source/app.cpp
     source/core/utils.hpp
@@ -90,7 +98,22 @@ add_executable(square
     source/render/vulkan_utils.cpp
     ${SHADERS})
 # Project headers are included by their path from source/, e.g. "core/logger.hpp".
-target_include_directories(square PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/source ${SHADER_OUT})
-target_link_libraries(square PRIVATE Vulkan::Vulkan glfw spdlog::spdlog glm::glm)
+target_include_directories(wotah PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/source ${SHADER_OUT})
+target_link_libraries(wotah PUBLIC Vulkan::Vulkan glfw spdlog::spdlog glm::glm)
 # glm's projections produce Vulkan's 0..1 depth range instead of OpenGL's -1..1.
-target_compile_definitions(square PRIVATE GLM_FORCE_DEPTH_ZERO_TO_ONE)
+target_compile_definitions(wotah PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE)
+
+add_executable(square source/main.cpp)
+target_link_libraries(square PRIVATE wotah)
+
+# Tests: doctest, in tests/; run them with "ctest --preset <preset>" or the wotah_tests program.
+# doctest is one header; its own CMake file is skipped (SOURCE_SUBDIR has none) because it targets old CMake versions.
+FetchContent_Declare(doctest
+    GIT_REPOSITORY https://github.com/doctest/doctest.git
+    GIT_TAG        v2.4.12
+    SOURCE_SUBDIR  doctest)
+FetchContent_MakeAvailable(doctest)
+add_library(doctest INTERFACE)
+target_include_directories(doctest SYSTEM INTERFACE ${doctest_SOURCE_DIR})
+enable_testing()
+add_subdirectory(tests)

@@ -70,5 +70,41 @@
             "displayName": "Release",
             "configurePreset": "linux-release"
         }
+    ],
+    "testPresets": [
+        {
+            "name": "windows-debug",
+            "displayName": "Debug",
+            "configurePreset": "windows",
+            "configuration": "Debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "windows-release",
+            "displayName": "Release",
+            "configurePreset": "windows",
+            "configuration": "Release",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "linux-debug",
+            "displayName": "Debug",
+            "configurePreset": "linux-debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "linux-release",
+            "displayName": "Release",
+            "configurePreset": "linux-release",
+            "output": {
+                "outputOnFailure": true
+            }
+        }
     ]
 }
