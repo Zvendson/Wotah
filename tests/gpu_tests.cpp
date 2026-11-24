@@ -1,13 +1,15 @@
 /**
  * @file gpu_tests.cpp
  * Tests that need a Vulkan 1.3 GPU: the window, device, swapchain, pipelines with every option, frames through the
- * renderer, and the example cube drawn offscreen and read back. Every window stays hidden, so running the tests never
- * shows anything on screen. Skip them with --test-suite-exclude=gpu on machines without a GPU.
+ * renderer, depth images, and the example scene (cube and ball) drawn offscreen and read back. Every window stays
+ * hidden, so running the tests never shows anything on screen. Skip them with --test-suite-exclude=gpu on machines
+ * without a GPU.
  */
 #include "platform/window.hpp"
 #include "render/buffer.hpp"
 #include "render/camera.hpp"
 #include "render/device.hpp"
+#include "render/image.hpp"
 #include "render/mesh.hpp"
 #include "render/mesh_data.hpp"
 #include "render/pipeline.hpp"
@@ -16,7 +18,9 @@
 #include "test_utils.hpp"
 
 #include <doctest/doctest.h>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
 #include <vulkan/vulkan.h>
 
 #include <array>
@@ -33,12 +37,15 @@ using Wotah::Testing::HiddenWindowSize;
 
 namespace
 {
-    /** The example cube's shaders (shaders/cube.*), as the program builds them. */
-    constexpr uint32_t CubeVertexShader[] = {
-#include "cube.vert.inc"
+    /** The program's shaders (shaders/mesh.vert, cube.frag, ball.frag), as the program builds them. */
+    constexpr uint32_t MeshVertexShader[] = {
+#include "mesh.vert.inc"
     };
     constexpr uint32_t CubeFragmentShader[] = {
 #include "cube.frag.inc"
+    };
+    constexpr uint32_t BallFragmentShader[] = {
+#include "ball.frag.inc"
     };
 
     /** The test shaders (tests/shaders/water_test.*): vertex input, push constants and a uniform buffer. */
@@ -49,110 +56,131 @@ namespace
 #include "water_test.frag.inc"
     };
 
-    /** What the cube's vertex shader reads (shaders/cube.vert). */
-    struct CubePushConstants
+    /** The program's scene (app.cpp): the ball's size and place, and how finely it is cut. */
+    constexpr float     BallRadius = 0.5f;
+    constexpr glm::vec3 BallPosition{-1.3f, 0.0f, -0.9f};
+    constexpr uint32_t  BallSegments = 48;
+    constexpr uint32_t  BallRings    = 24;
+
+    /** What mesh.vert reads: camera and object matrix. */
+    struct MeshPushConstants
     {
         glm::mat4 ViewProjection{1.0f};
+        glm::mat4 Model{1.0f};
     };
 
-    /** The cube pipeline's settings, as app.cpp builds them. */
-    Wotah::PipelineSettings MakeCubeSettings(VkFormat colorFormat, std::span<const VkPushConstantRange> ranges)
+    /** The one push constant range of every mesh pipeline. */
+    constexpr std::array<VkPushConstantRange, 1> MeshRanges{
+        {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstants)}}};
+
+    /** A mesh pipeline's settings, as app.cpp builds them: depth tested and written, back faces culled. */
+    Wotah::PipelineSettings MakeMeshSettings(std::span<const uint32_t> fragmentShader, VkFormat colorFormat,
+                                             VkFormat depthFormat)
     {
         Wotah::PipelineSettings settings;
-        settings.VertexShader     = CubeVertexShader;
-        settings.FragmentShader   = CubeFragmentShader;
+        settings.VertexShader     = MeshVertexShader;
+        settings.FragmentShader   = fragmentShader;
         settings.ColorFormat      = colorFormat;
+        settings.DepthFormat      = depthFormat;
         settings.VertexBindings   = Wotah::MeshVertexBindings;
         settings.VertexAttributes = Wotah::MeshVertexAttributes;
         settings.CullMode         = VK_CULL_MODE_BACK_BIT;
         settings.FrontFace        = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        settings.PushConstants    = ranges;
+        settings.DepthTest        = true;
+        settings.DepthWrite       = true;
+        settings.PushConstants    = MeshRanges;
         return settings;
     }
 
-    /** The cube's one push constant range. */
-    constexpr std::array<VkPushConstantRange, 1> CubeRanges{
-        {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(CubePushConstants)}}};
-
-    /** Records the cube's draw, as app.cpp does: pipeline, camera, mesh. */
-    void RecordCubeDraw(VkCommandBuffer commands, const Wotah::Pipeline& pipeline, const Wotah::Mesh& cube,
-                        const CubePushConstants& pushConstants)
+    /** Records one mesh's draw, as app.cpp does: pipeline, camera and place, mesh. */
+    void RecordMeshDraw(VkCommandBuffer commands, const Wotah::Pipeline& pipeline, const Wotah::Mesh& mesh,
+                        const MeshPushConstants& pushConstants)
     {
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
         vkCmdPushConstants(commands, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
                            &pushConstants);
-        cube.Draw(commands);
+        mesh.Draw(commands);
     }
 
-    /** A memory type allowed by the mask that has every wanted property; fails the test when there is none. */
-    uint32_t FindMemoryType(VkPhysicalDevice gpu, uint32_t allowedTypes, VkMemoryPropertyFlags wanted)
+    /** The program's scene on the GPU: both pipelines and both shapes. */
+    struct Scene
     {
-        VkPhysicalDeviceMemoryProperties properties;
-        vkGetPhysicalDeviceMemoryProperties(gpu, &properties);
-        for (uint32_t index = 0; index < properties.memoryTypeCount; ++index)
+        Wotah::Pipeline CubePipeline;
+        Wotah::Pipeline BallPipeline;
+        Wotah::Mesh     Cube;
+        Wotah::Mesh     Ball;
+
+        [[nodiscard]] bool Create(const Wotah::Device& device, VkFormat colorFormat, VkFormat depthFormat)
         {
-            if ((allowedTypes & (1u << index)) != 0 && (properties.memoryTypes[index].propertyFlags & wanted) == wanted)
+            return CubePipeline.Create(device, MakeMeshSettings(CubeFragmentShader, colorFormat, depthFormat)) &&
+                   BallPipeline.Create(device, MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat)) &&
+                   Cube.Create(device, Wotah::MakeCube()) &&
+                   Ball.Create(device, Wotah::MakeSphere(BallRadius, BallSegments, BallRings));
+        }
+
+        /** Records cube and ball as app.cpp does, in either order: the depth test must make the order not matter. */
+        void Record(VkCommandBuffer commands, const glm::mat4& viewProjection, bool isBallFirst) const
+        {
+            MeshPushConstants cube;
+            cube.ViewProjection = viewProjection;
+            MeshPushConstants ball;
+            ball.ViewProjection = viewProjection;
+            ball.Model          = glm::translate(glm::mat4(1.0f), BallPosition);
+            if (isBallFirst)
             {
-                return index;
+                RecordMeshDraw(commands, BallPipeline, Ball, ball);
+            }
+            RecordMeshDraw(commands, CubePipeline, Cube, cube);
+            if (!isBallFirst)
+            {
+                RecordMeshDraw(commands, BallPipeline, Ball, ball);
             }
         }
-        FAIL("no fitting memory type");
-        return 0;
+    };
+
+    /** A whole-image layout change for the offscreen drawing. */
+    void ChangeLayout(VkCommandBuffer commands, const Wotah::Image& image, VkImageLayout from, VkImageLayout to,
+                      VkPipelineStageFlags sourceStage, VkPipelineStageFlags targetStage)
+    {
+        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        barrier.srcAccessMask       = VK_ACCESS_MEMORY_WRITE_BIT;
+        barrier.dstAccessMask       = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        barrier.oldLayout           = from;
+        barrier.newLayout           = to;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image               = image.GetHandle();
+        barrier.subresourceRange    = {image.GetAspect(), 0, 1, 0, 1};
+        vkCmdPipelineBarrier(commands, sourceStage, targetStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 
     /**
-     * Draws the example cube through the camera into a hidden 600 x 600 RGBA8 image, exactly with the program's
-     * pipeline settings, and returns its pixels (4 bytes each, rows top to bottom).
+     * Draws the program's scene (cube and ball, with a depth image) through the camera into a hidden 600 x 600 RGBA8
+     * image, exactly with the program's settings, and returns its pixels (4 bytes each, rows top to bottom).
      */
-    std::vector<uint8_t> DrawCubeOffscreen(const Wotah::Device& device, const Wotah::Camera& camera)
+    std::vector<uint8_t> DrawSceneOffscreen(const Wotah::Device& device, const Wotah::Camera& camera, bool isBallFirst)
     {
-        constexpr uint32_t Size   = 600;
-        constexpr VkFormat Format = VK_FORMAT_R8G8B8A8_UNORM;
-        const VkDevice     handle = device.GetHandle();
+        constexpr VkExtent2D Size{600, 600};
+        constexpr VkFormat   ColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
 
-        // ---- The image to draw into, and a buffer the CPU can read it from ----
-        VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-        imageInfo.imageType   = VK_IMAGE_TYPE_2D;
-        imageInfo.format      = Format;
-        imageInfo.extent      = {Size, Size, 1};
-        imageInfo.mipLevels   = 1;
-        imageInfo.arrayLayers = 1;
-        imageInfo.samples     = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.usage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        VkImage image         = VK_NULL_HANDLE;
-        REQUIRE(vkCreateImage(handle, &imageInfo, nullptr, &image) == VK_SUCCESS);
+        // ---- The images to draw into, and a buffer the CPU can read the picture from ----
+        Wotah::Image color;
+        REQUIRE(color.Create(device, Size, ColorFormat,
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT));
+        const std::optional<VkFormat> depthFormat = Wotah::FindDepthFormat(device);
+        REQUIRE(depthFormat.has_value());
+        Wotah::Image depth;
+        REQUIRE(depth.Create(device, Size, *depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT));
 
-        VkMemoryRequirements imageNeeds;
-        vkGetImageMemoryRequirements(handle, image, &imageNeeds);
-        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocation.allocationSize = imageNeeds.size;
-        allocation.memoryTypeIndex =
-            FindMemoryType(device.GetGpu(), imageNeeds.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        VkDeviceMemory imageMemory = VK_NULL_HANDLE;
-        REQUIRE(vkAllocateMemory(handle, &allocation, nullptr, &imageMemory) == VK_SUCCESS);
-        REQUIRE(vkBindImageMemory(handle, image, imageMemory, 0) == VK_SUCCESS);
-
-        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        viewInfo.image            = image;
-        viewInfo.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format           = Format;
-        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        VkImageView view          = VK_NULL_HANDLE;
-        REQUIRE(vkCreateImageView(handle, &viewInfo, nullptr, &view) == VK_SUCCESS);
-
-        constexpr VkDeviceSize ByteCount = VkDeviceSize{Size} * Size * 4;
+        constexpr VkDeviceSize ByteCount = VkDeviceSize{Size.width} * Size.height * 4;
         Wotah::Buffer          readback;
         REQUIRE(readback.Create(device, ByteCount, VK_BUFFER_USAGE_TRANSFER_DST_BIT, Wotah::BufferMemory::GpuToCpu));
 
-        // ---- The program's cube pipeline and buffers ----
-        Wotah::Pipeline pipeline;
-        REQUIRE(pipeline.Create(device, MakeCubeSettings(Format, CubeRanges)));
-        Wotah::Mesh cube;
-        REQUIRE(cube.Create(device, Wotah::MakeCube()));
-        CubePushConstants pushConstants;
-        pushConstants.ViewProjection = camera.GetViewProjection();
+        Scene scene;
+        REQUIRE(scene.Create(device, ColorFormat, *depthFormat));
 
         // ---- Record: clear, draw, copy to the buffer ----
+        const VkDevice          handle = device.GetHandle();
         VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
         poolInfo.queueFamilyIndex = device.GetQueueFamily();
         VkCommandPool pool        = VK_NULL_HANDLE;
@@ -166,58 +194,51 @@ namespace
 
         VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         REQUIRE(vkBeginCommandBuffer(commands, &beginInfo) == VK_SUCCESS);
+        ChangeLayout(commands, color, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        ChangeLayout(commands, depth, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
 
-        VkImageMemoryBarrier toDraw{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        toDraw.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        toDraw.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-        toDraw.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        toDraw.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toDraw.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toDraw.image               = image;
-        toDraw.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &toDraw);
-
-        VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-        color.imageView        = view;
-        color.imageLayout      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        color.loadOp           = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color.storeOp          = VK_ATTACHMENT_STORE_OP_STORE;
-        color.clearValue.color = {{0.1f, 0.1f, 0.1f, 1.0f}}; // the program's background
+        VkRenderingAttachmentInfo colorAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        colorAttachment.imageView        = color.GetView();
+        colorAttachment.imageLayout      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAttachment.loadOp           = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp          = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.clearValue.color = {{0.1f, 0.1f, 0.1f, 1.0f}}; // the program's background
+        VkRenderingAttachmentInfo depthAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        depthAttachment.imageView                     = depth.GetView();
+        depthAttachment.imageLayout                   = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthAttachment.loadOp                        = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.storeOp                       = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.clearValue.depthStencil.depth = 1.0f; // the far plane
         VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-        rendering.renderArea           = {{0, 0}, {Size, Size}};
+        rendering.renderArea           = {{0, 0}, Size};
         rendering.layerCount           = 1;
         rendering.colorAttachmentCount = 1;
-        rendering.pColorAttachments    = &color;
+        rendering.pColorAttachments    = &colorAttachment;
+        rendering.pDepthAttachment     = &depthAttachment;
         vkCmdBeginRendering(commands, &rendering);
-        const VkViewport viewport{0.0f, 0.0f, static_cast<float>(Size), static_cast<float>(Size), 0.0f, 1.0f};
-        const VkRect2D   scissor{{0, 0}, {Size, Size}};
+        const VkViewport viewport{0.0f, 0.0f, static_cast<float>(Size.width), static_cast<float>(Size.height),
+                                  0.0f, 1.0f};
+        const VkRect2D   scissor{{0, 0}, Size};
         vkCmdSetViewport(commands, 0, 1, &viewport);
         vkCmdSetScissor(commands, 0, 1, &scissor);
-        RecordCubeDraw(commands, pipeline, cube, pushConstants);
+        scene.Record(commands, camera.GetViewProjection(), isBallFirst);
         vkCmdEndRendering(commands);
 
-        VkImageMemoryBarrier toCopy = toDraw;
-        toCopy.srcAccessMask        = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        toCopy.dstAccessMask        = VK_ACCESS_TRANSFER_READ_BIT;
-        toCopy.oldLayout            = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        toCopy.newLayout            = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                             0, nullptr, 0, nullptr, 1, &toCopy);
+        ChangeLayout(commands, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        region.imageExtent      = {Size, Size, 1};
-        vkCmdCopyImageToBuffer(commands, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.GetHandle(), 1, &region);
-
-        VkBufferMemoryBarrier toHost{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        toHost.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-        toHost.dstAccessMask       = VK_ACCESS_HOST_READ_BIT;
-        toHost.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toHost.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toHost.buffer              = readback.GetHandle();
-        toHost.size                = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
-                             &toHost, 0, nullptr);
+        region.imageExtent      = {Size.width, Size.height, 1};
+        vkCmdCopyImageToBuffer(commands, color.GetHandle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.GetHandle(),
+                               1, &region);
+        VkMemoryBarrier toHost{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        toHost.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &toHost, 0,
+                             nullptr, 0, nullptr);
         REQUIRE(vkEndCommandBuffer(commands) == VK_SUCCESS);
 
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -226,14 +247,9 @@ namespace
         REQUIRE(vkQueueSubmit(device.GetQueue(), 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS);
         device.WaitUntilIdle();
 
-        // ---- Read the pixels, free everything ----
         std::vector<uint8_t> pixels(static_cast<std::size_t>(ByteCount));
         REQUIRE(readback.Read(std::as_writable_bytes(std::span(pixels))));
-
         vkDestroyCommandPool(handle, pool, nullptr);
-        vkDestroyImageView(handle, view, nullptr);
-        vkDestroyImage(handle, image, nullptr);
-        vkFreeMemory(handle, imageMemory, nullptr);
         return pixels;
     }
 
@@ -246,6 +262,21 @@ namespace
         {
             if (std::abs(pixels[index] - red) <= Slack && std::abs(pixels[index + 1] - green) <= Slack &&
                 std::abs(pixels[index + 2] - blue) <= Slack)
+            {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    /** How many pixels are clearly blue: the ball, never the orange cube or the gray background. */
+    std::size_t CountBluePixels(const std::vector<uint8_t>& pixels)
+    {
+        constexpr int ClearMargin = 40;
+        std::size_t   count       = 0;
+        for (std::size_t index = 0; index + 3 < pixels.size(); index += 4)
+        {
+            if (pixels[index + 2] > pixels[index] + ClearMargin)
             {
                 ++count;
             }
@@ -346,10 +377,12 @@ TEST_SUITE("gpu")
     {
         HiddenGpu gpu;
         REQUIRE(gpu.Create());
-        const VkFormat colorFormat = VK_FORMAT_R8G8B8A8_UNORM;
+        const VkFormat                colorFormat = VK_FORMAT_R8G8B8A8_UNORM;
+        const std::optional<VkFormat> depthFormat = Wotah::FindDepthFormat(gpu.Device);
+        REQUIRE(depthFormat.has_value());
 
         Wotah::Pipeline cube;
-        CHECK(cube.Create(gpu.Device, MakeCubeSettings(colorFormat, CubeRanges)));
+        CHECK(cube.Create(gpu.Device, MakeMeshSettings(CubeFragmentShader, colorFormat, *depthFormat)));
         CHECK(cube.GetHandle() != VK_NULL_HANDLE);
         CHECK(cube.GetLayout() != VK_NULL_HANDLE);
 
@@ -385,7 +418,7 @@ TEST_SUITE("gpu")
         water.VertexShader         = WaterTestVertexShader;
         water.FragmentShader       = WaterTestFragmentShader;
         water.ColorFormat          = colorFormat;
-        water.DepthFormat          = VK_FORMAT_D32_SFLOAT;
+        water.DepthFormat          = *depthFormat;
         water.VertexBindings       = bindings;
         water.VertexAttributes     = attributes;
         water.CullMode             = VK_CULL_MODE_BACK_BIT;
@@ -439,28 +472,24 @@ TEST_SUITE("gpu")
         vkDestroyDescriptorSetLayout(gpu.Device.GetHandle(), setLayout, nullptr);
     }
 
-    TEST_CASE("the renderer draws frames of the cube")
+    TEST_CASE("the renderer draws frames of the scene, with its depth image")
     {
         HiddenGpu gpu;
         REQUIRE(gpu.Create());
         Wotah::Swapchain swapchain;
         REQUIRE(swapchain.Create(gpu.Device, gpu.Window));
-        Wotah::Pipeline pipeline;
-        REQUIRE(pipeline.Create(gpu.Device, MakeCubeSettings(swapchain.GetFormat(), CubeRanges)));
-        Wotah::Mesh cube;
-        REQUIRE(cube.Create(gpu.Device, Wotah::MakeCube()));
         {
             Wotah::Renderer neverCreated;
         }
         Wotah::Renderer renderer;
         REQUIRE(renderer.Create(gpu.Device, swapchain));
+        CHECK(renderer.GetDepthFormat() != VK_FORMAT_UNDEFINED);
+        Scene scene;
+        REQUIRE(scene.Create(gpu.Device, swapchain.GetFormat(), renderer.GetDepthFormat()));
 
         Wotah::Camera camera;
         (void)camera.SetAspectRatio(static_cast<float>(HiddenWindowSize.Width) /
                                     static_cast<float>(HiddenWindowSize.Height)); // valid, so this cannot fail
-        CubePushConstants pushConstants;
-        pushConstants.ViewProjection = camera.GetViewProjection();
-
         constexpr int FrameCount = 30;
         int           drawn      = 0;
         for (int frame = 0; frame < FrameCount; ++frame)
@@ -472,7 +501,7 @@ TEST_SUITE("gpu")
             {
                 continue;
             }
-            RecordCubeDraw(renderer.GetCommandBuffer(), pipeline, cube, pushConstants);
+            scene.Record(renderer.GetCommandBuffer(), camera.GetViewProjection(), frame % 2 == 0);
             REQUIRE(renderer.EndFrame());
             ++drawn;
         }
@@ -484,7 +513,7 @@ TEST_SUITE("gpu")
         CHECK(renderer.GetCommandBuffer() == VK_NULL_HANDLE);
     }
 
-    TEST_CASE("the cube looks right: three lit faces with black edges from the start view")
+    TEST_CASE("the scene looks right: the lit cube with black edges in front of the blue ball")
     {
         HiddenGpu gpu;
         REQUIRE(gpu.Create());
@@ -494,17 +523,51 @@ TEST_SUITE("gpu")
         camera.SetPosition({2.0f, 1.6f, 2.6f});
         camera.SetTarget({0.0f, 0.0f, 0.0f});
         REQUIRE(camera.SetClipDistances(0.1f, 10.0f));
-        const std::vector<uint8_t> pixels = DrawCubeOffscreen(gpu.Device, camera);
+        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, camera, false);
 
         // shaders/cube.frag: orange * (0.25 + 0.75 * light); the top gets the most light, the front the least.
         CHECK(CountPixels(pixels, 0xED, 0x76, 0x00) > 10000);  // top
         CHECK(CountPixels(pixels, 0x85, 0x42, 0x00) > 10000);  // right (+x)
         CHECK(CountPixels(pixels, 0x6B, 0x35, 0x00) > 10000);  // front (+z)
         CHECK(CountPixels(pixels, 0x00, 0x00, 0x00) > 500);    // the black edges
-        CHECK(CountPixels(pixels, 0x1A, 0x1A, 0x1A) > 250000); // the background around it
+        CHECK(CountPixels(pixels, 0x1A, 0x1A, 0x1A) > 200000); // the background around them
+        CHECK(CountBluePixels(pixels) > 2000);                 // the ball, partly behind the cube
 
         // The center of the picture is the cube, not the background.
         const std::size_t center = (300 * 600 + 300) * 4;
         CHECK(pixels[center] > 0x40);
+
+        // The depth image decides what is in front: drawing the ball first gives the very same picture.
+        CHECK(DrawSceneOffscreen(gpu.Device, camera, true) == pixels);
+    }
+
+    TEST_CASE("depth formats and images")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        const std::optional<VkFormat> depthFormat = Wotah::FindDepthFormat(gpu.Device);
+        REQUIRE(depthFormat.has_value());
+
+        {
+            Wotah::Image neverCreated; // destroyed without Create: safe
+        }
+        Wotah::Image image;
+        CHECK_FALSE(image.Create(gpu.Device, {0, 16}, *depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT));
+
+        REQUIRE(image.Create(gpu.Device, {64, 32}, *depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT));
+        CHECK(image.GetHandle() != VK_NULL_HANDLE);
+        CHECK(image.GetView() != VK_NULL_HANDLE);
+        CHECK(image.GetAspect() == VK_IMAGE_ASPECT_DEPTH_BIT);
+        CHECK(image.GetExtent().width == 64);
+        CHECK(image.GetExtent().height == 32);
+
+        // A second Create replaces the first; a color format gets a color view.
+        REQUIRE(image.Create(gpu.Device, {16, 16}, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT));
+        CHECK(image.GetAspect() == VK_IMAGE_ASPECT_COLOR_BIT);
+
+        image.Destroy();
+        image.Destroy(); // twice is safe
+        CHECK(image.GetHandle() == VK_NULL_HANDLE);
+        CHECK(image.GetView() == VK_NULL_HANDLE);
     }
 }

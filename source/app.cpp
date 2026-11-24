@@ -1,8 +1,8 @@
 /**
  * @file app.cpp
- * The application: a Vulkan 1.3 example that draws an orange cube, seen from above one corner so three faces show.
- * Uses dynamic rendering (no VkRenderPass / VkFramebuffer); the cube is a Mesh on the GPU, and the camera comes in as a
- * push constant.
+ * The application: a Vulkan 1.3 example scene, an orange cube seen from above one corner so three faces show, and a
+ * blue ball behind it. Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the shapes are
+ * Meshes on the GPU, and camera and object matrices come in as push constants.
  */
 #include "app.hpp"
 
@@ -14,6 +14,7 @@
 #include "render/renderer.hpp"
 #include "render/swapchain.hpp"
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <vulkan/vulkan.h>
@@ -23,6 +24,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 /** The clock frame times are measured with: steady, so changing the system time cannot make a frame negative. */
 using Clock = std::chrono::steady_clock;
@@ -33,14 +35,19 @@ using Clock = std::chrono::steady_clock;
  */
 static constexpr float MaxFrameSeconds = 0.1f;
 
-/** The cube's vertex shader (shaders/cube.vert), compiled to SPIR-V by the build. */
-static constexpr uint32_t CubeVertexShader[] = {
-#include "cube.vert.inc"
+/** The vertex shader of every mesh (shaders/mesh.vert), compiled to SPIR-V by the build. */
+static constexpr uint32_t MeshVertexShader[] = {
+#include "mesh.vert.inc"
 };
 
 /** The cube's fragment shader (shaders/cube.frag), compiled to SPIR-V by the build. */
 static constexpr uint32_t CubeFragmentShader[] = {
 #include "cube.frag.inc"
+};
+
+/** The ball's fragment shader (shaders/ball.frag), compiled to SPIR-V by the build. */
+static constexpr uint32_t BallFragmentShader[] = {
+#include "ball.frag.inc"
 };
 
 /** The window's size in pixels. */
@@ -62,34 +69,81 @@ static constexpr glm::vec3 CornerCameraTarget{0.0f, 0.0f, 0.0f};
 static constexpr float CornerCameraNear = 0.1f;
 static constexpr float CornerCameraFar  = 10.0f;
 
-/** What the cube's vertex shader gets per draw; matches PushConstants in shaders/cube.vert. */
-struct CubePushConstants
+/** The ball's size and where it lies: behind the cube and to its left, as seen from the start view. */
+static constexpr float     BallRadius = 0.5f;
+static constexpr glm::vec3 BallPosition{-1.3f, 0.0f, -0.9f};
+
+/** How finely the ball is cut: enough for a smooth outline at this size. */
+static constexpr uint32_t BallSegments = 48;
+static constexpr uint32_t BallRings    = 24;
+
+/** What mesh.vert gets per draw; matches its PushConstants block. */
+struct MeshPushConstants
 {
     /** World space to clip space: the active camera. */
     glm::mat4 ViewProjection{1.0f};
+    /** The mesh's own space to world space: where the object is. */
+    glm::mat4 Model{1.0f};
 };
 
-/** The one push constant range: the cube's camera, read by the vertex shader. */
-static constexpr std::array<VkPushConstantRange, 1> CubePushConstantRanges{
-    {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(CubePushConstants)}}};
+// Every GPU offers at least 128 bytes of push constants (Vulkan spec, "Required Limits", maxPushConstantsSize).
+static_assert(sizeof(MeshPushConstants) <= 128, "the push constants must fit the 128 bytes every GPU offers");
+
+/** The one push constant range: camera and object matrix, read by the vertex shader. */
+static constexpr std::array<VkPushConstantRange, 1> MeshPushConstantRanges{
+    {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstants)}}};
+
+/**
+ * The settings every mesh pipeline shares: mesh.vert, mesh vertices, back faces culled, depth tested and written so
+ * nearer surfaces hide farther ones whatever order they are drawn in.
+ */
+static Wotah::PipelineSettings MakeMeshSettings(std::span<const uint32_t> fragmentShader, VkFormat colorFormat,
+                                                VkFormat depthFormat)
+{
+    Wotah::PipelineSettings settings;
+    settings.VertexShader     = MeshVertexShader;
+    settings.FragmentShader   = fragmentShader;
+    settings.ColorFormat      = colorFormat;
+    settings.DepthFormat      = depthFormat;
+    settings.VertexBindings   = Wotah::MeshVertexBindings;
+    settings.VertexAttributes = Wotah::MeshVertexAttributes;
+    settings.CullMode         = VK_CULL_MODE_BACK_BIT;
+    settings.FrontFace        = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    settings.DepthTest        = true;
+    settings.DepthWrite       = true;
+    settings.PushConstants    = MeshPushConstantRanges;
+    return settings;
+}
+
+/** Records one mesh's draw: its pipeline, the camera and its place, then the mesh. */
+static void DrawMesh(VkCommandBuffer commandBuffer, const Wotah::Pipeline& pipeline, const Wotah::Mesh& mesh,
+                     const MeshPushConstants& pushConstants)
+{
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
+    vkCmdPushConstants(commandBuffer, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
+                       &pushConstants);
+    mesh.Draw(commandBuffer);
+}
 
 /**
  * The Vulkan objects the application creates on top of the device. Declared in creation order, so they are destroyed
- * in reverse: the renderer before the swapchain it draws into.
+ * in reverse: the meshes and pipelines first, the renderer before the swapchain it draws into.
  */
 struct Wotah::App::State
 {
     /** The swapchain, its images and one view per image. */
     Wotah::Swapchain Swapchain;
 
-    /** The pipeline that draws the cube. */
-    Wotah::Pipeline Pipeline;
-
-    /** The cube, on the GPU. */
-    Wotah::Mesh Cube;
-
-    /** The command buffer and synchronization of each frame. */
+    /** The command buffer, depth image and synchronization of each frame. */
     Wotah::Renderer Renderer;
+
+    /** The pipelines: the orange cube with black edges, and the blue ball. */
+    Wotah::Pipeline CubePipeline;
+    Wotah::Pipeline BallPipeline;
+
+    /** The scene's shapes, on the GPU. */
+    Wotah::Mesh Cube;
+    Wotah::Mesh Ball;
 };
 
 Wotah::App::App()
@@ -110,30 +164,25 @@ bool Wotah::App::Create()
     // First, so every later step can log.
     Logger::Create();
 
+    // The renderer comes before the pipelines: they need its depth format.
     if (!m_window.Create(MainWindowSize, AppName) || !m_device.Create(m_window, AppName) ||
-        !state.Swapchain.Create(m_device, m_window))
+        !state.Swapchain.Create(m_device, m_window) || !state.Renderer.Create(m_device, state.Swapchain))
+    {
+        return false;
+    }
+    state.Renderer.SetClearColor(BackgroundColor);
+
+    const VkFormat colorFormat = state.Swapchain.GetFormat();
+    const VkFormat depthFormat = state.Renderer.GetDepthFormat();
+    if (!state.CubePipeline.Create(m_device, MakeMeshSettings(CubeFragmentShader, colorFormat, depthFormat)) ||
+        !state.BallPipeline.Create(m_device, MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat)))
     {
         return false;
     }
 
-    // The cube's faces are counter-clockwise seen from outside, so culling the back faces is enough to hide the three
-    // faces turned away; one convex cube needs no depth image.
-    PipelineSettings cubeSettings;
-    cubeSettings.VertexShader     = CubeVertexShader;
-    cubeSettings.FragmentShader   = CubeFragmentShader;
-    cubeSettings.ColorFormat      = state.Swapchain.GetFormat();
-    cubeSettings.VertexBindings   = MeshVertexBindings;
-    cubeSettings.VertexAttributes = MeshVertexAttributes;
-    cubeSettings.CullMode         = VK_CULL_MODE_BACK_BIT;
-    cubeSettings.FrontFace        = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    cubeSettings.PushConstants    = CubePushConstantRanges;
-    if (!state.Pipeline.Create(m_device, cubeSettings))
-    {
-        return false;
-    }
-
-    // The cube goes to GPU-only memory once; Create waits until it is there.
-    if (!state.Cube.Create(m_device, MakeCube()))
+    // The shapes go to GPU-only memory once; Create waits until they are there.
+    if (!state.Cube.Create(m_device, MakeCube()) ||
+        !state.Ball.Create(m_device, MakeSphere(BallRadius, BallSegments, BallRings)))
     {
         return false;
     }
@@ -149,12 +198,6 @@ bool Wotah::App::Create()
     }
     m_focusViews.front() = corner;
 
-    if (!state.Renderer.Create(m_device, state.Swapchain))
-    {
-        return false;
-    }
-    state.Renderer.SetClearColor(BackgroundColor);
-
     // The camera controller gets whatever input no handler before it used; a UI will be added in front of it.
     m_input.AddHandler(m_cameraController);
     return true;
@@ -162,9 +205,12 @@ bool Wotah::App::Create()
 
 bool Wotah::App::Run()
 {
-    Renderer&       renderer = m_state->Renderer;
-    const Pipeline& pipeline = m_state->Pipeline;
-    const Mesh&     cube     = m_state->Cube;
+    Renderer&    renderer = m_state->Renderer;
+    const State& scene    = *m_state;
+
+    // The objects stay where they are; only the camera moves.
+    const glm::mat4 cubeModel{1.0f}; // at the origin
+    const glm::mat4 ballModel = glm::translate(glm::mat4(1.0f), BallPosition);
 
     // Fixed while the window cannot be resized.
     const VkExtent2D extent      = m_state->Swapchain.GetExtent();
@@ -212,14 +258,15 @@ bool Wotah::App::Run()
         // Whichever camera is active now, it sees the image's shape; an unchanged ratio keeps its matrices.
         Camera& camera = GetActiveCamera();
         (void)camera.SetAspectRatio(aspectRatio); // the image size is never 0, so this cannot fail
-        CubePushConstants pushConstants;
+        MeshPushConstants pushConstants;
         pushConstants.ViewProjection = camera.GetViewProjection();
 
+        // The depth test sorts out which is in front, so the draw order does not matter.
         const VkCommandBuffer commandBuffer = renderer.GetCommandBuffer();
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
-        vkCmdPushConstants(commandBuffer, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
-        cube.Draw(commandBuffer);
+        pushConstants.Model                 = cubeModel;
+        DrawMesh(commandBuffer, scene.CubePipeline, scene.Cube, pushConstants);
+        pushConstants.Model = ballModel;
+        DrawMesh(commandBuffer, scene.BallPipeline, scene.Ball, pushConstants);
 
         if (!renderer.EndFrame())
         {

@@ -1,7 +1,8 @@
 /**
  * @file renderer.hpp
- * Runs a frame: waits for the GPU, takes a swapchain image, records into a command buffer that draws into it with
- * dynamic rendering, submits the work and shows the image. What is drawn stays with the caller.
+ * Runs a frame: waits for the GPU, takes a swapchain image, records into a command buffer that draws into it (with a
+ * depth image, so nearer surfaces hide farther ones) with dynamic rendering, submits the work and shows the image. What
+ * is drawn stays with the caller.
  *
  *     Wotah::Renderer renderer;
  *     if (renderer.Create(device, swapchain))
@@ -17,6 +18,8 @@
  *     renderer.Destroy();
  */
 #pragma once
+
+#include "render/image.hpp"
 
 #include <vulkan/vulkan_core.h>
 
@@ -53,21 +56,24 @@ namespace Wotah
         Renderer& operator=(const Renderer&) = delete;
 
         /**
-         * Creates the command pool and buffer, the semaphores and the frame fence for the swapchain; false (and logged)
-         * when one fails. The device and the swapchain must outlive the renderer.
+         * Creates the depth image, the command pool and buffer, the semaphores and the frame fence for the swapchain;
+         * false (and logged) when one fails. The device and the swapchain must outlive the renderer.
          */
         [[nodiscard]] bool Create(const Device& device, Swapchain& swapchain);
 
         /** Frees everything Create made; safe to call more than once or after a failed Create. */
         void Destroy();
 
+        /** The depth image's format; pipelines that draw in this renderer's frames need it (DepthFormat). */
+        [[nodiscard]] VkFormat GetDepthFormat() const noexcept { return m_depth.GetFormat(); }
+
         /** The color every frame starts with. */
         void SetClearColor(const VkClearColorValue& color) noexcept { m_clearColor = color; }
 
         /**
          * Waits until the GPU has finished the previous frame, takes the next swapchain image and starts recording:
-         * the image is cleared, and viewport and scissor cover all of it. On Ready, draw into GetCommandBuffer and
-         * call EndFrame.
+         * the image and the depth are cleared, and viewport and scissor cover all of it. On Ready, draw into
+         * GetCommandBuffer and call EndFrame.
          */
         [[nodiscard]] FrameStart BeginFrame();
 
@@ -84,6 +90,9 @@ namespace Wotah
         Swapchain* m_swapchain = nullptr;
 
         VkClearColorValue m_clearColor{};
+
+        /** The depth of every pixel drawn this frame; one image, as only one frame is in flight. */
+        Image m_depth;
 
         VkCommandPool            m_commandPool    = VK_NULL_HANDLE;
         VkCommandBuffer          m_commandBuffer  = VK_NULL_HANDLE;

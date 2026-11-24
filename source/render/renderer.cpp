@@ -5,6 +5,7 @@
 #include "render/renderer.hpp"
 
 #include "render/device.hpp"
+#include "render/image.hpp"
 #include "render/swapchain.hpp"
 #include "render/vulkan_utils.hpp"
 
@@ -18,7 +19,7 @@ namespace
     /** No time limit when waiting for the previous frame: vsync paces the loop. */
     constexpr uint64_t NoTimeout = UINT64_MAX;
 
-    /** A swapchain image's change from one layout to another, with what must finish before and wait after it. */
+    /** An image's change from one layout to another, with what must finish before and wait after it. */
     struct LayoutChange
     {
         VkImageLayout        From         = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -27,6 +28,7 @@ namespace
         VkAccessFlags        TargetAccess = 0;
         VkPipelineStageFlags SourceStage  = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         VkPipelineStageFlags TargetStage  = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        VkImageAspectFlags   Aspect       = VK_IMAGE_ASPECT_COLOR_BIT;
     };
 
     /**
@@ -40,16 +42,39 @@ namespace
         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
     };
 
     /** After drawing: the color writes finish before the image is handed to the screen. */
     constexpr LayoutChange ToPresent{
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,          0,
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        0,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
     };
 
-    /** Records a layout change of a whole color image. */
+    /**
+     * Before drawing, for the depth image: its old content is not needed, but the last frame's depth writes must be
+     * done before this frame's depth tests start (one depth image serves every frame). DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+     * also fits depth-only formats and needs no extra GPU feature, unlike DEPTH_ATTACHMENT_OPTIMAL.
+     */
+    constexpr LayoutChange ToDepthTarget{
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_IMAGE_ASPECT_DEPTH_BIT,
+    };
+
+    /** Depth cleared to the far plane (1.0 in Vulkan's 0..1 range), so every first fragment passes the LESS test. */
+    constexpr float FarDepth = 1.0f;
+
+    /** Records a layout change of a whole image. */
     void ChangeLayout(VkCommandBuffer commandBuffer, VkImage image, const LayoutChange& change)
     {
         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -60,7 +85,7 @@ namespace
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image               = image;
-        barrier.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}; // the color, one mip level, one layer
+        barrier.subresourceRange    = {change.Aspect, 0, 1, 0, 1}; // one mip level, one layer
         vkCmdPipelineBarrier(commandBuffer, change.SourceStage, change.TargetStage, 0, 0, nullptr, 0, nullptr, 1,
                              &barrier);
     }
@@ -88,6 +113,14 @@ bool Wotah::Renderer::Create(const Device& device, Swapchain& swapchain)
     m_device    = device.GetHandle();
     m_queue     = device.GetQueue();
     m_swapchain = &swapchain;
+
+    // One depth image serves every frame (one frame in flight), as large as the swapchain's images.
+    const std::optional<VkFormat> depthFormat = FindDepthFormat(device);
+    if (!depthFormat ||
+        !m_depth.Create(device, swapchain.GetExtent(), *depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))
+    {
+        return false;
+    }
 
     // The command buffer is reset and recorded again every frame.
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -146,6 +179,7 @@ void Wotah::Renderer::Destroy()
         vkDestroySemaphore(m_device, m_imageAvailable, nullptr);
         vkDestroyCommandPool(m_device, m_commandPool, nullptr); // frees the command buffer too
     }
+    m_depth.Destroy();
 
     m_device         = VK_NULL_HANDLE;
     m_queue          = VK_NULL_HANDLE;
@@ -187,6 +221,7 @@ Wotah::FrameStart Wotah::Renderer::BeginFrame()
         return FrameStart::Failed;
     }
     ChangeLayout(m_commandBuffer, m_swapchain->GetImage(m_imageIndex), ToDrawTarget);
+    ChangeLayout(m_commandBuffer, m_depth.GetHandle(), ToDepthTarget);
 
     const VkExtent2D extent = m_swapchain->GetExtent();
 
@@ -197,11 +232,20 @@ Wotah::FrameStart Wotah::Renderer::BeginFrame()
     color.storeOp          = VK_ATTACHMENT_STORE_OP_STORE;
     color.clearValue.color = m_clearColor;
 
+    // The depth only matters while drawing, so it is not kept after the frame.
+    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depth.imageView                     = m_depth.GetView();
+    depth.imageLayout                   = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth.loadOp                        = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp                       = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.clearValue.depthStencil.depth = FarDepth;
+
     VkRenderingInfo renderingInfo{VK_STRUCTURE_TYPE_RENDERING_INFO};
     renderingInfo.renderArea           = {{0, 0}, extent};
     renderingInfo.layerCount           = 1;
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pColorAttachments    = &color;
+    renderingInfo.pDepthAttachment     = &depth;
     vkCmdBeginRendering(m_commandBuffer, &renderingInfo);
 
     // Every pipeline takes viewport and scissor per frame (see Pipeline); both cover the whole image.

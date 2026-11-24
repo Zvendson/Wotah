@@ -52,7 +52,10 @@ FetchContent_Declare(VulkanMemoryAllocator
 FetchContent_MakeAvailable(VulkanMemoryAllocator)
 
 # Compile GLSL -> SPIR-V as a C array initializer (*.inc) that the code #includes, so there are no .spv files to locate
-# at runtime. Puts the generated files' paths into out_var; each shader becomes <output_dir>/<file name>.inc.
+# at runtime. Puts the generated files' paths into out_var; each shader becomes <output_dir>/<file name>.inc. Shaders
+# may #include the shared files in shaders/ (WOTAH_SHADER_INCLUDES); every shader is rebuilt when one of them changes.
+set(WOTAH_SHADER_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
+set(WOTAH_SHADER_INCLUDES ${WOTAH_SHADER_INCLUDE_DIR}/lighting.glsl)
 function(wotah_compile_shaders out_var output_dir)
     set(outputs "")
     foreach(source ${ARGN})
@@ -61,8 +64,8 @@ function(wotah_compile_shaders out_var output_dir)
         add_custom_command(
             OUTPUT  ${output}
             COMMAND ${CMAKE_COMMAND} -E make_directory ${output_dir}
-            COMMAND ${Vulkan_GLSLC_EXECUTABLE} -mfmt=num ${source} -o ${output}
-            DEPENDS ${source}
+            COMMAND ${Vulkan_GLSLC_EXECUTABLE} -mfmt=num -I ${WOTAH_SHADER_INCLUDE_DIR} ${source} -o ${output}
+            DEPENDS ${source} ${WOTAH_SHADER_INCLUDES}
             COMMENT "Compiling ${name}")
         list(APPEND outputs ${output})
     endforeach()
@@ -71,8 +74,9 @@ endfunction()
 
 set(SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 wotah_compile_shaders(SHADERS ${SHADER_OUT}
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag)
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/mesh.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ball.frag)
 
 # Everything but the entry point, so the program and the tests run the same code.
 add_library(wotah STATIC
@@ -96,6 +100,8 @@ add_library(wotah STATIC
     source/render/camera.cpp
     source/render/device.hpp
     source/render/device.cpp
+    source/render/image.hpp
+    source/render/image.cpp
     source/render/mesh.hpp
     source/render/mesh.cpp
     source/render/mesh_data.hpp
