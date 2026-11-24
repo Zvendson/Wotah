@@ -55,6 +55,9 @@ FetchContent_MakeAvailable(VulkanMemoryAllocator)
 # at runtime. Puts the generated files' paths into out_var; each shader becomes <output_dir>/<file name>.inc. Shaders
 # may #include the shared files in shaders/ (WOTAH_SHADER_INCLUDES); every shader is rebuilt when one of them changes.
 set(WOTAH_SHADER_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
+# The most directional lights at once: one number for the C++ code (render/lighting.hpp) and the shaders
+# (shaders/lighting.glsl), so their light arrays always match.
+set(WOTAH_MAX_DIRECTIONAL_LIGHTS 8)
 set(WOTAH_SHADER_INCLUDES ${WOTAH_SHADER_INCLUDE_DIR}/lighting.glsl)
 function(wotah_compile_shaders out_var output_dir)
     set(outputs "")
@@ -64,7 +67,8 @@ function(wotah_compile_shaders out_var output_dir)
         add_custom_command(
             OUTPUT  ${output}
             COMMAND ${CMAKE_COMMAND} -E make_directory ${output_dir}
-            COMMAND ${Vulkan_GLSLC_EXECUTABLE} -mfmt=num -I ${WOTAH_SHADER_INCLUDE_DIR} ${source} -o ${output}
+            COMMAND ${Vulkan_GLSLC_EXECUTABLE} -mfmt=num -I ${WOTAH_SHADER_INCLUDE_DIR}
+                    -DWOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS} ${source} -o ${output}
             DEPENDS ${source} ${WOTAH_SHADER_INCLUDES}
             COMMENT "Compiling ${name}")
         list(APPEND outputs ${output})
@@ -102,6 +106,8 @@ add_library(wotah STATIC
     source/render/device.cpp
     source/render/image.hpp
     source/render/image.cpp
+    source/render/lighting.hpp
+    source/render/lighting.cpp
     source/render/mesh.hpp
     source/render/mesh.cpp
     source/render/mesh_data.hpp
@@ -121,7 +127,8 @@ add_library(wotah STATIC
 target_include_directories(wotah PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/source ${SHADER_OUT})
 target_link_libraries(wotah PUBLIC Vulkan::Vulkan glfw spdlog::spdlog glm::glm GPUOpen::VulkanMemoryAllocator)
 # glm's projections produce Vulkan's 0..1 depth range instead of OpenGL's -1..1.
-target_compile_definitions(wotah PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE)
+target_compile_definitions(wotah PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE
+    WOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS})
 
 add_executable(square source/main.cpp)
 target_link_libraries(square PRIVATE wotah)

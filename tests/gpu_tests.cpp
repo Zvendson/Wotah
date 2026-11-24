@@ -10,6 +10,7 @@
 #include "render/camera.hpp"
 #include "render/device.hpp"
 #include "render/image.hpp"
+#include "render/lighting.hpp"
 #include "render/mesh.hpp"
 #include "render/mesh_data.hpp"
 #include "render/pipeline.hpp"
@@ -28,6 +29,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <span>
 #include <vector>
@@ -73,47 +75,58 @@ namespace
     constexpr std::array<VkPushConstantRange, 1> MeshRanges{
         {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstants)}}};
 
-    /** A mesh pipeline's settings, as app.cpp builds them: depth tested and written, back faces culled. */
+    /** A mesh pipeline's settings, as app.cpp builds them: depth tested and written, back faces culled, lights read. */
     Wotah::PipelineSettings MakeMeshSettings(std::span<const uint32_t> fragmentShader, VkFormat colorFormat,
-                                             VkFormat depthFormat)
+                                             VkFormat depthFormat, std::span<const VkDescriptorSetLayout> setLayouts)
     {
         Wotah::PipelineSettings settings;
-        settings.VertexShader     = MeshVertexShader;
-        settings.FragmentShader   = fragmentShader;
-        settings.ColorFormat      = colorFormat;
-        settings.DepthFormat      = depthFormat;
-        settings.VertexBindings   = Wotah::MeshVertexBindings;
-        settings.VertexAttributes = Wotah::MeshVertexAttributes;
-        settings.CullMode         = VK_CULL_MODE_BACK_BIT;
-        settings.FrontFace        = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        settings.DepthTest        = true;
-        settings.DepthWrite       = true;
-        settings.PushConstants    = MeshRanges;
+        settings.VertexShader         = MeshVertexShader;
+        settings.FragmentShader       = fragmentShader;
+        settings.ColorFormat          = colorFormat;
+        settings.DepthFormat          = depthFormat;
+        settings.VertexBindings       = Wotah::MeshVertexBindings;
+        settings.VertexAttributes     = Wotah::MeshVertexAttributes;
+        settings.CullMode             = VK_CULL_MODE_BACK_BIT;
+        settings.FrontFace            = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        settings.DepthTest            = true;
+        settings.DepthWrite           = true;
+        settings.PushConstants        = MeshRanges;
+        settings.DescriptorSetLayouts = setLayouts;
         return settings;
     }
 
-    /** Records one mesh's draw, as app.cpp does: pipeline, camera and place, mesh. */
-    void RecordMeshDraw(VkCommandBuffer commands, const Wotah::Pipeline& pipeline, const Wotah::Mesh& mesh,
-                        const MeshPushConstants& pushConstants)
+    /** Records one mesh's draw, as app.cpp does: pipeline, lights, camera and place, mesh. */
+    void RecordMeshDraw(VkCommandBuffer commands, const Wotah::Pipeline& pipeline, const Wotah::Lighting& lighting,
+                        const Wotah::Mesh& mesh, const MeshPushConstants& pushConstants)
     {
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
+        lighting.Bind(commands, pipeline.GetLayout());
         vkCmdPushConstants(commands, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
                            &pushConstants);
         mesh.Draw(commands);
     }
 
-    /** The program's scene on the GPU: both pipelines and both shapes. */
+    /** The program's scene on the GPU: the lights, both pipelines and both shapes. */
     struct Scene
     {
+        Wotah::Lighting Lighting;
         Wotah::Pipeline CubePipeline;
         Wotah::Pipeline BallPipeline;
         Wotah::Mesh     Cube;
         Wotah::Mesh     Ball;
 
-        [[nodiscard]] bool Create(const Wotah::Device& device, VkFormat colorFormat, VkFormat depthFormat)
+        [[nodiscard]] bool Create(const Wotah::Device& device, VkFormat colorFormat, VkFormat depthFormat,
+                                  const Wotah::SceneLights& lights)
         {
-            return CubePipeline.Create(device, MakeMeshSettings(CubeFragmentShader, colorFormat, depthFormat)) &&
-                   BallPipeline.Create(device, MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat)) &&
+            if (!Lighting.Create(device) || !Lighting.Update(lights))
+            {
+                return false;
+            }
+            const std::array<VkDescriptorSetLayout, 1> setLayouts{Lighting.GetSetLayout()};
+            return CubePipeline.Create(device,
+                                       MakeMeshSettings(CubeFragmentShader, colorFormat, depthFormat, setLayouts)) &&
+                   BallPipeline.Create(device,
+                                       MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat, setLayouts)) &&
                    Cube.Create(device, Wotah::MakeCube()) &&
                    Ball.Create(device, Wotah::MakeSphere(BallRadius, BallSegments, BallRings));
         }
@@ -128,15 +141,40 @@ namespace
             ball.Model          = glm::translate(glm::mat4(1.0f), BallPosition);
             if (isBallFirst)
             {
-                RecordMeshDraw(commands, BallPipeline, Ball, ball);
+                RecordMeshDraw(commands, BallPipeline, Lighting, Ball, ball);
             }
-            RecordMeshDraw(commands, CubePipeline, Cube, cube);
+            RecordMeshDraw(commands, CubePipeline, Lighting, Cube, cube);
             if (!isBallFirst)
             {
-                RecordMeshDraw(commands, BallPipeline, Ball, ball);
+                RecordMeshDraw(commands, BallPipeline, Lighting, Ball, ball);
             }
         }
     };
+
+    /**
+     * The light the scene had before lights became data: ambient 0.25 and one white light of 0.75 falling from up,
+     * a bit right and front. Through the light buffer it must give exactly the colors it gave as fixed shader code.
+     */
+    Wotah::SceneLights MakeOldLight()
+    {
+        Wotah::DirectionalLight light;
+        light.Direction = {-0.4f, -1.0f, -0.25f};
+        light.Intensity = 0.75f;
+        Wotah::SceneLights lights;
+        lights.AmbientColor      = glm::vec3(0.25f);
+        lights.DirectionalLights = {light};
+        return lights;
+    }
+
+    /** The program's start view (app.cpp). */
+    Wotah::Camera MakeStartCamera()
+    {
+        Wotah::Camera camera;
+        camera.SetPosition({2.0f, 1.6f, 2.6f});
+        camera.SetTarget({0.0f, 0.0f, 0.0f});
+        (void)camera.SetClipDistances(0.1f, 10.0f); // valid values
+        return camera;
+    }
 
     /** A whole-image layout change for the offscreen drawing. */
     void ChangeLayout(VkCommandBuffer commands, const Wotah::Image& image, VkImageLayout from, VkImageLayout to,
@@ -158,7 +196,8 @@ namespace
      * Draws the program's scene (cube and ball, with a depth image) through the camera into a hidden 600 x 600 RGBA8
      * image, exactly with the program's settings, and returns its pixels (4 bytes each, rows top to bottom).
      */
-    std::vector<uint8_t> DrawSceneOffscreen(const Wotah::Device& device, const Wotah::Camera& camera, bool isBallFirst)
+    std::vector<uint8_t> DrawSceneOffscreen(const Wotah::Device& device, const Wotah::Camera& camera,
+                                            const Wotah::SceneLights& lights, bool isBallFirst)
     {
         constexpr VkExtent2D Size{600, 600};
         constexpr VkFormat   ColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
@@ -177,7 +216,7 @@ namespace
         REQUIRE(readback.Create(device, ByteCount, VK_BUFFER_USAGE_TRANSFER_DST_BIT, Wotah::BufferMemory::GpuToCpu));
 
         Scene scene;
-        REQUIRE(scene.Create(device, ColorFormat, *depthFormat));
+        REQUIRE(scene.Create(device, ColorFormat, *depthFormat, lights));
 
         // ---- Record: clear, draw, copy to the buffer ----
         const VkDevice          handle = device.GetHandle();
@@ -382,7 +421,10 @@ TEST_SUITE("gpu")
         REQUIRE(depthFormat.has_value());
 
         Wotah::Pipeline cube;
-        CHECK(cube.Create(gpu.Device, MakeMeshSettings(CubeFragmentShader, colorFormat, *depthFormat)));
+        Wotah::Lighting lighting;
+        REQUIRE(lighting.Create(gpu.Device));
+        const std::array<VkDescriptorSetLayout, 1> lightLayouts{lighting.GetSetLayout()};
+        CHECK(cube.Create(gpu.Device, MakeMeshSettings(CubeFragmentShader, colorFormat, *depthFormat, lightLayouts)));
         CHECK(cube.GetHandle() != VK_NULL_HANDLE);
         CHECK(cube.GetLayout() != VK_NULL_HANDLE);
 
@@ -485,7 +527,7 @@ TEST_SUITE("gpu")
         REQUIRE(renderer.Create(gpu.Device, swapchain));
         CHECK(renderer.GetDepthFormat() != VK_FORMAT_UNDEFINED);
         Scene scene;
-        REQUIRE(scene.Create(gpu.Device, swapchain.GetFormat(), renderer.GetDepthFormat()));
+        REQUIRE(scene.Create(gpu.Device, swapchain.GetFormat(), renderer.GetDepthFormat(), MakeOldLight()));
 
         Wotah::Camera camera;
         (void)camera.SetAspectRatio(static_cast<float>(HiddenWindowSize.Width) /
@@ -513,19 +555,17 @@ TEST_SUITE("gpu")
         CHECK(renderer.GetCommandBuffer() == VK_NULL_HANDLE);
     }
 
-    TEST_CASE("the scene looks right: the lit cube with black edges in front of the blue ball")
+    TEST_CASE(
+        "the scene looks right: the lit cube with black edges in front of the blue ball, through the light buffer")
     {
         HiddenGpu gpu;
         REQUIRE(gpu.Create());
 
-        // The program's start view (app.cpp).
-        Wotah::Camera camera;
-        camera.SetPosition({2.0f, 1.6f, 2.6f});
-        camera.SetTarget({0.0f, 0.0f, 0.0f});
-        REQUIRE(camera.SetClipDistances(0.1f, 10.0f));
-        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, camera, false);
+        const Wotah::Camera        camera = MakeStartCamera();
+        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, camera, MakeOldLight(), false);
 
-        // shaders/cube.frag: orange * (0.25 + 0.75 * light); the top gets the most light, the front the least.
+        // One white light plus ambient 0.25, as the light was before it came from the light buffer, gives the very same
+        // colors as before: orange * (0.25 + 0.75 * light); the top gets the most light, the front the least.
         CHECK(CountPixels(pixels, 0xED, 0x76, 0x00) > 10000);  // top
         CHECK(CountPixels(pixels, 0x85, 0x42, 0x00) > 10000);  // right (+x)
         CHECK(CountPixels(pixels, 0x6B, 0x35, 0x00) > 10000);  // front (+z)
@@ -538,7 +578,63 @@ TEST_SUITE("gpu")
         CHECK(pixels[center] > 0x40);
 
         // The depth image decides what is in front: drawing the ball first gives the very same picture.
-        CHECK(DrawSceneOffscreen(gpu.Device, camera, true) == pixels);
+        CHECK(DrawSceneOffscreen(gpu.Device, camera, MakeOldLight(), true) == pixels);
+    }
+
+    TEST_CASE("colored lights add up per face, and a light at intensity 0 is off")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        // No ambient light; red light falls on the right face (+x), green light on the top, nothing on the front.
+        Wotah::DirectionalLight red;
+        red.Direction = {-1.0f, 0.0f, 0.0f};
+        red.Color     = {1.0f, 0.0f, 0.0f};
+        Wotah::DirectionalLight green;
+        green.Direction = {0.0f, -1.0f, 0.0f};
+        green.Color     = {0.0f, 1.0f, 0.0f};
+        Wotah::DirectionalLight off; // white, but switched off
+        off.Direction = {0.0f, 0.0f, -1.0f};
+        off.Intensity = 0.0f;
+        Wotah::SceneLights lights;
+        lights.AmbientColor      = glm::vec3(0.0f);
+        lights.DirectionalLights = {red, green, off};
+
+        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, MakeStartCamera(), lights, false);
+
+        // The orange cube (1, 0.5, 0): red light leaves (1, 0, 0), green light (0, 0.5, 0), no light black.
+        CHECK(CountPixels(pixels, 0xFF, 0x00, 0x00) > 10000); // right face
+        CHECK(CountPixels(pixels, 0x00, 0x80, 0x00) > 10000); // top face
+        CHECK(CountPixels(pixels, 0x00, 0x00, 0x00) > 25000); // front face and the edges
+    }
+
+    TEST_CASE("the light buffer takes up to the maximum of directional lights and refuses bad ones")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        {
+            Wotah::Lighting neverCreated; // destroyed without Create: safe
+        }
+        Wotah::Lighting lighting;
+        REQUIRE(lighting.Create(gpu.Device));
+        CHECK(lighting.GetSetLayout() != VK_NULL_HANDLE);
+
+        Wotah::SceneLights lights;
+        lights.DirectionalLights.resize(Wotah::MaxDirectionalLights);
+        CHECK(lighting.Update(lights));
+
+        lights.DirectionalLights.resize(Wotah::MaxDirectionalLights + 1);
+        CHECK_FALSE(lighting.Update(lights)); // one too many
+
+        lights.DirectionalLights.resize(1);
+        lights.DirectionalLights[0].Direction = glm::vec3(0.0f);
+        CHECK_FALSE(lighting.Update(lights)); // no direction
+        lights.DirectionalLights[0].Direction = glm::vec3(std::numeric_limits<float>::quiet_NaN());
+        CHECK_FALSE(lighting.Update(lights));
+
+        lighting.Destroy();
+        lighting.Destroy(); // twice is safe
+        CHECK(lighting.GetSetLayout() == VK_NULL_HANDLE);
     }
 
     TEST_CASE("depth formats and images")

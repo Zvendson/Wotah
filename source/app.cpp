@@ -1,13 +1,15 @@
 /**
  * @file app.cpp
  * The application: a Vulkan 1.3 example scene, an orange cube seen from above one corner so three faces show, and a
- * blue ball behind it. Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the shapes are
- * Meshes on the GPU, and camera and object matrices come in as push constants.
+ * blue ball behind it, lit by a warm sun and a cool moon. Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with
+ * a depth image; the shapes are Meshes on the GPU, camera and object matrices come in as push constants, and the lights
+ * through a uniform buffer.
  */
 #include "app.hpp"
 
 #include "core/logger.hpp"
 #include "input/input_event.hpp"
+#include "render/lighting.hpp"
 #include "render/mesh.hpp"
 #include "render/mesh_data.hpp"
 #include "render/pipeline.hpp"
@@ -77,6 +79,19 @@ static constexpr glm::vec3 BallPosition{-1.3f, 0.0f, -0.9f};
 static constexpr uint32_t BallSegments = 48;
 static constexpr uint32_t BallRings    = 24;
 
+/** The ambient light: a dim, slightly blue night sky that keeps surfaces facing away from sun and moon visible. */
+static constexpr glm::vec3 SkyAmbient{0.12f, 0.12f, 0.15f};
+
+/** The sun: warm white, high above, from the right and a bit from the front, as the light was before. */
+static constexpr glm::vec3 SunDirection{-0.4f, -1.0f, -0.25f};
+static constexpr glm::vec3 SunColor{1.0f, 0.95f, 0.85f};
+static constexpr float     SunIntensity = 0.9f;
+
+/** The moon: cool blue and weak, low from the front left, so its light shows on the faces the start view sees. */
+static constexpr glm::vec3 MoonDirection{0.3f, -0.3f, -1.0f};
+static constexpr glm::vec3 MoonColor{0.45f, 0.55f, 1.0f};
+static constexpr float     MoonIntensity = 0.35f;
+
 /** What mesh.vert gets per draw; matches its PushConstants block. */
 struct MeshPushConstants
 {
@@ -95,31 +110,33 @@ static constexpr std::array<VkPushConstantRange, 1> MeshPushConstantRanges{
 
 /**
  * The settings every mesh pipeline shares: mesh.vert, mesh vertices, back faces culled, depth tested and written so
- * nearer surfaces hide farther ones whatever order they are drawn in.
+ * nearer surfaces hide farther ones whatever order they are drawn in, and the scene's lights at set 0.
  */
 static Wotah::PipelineSettings MakeMeshSettings(std::span<const uint32_t> fragmentShader, VkFormat colorFormat,
-                                                VkFormat depthFormat)
+                                                VkFormat depthFormat, std::span<const VkDescriptorSetLayout> setLayouts)
 {
     Wotah::PipelineSettings settings;
-    settings.VertexShader     = MeshVertexShader;
-    settings.FragmentShader   = fragmentShader;
-    settings.ColorFormat      = colorFormat;
-    settings.DepthFormat      = depthFormat;
-    settings.VertexBindings   = Wotah::MeshVertexBindings;
-    settings.VertexAttributes = Wotah::MeshVertexAttributes;
-    settings.CullMode         = VK_CULL_MODE_BACK_BIT;
-    settings.FrontFace        = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    settings.DepthTest        = true;
-    settings.DepthWrite       = true;
-    settings.PushConstants    = MeshPushConstantRanges;
+    settings.VertexShader         = MeshVertexShader;
+    settings.FragmentShader       = fragmentShader;
+    settings.ColorFormat          = colorFormat;
+    settings.DepthFormat          = depthFormat;
+    settings.VertexBindings       = Wotah::MeshVertexBindings;
+    settings.VertexAttributes     = Wotah::MeshVertexAttributes;
+    settings.CullMode             = VK_CULL_MODE_BACK_BIT;
+    settings.FrontFace            = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    settings.DepthTest            = true;
+    settings.DepthWrite           = true;
+    settings.PushConstants        = MeshPushConstantRanges;
+    settings.DescriptorSetLayouts = setLayouts;
     return settings;
 }
 
-/** Records one mesh's draw: its pipeline, the camera and its place, then the mesh. */
-static void DrawMesh(VkCommandBuffer commandBuffer, const Wotah::Pipeline& pipeline, const Wotah::Mesh& mesh,
-                     const MeshPushConstants& pushConstants)
+/** Records one mesh's draw: its pipeline, the lights, the camera and its place, then the mesh. */
+static void DrawMesh(VkCommandBuffer commandBuffer, const Wotah::Pipeline& pipeline, const Wotah::Lighting& lighting,
+                     const Wotah::Mesh& mesh, const MeshPushConstants& pushConstants)
 {
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
+    lighting.Bind(commandBuffer, pipeline.GetLayout());
     vkCmdPushConstants(commandBuffer, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
                        &pushConstants);
     mesh.Draw(commandBuffer);
@@ -136,6 +153,9 @@ struct Wotah::App::State
 
     /** The command buffer, depth image and synchronization of each frame. */
     Wotah::Renderer Renderer;
+
+    /** The scene's lights on the GPU, rewritten every frame. */
+    Wotah::Lighting Lighting;
 
     /** The pipelines: the orange cube with black edges, and the blue ball. */
     Wotah::Pipeline CubePipeline;
@@ -172,13 +192,33 @@ bool Wotah::App::Create()
     }
     state.Renderer.SetClearColor(BackgroundColor);
 
-    const VkFormat colorFormat = state.Swapchain.GetFormat();
-    const VkFormat depthFormat = state.Renderer.GetDepthFormat();
-    if (!state.CubePipeline.Create(m_device, MakeMeshSettings(CubeFragmentShader, colorFormat, depthFormat)) ||
-        !state.BallPipeline.Create(m_device, MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat)))
+    // The lights come before the pipelines too: they read them through its descriptor set layout.
+    if (!state.Lighting.Create(m_device))
     {
         return false;
     }
+    const VkFormat                             colorFormat = state.Swapchain.GetFormat();
+    const VkFormat                             depthFormat = state.Renderer.GetDepthFormat();
+    const std::array<VkDescriptorSetLayout, 1> setLayouts{state.Lighting.GetSetLayout()};
+    if (!state.CubePipeline.Create(m_device,
+                                   MakeMeshSettings(CubeFragmentShader, colorFormat, depthFormat, setLayouts)) ||
+        !state.BallPipeline.Create(m_device,
+                                   MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat, setLayouts)))
+    {
+        return false;
+    }
+
+    // A sun and a moon, both shining at once for now; a day and night cycle will move them and change their light.
+    DirectionalLight sun;
+    sun.Direction = SunDirection;
+    sun.Color     = SunColor;
+    sun.Intensity = SunIntensity;
+    DirectionalLight moon;
+    moon.Direction             = MoonDirection;
+    moon.Color                 = MoonColor;
+    moon.Intensity             = MoonIntensity;
+    m_lights.AmbientColor      = SkyAmbient;
+    m_lights.DirectionalLights = {sun, moon};
 
     // The shapes go to GPU-only memory once; Create waits until they are there.
     if (!state.Cube.Create(m_device, MakeCube()) ||
@@ -258,15 +298,19 @@ bool Wotah::App::Run()
         // Whichever camera is active now, it sees the image's shape; an unchanged ratio keeps its matrices.
         Camera& camera = GetActiveCamera();
         (void)camera.SetAspectRatio(aspectRatio); // the image size is never 0, so this cannot fail
+        // The GPU is done with the last frame (BeginFrame waited for it), so the lights can be rewritten. Bad lights
+        // are logged by Update and the last good ones stay, so the frame still draws.
+        (void)m_state->Lighting.Update(m_lights);
+
         MeshPushConstants pushConstants;
         pushConstants.ViewProjection = camera.GetViewProjection();
 
         // The depth test sorts out which is in front, so the draw order does not matter.
         const VkCommandBuffer commandBuffer = renderer.GetCommandBuffer();
         pushConstants.Model                 = cubeModel;
-        DrawMesh(commandBuffer, scene.CubePipeline, scene.Cube, pushConstants);
+        DrawMesh(commandBuffer, scene.CubePipeline, scene.Lighting, scene.Cube, pushConstants);
         pushConstants.Model = ballModel;
-        DrawMesh(commandBuffer, scene.BallPipeline, scene.Ball, pushConstants);
+        DrawMesh(commandBuffer, scene.BallPipeline, scene.Lighting, scene.Ball, pushConstants);
 
         if (!renderer.EndFrame())
         {

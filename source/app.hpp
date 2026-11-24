@@ -13,6 +13,7 @@
 #include "platform/window.hpp"
 #include "render/camera.hpp"
 #include "render/device.hpp"
+#include "render/lighting.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -61,6 +62,9 @@ namespace Wotah
         /** Puts the active camera back to its focus view: how it was when it was added. */
         void FocusActiveCamera();
 
+        /** The scene's lights (ambient, sun, moon, ...); change them at any time, the next frame shows them. */
+        [[nodiscard]] SceneLights& GetLights() noexcept { return m_lights; }
+
     private:
         /** Shows the window; the first thing Run does. */
         void Start();
@@ -92,6 +96,9 @@ namespace Wotah
 
         /** The index of the camera frames are drawn through; always inside m_cameras. */
         std::size_t m_activeCamera = 0;
+
+        /** What lights the scene; Create puts a sun and a moon in. */
+        SceneLights m_lights;
 
         /** Hands the window's input to the handlers, the UI first once there is one. */
         InputDispatcher m_input;
