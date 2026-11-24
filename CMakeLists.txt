@@ -65,6 +65,8 @@ add_executable(square
     source/render/device.cpp
     source/render/pipeline.hpp
     source/render/pipeline.cpp
+    source/render/renderer.hpp
+    source/render/renderer.cpp
     source/render/swapchain.hpp
     source/render/swapchain.cpp
     source/render/vulkan_handles.hpp

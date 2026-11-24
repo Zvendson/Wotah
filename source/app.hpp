@@ -3,10 +3,7 @@
  * The application: owns the window and the Vulkan objects and drives their life.
  *
  *     Wotah::App app;
- *     if (app.Create())
- *     {
- *         app.Run();
- *     }
+ *     const bool ranCleanly = app.Create() && app.Run();
  *     app.Destroy();
  */
 #pragma once
@@ -35,8 +32,8 @@ namespace Wotah
         /** Starts the log, opens the window (still hidden) and creates every Vulkan object; false when one failed. */
         [[nodiscard]] bool Create();
 
-        /** Starts, draws frames until the window is closed, and stops. */
-        void Run();
+        /** Starts, draws frames until the window is closed, and stops; false (and logged) when Vulkan failed. */
+        [[nodiscard]] bool Run();
 
         /**
          * Frees every Vulkan object and the window, then closes the log; safe to call more than once or after a failed

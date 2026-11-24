@@ -12,8 +12,8 @@ int main()
         return 1;
     }
 
-    app.Run();
+    const bool ranCleanly = app.Run();
     app.Destroy();
 
-    return 0;
+    return ranCleanly ? 0 : 1;
 }
