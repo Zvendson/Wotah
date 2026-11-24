@@ -5,11 +5,14 @@
  * shows anything on screen. Skip them with --test-suite-exclude=gpu on machines without a GPU.
  */
 #include "platform/window.hpp"
+#include "render/buffer.hpp"
 #include "render/camera.hpp"
+#include "render/cube_geometry.hpp"
 #include "render/device.hpp"
 #include "render/pipeline.hpp"
 #include "render/renderer.hpp"
 #include "render/swapchain.hpp"
+#include "test_utils.hpp"
 
 #include <doctest/doctest.h>
 #include <glm/mat4x4.hpp>
@@ -23,6 +26,9 @@
 #include <optional>
 #include <span>
 #include <vector>
+
+using Wotah::Testing::HiddenGpu;
+using Wotah::Testing::HiddenWindowSize;
 
 namespace
 {
@@ -42,43 +48,63 @@ namespace
 #include "water_test.frag.inc"
     };
 
-    /** The hidden test window's size. */
-    constexpr Wotah::WindowSize TestWindowSize{640, 480};
-
     /** What the cube's vertex shader reads (shaders/cube.vert). */
     struct CubePushConstants
     {
         glm::mat4 ViewProjection{1.0f};
     };
 
-    /** A hidden window and a device on it; most GPU tests start from this. */
-    struct HiddenGpu
-    {
-        Wotah::Window Window;
-        Wotah::Device Device; // declared after the window, so it is destroyed first
-
-        [[nodiscard]] bool Create()
-        {
-            return Window.Create(TestWindowSize, "wotah tests (hidden)") && Device.Create(Window, "wotah tests");
-        }
-    };
-
     /** The cube pipeline's settings, as app.cpp builds them. */
     Wotah::PipelineSettings MakeCubeSettings(VkFormat colorFormat, std::span<const VkPushConstantRange> ranges)
     {
         Wotah::PipelineSettings settings;
-        settings.VertexShader   = CubeVertexShader;
-        settings.FragmentShader = CubeFragmentShader;
-        settings.ColorFormat    = colorFormat;
-        settings.CullMode       = VK_CULL_MODE_BACK_BIT;
-        settings.FrontFace      = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        settings.PushConstants  = ranges;
+        settings.VertexShader     = CubeVertexShader;
+        settings.FragmentShader   = CubeFragmentShader;
+        settings.ColorFormat      = colorFormat;
+        settings.VertexBindings   = Wotah::CubeGeometry::Bindings;
+        settings.VertexAttributes = Wotah::CubeGeometry::Attributes;
+        settings.CullMode         = VK_CULL_MODE_BACK_BIT;
+        settings.FrontFace        = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        settings.PushConstants    = ranges;
         return settings;
     }
 
     /** The cube's one push constant range. */
     constexpr std::array<VkPushConstantRange, 1> CubeRanges{
         {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(CubePushConstants)}}};
+
+    /** The cube's vertex and index buffers, uploaded as app.cpp does. */
+    struct CubeBuffers
+    {
+        Wotah::Buffer Vertices;
+        Wotah::Buffer Indices;
+
+        [[nodiscard]] bool Create(const Wotah::Device& device)
+        {
+            const std::span<const std::byte> vertexBytes = std::as_bytes(std::span(Wotah::CubeGeometry::Vertices));
+            const std::span<const std::byte> indexBytes  = std::as_bytes(std::span(Wotah::CubeGeometry::Indices));
+            return Vertices.Create(device, vertexBytes.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                   Wotah::BufferMemory::GpuOnly) &&
+                   Vertices.Upload(device, vertexBytes) &&
+                   Indices.Create(device, indexBytes.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                                  Wotah::BufferMemory::GpuOnly) &&
+                   Indices.Upload(device, indexBytes);
+        }
+    };
+
+    /** Records the cube's draw, as app.cpp does: pipeline, camera, buffers, indexed draw. */
+    void RecordCubeDraw(VkCommandBuffer commands, const Wotah::Pipeline& pipeline, const CubeBuffers& cube,
+                        const CubePushConstants& pushConstants)
+    {
+        const VkBuffer     vertexBuffer = cube.Vertices.GetHandle();
+        const VkDeviceSize vertexOffset = 0;
+        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
+        vkCmdPushConstants(commands, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
+                           &pushConstants);
+        vkCmdBindVertexBuffers(commands, 0, 1, &vertexBuffer, &vertexOffset);
+        vkCmdBindIndexBuffer(commands, cube.Indices.GetHandle(), 0, Wotah::CubeGeometry::IndexType);
+        vkCmdDrawIndexed(commands, Wotah::CubeGeometry::IndexCount, 1, 0, 0, 0);
+    }
 
     /** A memory type allowed by the mask that has every wanted property; fails the test when there is none. */
     uint32_t FindMemoryType(VkPhysicalDevice gpu, uint32_t allowedTypes, VkMemoryPropertyFlags wanted)
@@ -137,25 +163,14 @@ namespace
         REQUIRE(vkCreateImageView(handle, &viewInfo, nullptr, &view) == VK_SUCCESS);
 
         constexpr VkDeviceSize ByteCount = VkDeviceSize{Size} * Size * 4;
-        VkBufferCreateInfo     bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        bufferInfo.size  = ByteCount;
-        bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        VkBuffer buffer  = VK_NULL_HANDLE;
-        REQUIRE(vkCreateBuffer(handle, &bufferInfo, nullptr, &buffer) == VK_SUCCESS);
+        Wotah::Buffer          readback;
+        REQUIRE(readback.Create(device, ByteCount, VK_BUFFER_USAGE_TRANSFER_DST_BIT, Wotah::BufferMemory::GpuToCpu));
 
-        VkMemoryRequirements bufferNeeds;
-        vkGetBufferMemoryRequirements(handle, buffer, &bufferNeeds);
-        allocation.allocationSize = bufferNeeds.size;
-        allocation.memoryTypeIndex =
-            FindMemoryType(device.GetGpu(), bufferNeeds.memoryTypeBits,
-                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        VkDeviceMemory bufferMemory = VK_NULL_HANDLE;
-        REQUIRE(vkAllocateMemory(handle, &allocation, nullptr, &bufferMemory) == VK_SUCCESS);
-        REQUIRE(vkBindBufferMemory(handle, buffer, bufferMemory, 0) == VK_SUCCESS);
-
-        // ---- The program's cube pipeline ----
+        // ---- The program's cube pipeline and buffers ----
         Wotah::Pipeline pipeline;
         REQUIRE(pipeline.Create(device, MakeCubeSettings(Format, CubeRanges)));
+        CubeBuffers cube;
+        REQUIRE(cube.Create(device));
         CubePushConstants pushConstants;
         pushConstants.ViewProjection = camera.GetViewProjection();
 
@@ -201,10 +216,7 @@ namespace
         const VkRect2D   scissor{{0, 0}, {Size, Size}};
         vkCmdSetViewport(commands, 0, 1, &viewport);
         vkCmdSetScissor(commands, 0, 1, &scissor);
-        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
-        vkCmdPushConstants(commands, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
-        vkCmdDraw(commands, 36, 1, 0, 0); // the cube's 36 vertices
+        RecordCubeDraw(commands, pipeline, cube, pushConstants);
         vkCmdEndRendering(commands);
 
         VkImageMemoryBarrier toCopy = toDraw;
@@ -217,14 +229,14 @@ namespace
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageExtent      = {Size, Size, 1};
-        vkCmdCopyImageToBuffer(commands, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+        vkCmdCopyImageToBuffer(commands, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.GetHandle(), 1, &region);
 
         VkBufferMemoryBarrier toHost{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         toHost.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
         toHost.dstAccessMask       = VK_ACCESS_HOST_READ_BIT;
         toHost.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         toHost.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toHost.buffer              = buffer;
+        toHost.buffer              = readback.GetHandle();
         toHost.size                = VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
                              &toHost, 0, nullptr);
@@ -238,15 +250,9 @@ namespace
 
         // ---- Read the pixels, free everything ----
         std::vector<uint8_t> pixels(static_cast<std::size_t>(ByteCount));
-        void*                mapped = nullptr;
-        REQUIRE(vkMapMemory(handle, bufferMemory, 0, VK_WHOLE_SIZE, 0, &mapped) == VK_SUCCESS);
-        std::memcpy(pixels.data(), mapped, pixels.size());
-        vkUnmapMemory(handle, bufferMemory);
+        REQUIRE(readback.Read(std::as_writable_bytes(std::span(pixels))));
 
         vkDestroyCommandPool(handle, pool, nullptr);
-        pipeline.Destroy();
-        vkDestroyBuffer(handle, buffer, nullptr);
-        vkFreeMemory(handle, bufferMemory, nullptr);
         vkDestroyImageView(handle, view, nullptr);
         vkDestroyImage(handle, image, nullptr);
         vkFreeMemory(handle, imageMemory, nullptr);
@@ -277,10 +283,10 @@ TEST_SUITE("gpu")
         Wotah::Window window;
         CHECK_FALSE(window.Create({0, 10}, "refused"));
 
-        REQUIRE(window.Create(TestWindowSize, "wotah tests (hidden)"));
+        REQUIRE(window.Create(HiddenWindowSize, "wotah tests (hidden)"));
         CHECK_FALSE(window.GetRequiredInstanceExtensions().empty());
-        CHECK(window.GetFramebufferSize().Width == TestWindowSize.Width);
-        CHECK(window.GetFramebufferSize().Height == TestWindowSize.Height);
+        CHECK(window.GetFramebufferSize().Width == HiddenWindowSize.Width);
+        CHECK(window.GetFramebufferSize().Height == HiddenWindowSize.Height);
         window.PollEvents(); // not minimized: returns right away
         CHECK_FALSE(window.ShouldClose());
 
@@ -324,8 +330,8 @@ TEST_SUITE("gpu")
         }
         Wotah::Swapchain swapchain;
         REQUIRE(swapchain.Create(gpu.Device, gpu.Window));
-        CHECK(swapchain.GetExtent().width == TestWindowSize.Width);
-        CHECK(swapchain.GetExtent().height == TestWindowSize.Height);
+        CHECK(swapchain.GetExtent().width == HiddenWindowSize.Width);
+        CHECK(swapchain.GetExtent().height == HiddenWindowSize.Height);
         CHECK(swapchain.GetFormat() != VK_FORMAT_UNDEFINED);
 
         const uint32_t count = swapchain.GetImageCount();
@@ -463,6 +469,8 @@ TEST_SUITE("gpu")
         REQUIRE(swapchain.Create(gpu.Device, gpu.Window));
         Wotah::Pipeline pipeline;
         REQUIRE(pipeline.Create(gpu.Device, MakeCubeSettings(swapchain.GetFormat(), CubeRanges)));
+        CubeBuffers cube;
+        REQUIRE(cube.Create(gpu.Device));
         {
             Wotah::Renderer neverCreated;
         }
@@ -470,8 +478,8 @@ TEST_SUITE("gpu")
         REQUIRE(renderer.Create(gpu.Device, swapchain));
 
         Wotah::Camera camera;
-        (void)camera.SetAspectRatio(static_cast<float>(TestWindowSize.Width) /
-                                    static_cast<float>(TestWindowSize.Height)); // valid, so this cannot fail
+        (void)camera.SetAspectRatio(static_cast<float>(HiddenWindowSize.Width) /
+                                    static_cast<float>(HiddenWindowSize.Height)); // valid, so this cannot fail
         CubePushConstants pushConstants;
         pushConstants.ViewProjection = camera.GetViewProjection();
 
@@ -486,11 +494,7 @@ TEST_SUITE("gpu")
             {
                 continue;
             }
-            const VkCommandBuffer commands = renderer.GetCommandBuffer();
-            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
-            vkCmdPushConstants(commands, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
-                               &pushConstants);
-            vkCmdDraw(commands, 36, 1, 0, 0);
+            RecordCubeDraw(renderer.GetCommandBuffer(), pipeline, cube, pushConstants);
             REQUIRE(renderer.EndFrame());
             ++drawn;
         }

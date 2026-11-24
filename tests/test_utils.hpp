@@ -1,10 +1,13 @@
 /**
  * @file test_utils.hpp
- * Helpers several test files use: comparing floats and vectors with a tolerance, and building input events.
+ * Helpers several test files use: comparing floats and vectors with a tolerance, building input events, and a hidden
+ * window with a device for the GPU tests.
  */
 #pragma once
 
 #include "input/input_event.hpp"
+#include "platform/window.hpp"
+#include "render/device.hpp"
 
 #include <glm/geometric.hpp>
 #include <glm/vec3.hpp>
@@ -71,4 +74,22 @@ namespace Wotah::Testing
         event.Type = InputEventType::FocusLost;
         return event;
     }
+
+    /** The hidden test window's size. */
+    inline constexpr WindowSize HiddenWindowSize{640, 480};
+
+    /**
+     * A hidden window and a device on it, where most GPU tests start. The window is never shown, so tests never put
+     * anything on screen.
+     */
+    struct HiddenGpu
+    {
+        Wotah::Window Window;
+        Wotah::Device Device; // declared after the window, so it is destroyed first
+
+        [[nodiscard]] bool Create()
+        {
+            return Window.Create(HiddenWindowSize, "wotah tests (hidden)") && Device.Create(Window, "wotah tests");
+        }
+    };
 } // namespace Wotah::Testing

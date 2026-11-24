@@ -44,6 +44,13 @@ FetchContent_Declare(glm
     GIT_TAG        1.0.3)
 FetchContent_MakeAvailable(glm)
 
+# The Vulkan Memory Allocator (AMD GPUOpen) picks and suballocates GPU memory for buffers and images; header-only,
+# compiled once in render/vulkan_memory_allocator.cpp.
+FetchContent_Declare(VulkanMemoryAllocator
+    GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+    GIT_TAG        v3.5.0)
+FetchContent_MakeAvailable(VulkanMemoryAllocator)
+
 # Compile GLSL -> SPIR-V as a C array initializer (*.inc) that the code #includes, so there are no .spv files to locate
 # at runtime. Puts the generated files' paths into out_var; each shader becomes <output_dir>/<file name>.inc.
 function(wotah_compile_shaders out_var output_dir)
@@ -83,8 +90,11 @@ add_library(wotah STATIC
     source/input/input_handler.hpp
     source/platform/window.hpp
     source/platform/window.cpp
+    source/render/buffer.hpp
+    source/render/buffer.cpp
     source/render/camera.hpp
     source/render/camera.cpp
+    source/render/cube_geometry.hpp
     source/render/device.hpp
     source/render/device.cpp
     source/render/pipeline.hpp
@@ -94,12 +104,13 @@ add_library(wotah STATIC
     source/render/swapchain.hpp
     source/render/swapchain.cpp
     source/render/vulkan_handles.hpp
+    source/render/vulkan_memory_allocator.cpp
     source/render/vulkan_utils.hpp
     source/render/vulkan_utils.cpp
     ${SHADERS})
 # Project headers are included by their path from source/, e.g. "core/logger.hpp".
 target_include_directories(wotah PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/source ${SHADER_OUT})
-target_link_libraries(wotah PUBLIC Vulkan::Vulkan glfw spdlog::spdlog glm::glm)
+target_link_libraries(wotah PUBLIC Vulkan::Vulkan glfw spdlog::spdlog glm::glm GPUOpen::VulkanMemoryAllocator)
 # glm's projections produce Vulkan's 0..1 depth range instead of OpenGL's -1..1.
 target_compile_definitions(wotah PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE)
 

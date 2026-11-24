@@ -1,7 +1,7 @@
 /**
  * @file device.hpp
- * The Vulkan base everything else is built on: the instance, the window's surface, the chosen GPU, the logical device
- * and its one queue.
+ * The Vulkan base everything else is built on: the instance, the window's surface, the chosen GPU, the logical device,
+ * its one queue, and the allocator GPU memory comes from.
  *
  *     Wotah::Device device;
  *     if (device.Create(window, "My App"))
@@ -68,6 +68,9 @@ namespace Wotah
         /** The queue family of GetQueue, for command pools. */
         [[nodiscard]] uint32_t GetQueueFamily() const noexcept { return m_queueFamily; }
 
+        /** The Vulkan Memory Allocator that buffers and images take their memory from. */
+        [[nodiscard]] VmaAllocator GetAllocator() const noexcept { return m_allocator; }
+
     private:
         // Declared in creation order; Destroy frees them in reverse.
         VkInstance       m_instance    = nullptr;
@@ -76,5 +79,6 @@ namespace Wotah
         uint32_t         m_queueFamily = 0;
         VkDevice         m_device      = nullptr;
         VkQueue          m_queue       = nullptr;
+        VmaAllocator     m_allocator   = nullptr;
     };
 } // namespace Wotah

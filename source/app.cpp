@@ -1,13 +1,15 @@
 /**
  * @file app.cpp
  * The application: a Vulkan 1.3 example that draws an orange cube, seen from above one corner so three faces show.
- * Uses dynamic rendering (no VkRenderPass / VkFramebuffer); the cube's vertices are made by its vertex shader, and the
- * camera comes in as a push constant.
+ * Uses dynamic rendering (no VkRenderPass / VkFramebuffer); the cube comes from a vertex and an index buffer on the
+ * GPU, and the camera comes in as a push constant.
  */
 #include "app.hpp"
 
 #include "core/logger.hpp"
 #include "input/input_event.hpp"
+#include "render/buffer.hpp"
+#include "render/cube_geometry.hpp"
 #include "render/pipeline.hpp"
 #include "render/renderer.hpp"
 #include "render/swapchain.hpp"
@@ -21,6 +23,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 /** The clock frame times are measured with: steady, so changing the system time cannot make a frame negative. */
 using Clock = std::chrono::steady_clock;
@@ -40,9 +43,6 @@ static constexpr uint32_t CubeVertexShader[] = {
 static constexpr uint32_t CubeFragmentShader[] = {
 #include "cube.frag.inc"
 };
-
-/** The cube's vertices: 6 faces x 2 triangles x 3 corners, made by the vertex shader itself. */
-static constexpr uint32_t CubeVertexCount = 36;
 
 /** The window's size in pixels. */
 static constexpr Wotah::WindowSize MainWindowSize{600, 600};
@@ -86,6 +86,10 @@ struct Wotah::App::State
     /** The pipeline that draws the cube. */
     Wotah::Pipeline Pipeline;
 
+    /** The cube's vertices and indices, on the GPU. */
+    Wotah::Buffer CubeVertices;
+    Wotah::Buffer CubeIndices;
+
     /** The command buffer and synchronization of each frame. */
     Wotah::Renderer Renderer;
 };
@@ -114,16 +118,31 @@ bool Wotah::App::Create()
         return false;
     }
 
-    // The cube's shader makes its own vertices. Its faces are counter-clockwise seen from outside, so culling the back
-    // faces is enough to hide the three faces turned away; one convex cube needs no depth image.
+    // The cube's faces are counter-clockwise seen from outside, so culling the back faces is enough to hide the three
+    // faces turned away; one convex cube needs no depth image.
     PipelineSettings cubeSettings;
-    cubeSettings.VertexShader   = CubeVertexShader;
-    cubeSettings.FragmentShader = CubeFragmentShader;
-    cubeSettings.ColorFormat    = state.Swapchain.GetFormat();
-    cubeSettings.CullMode       = VK_CULL_MODE_BACK_BIT;
-    cubeSettings.FrontFace      = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    cubeSettings.PushConstants  = CubePushConstantRanges;
+    cubeSettings.VertexShader     = CubeVertexShader;
+    cubeSettings.FragmentShader   = CubeFragmentShader;
+    cubeSettings.ColorFormat      = state.Swapchain.GetFormat();
+    cubeSettings.VertexBindings   = CubeGeometry::Bindings;
+    cubeSettings.VertexAttributes = CubeGeometry::Attributes;
+    cubeSettings.CullMode         = VK_CULL_MODE_BACK_BIT;
+    cubeSettings.FrontFace        = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    cubeSettings.PushConstants    = CubePushConstantRanges;
     if (!state.Pipeline.Create(m_device, cubeSettings))
+    {
+        return false;
+    }
+
+    // The cube's data goes to GPU-only memory once; Upload waits until it is there.
+    const std::span<const std::byte> vertexBytes = std::as_bytes(std::span(CubeGeometry::Vertices));
+    const std::span<const std::byte> indexBytes  = std::as_bytes(std::span(CubeGeometry::Indices));
+    if (!state.CubeVertices.Create(m_device, vertexBytes.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                   BufferMemory::GpuOnly) ||
+        !state.CubeVertices.Upload(m_device, vertexBytes) ||
+        !state.CubeIndices.Create(m_device, indexBytes.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                                  BufferMemory::GpuOnly) ||
+        !state.CubeIndices.Upload(m_device, indexBytes))
     {
         return false;
     }
@@ -152,8 +171,10 @@ bool Wotah::App::Create()
 
 bool Wotah::App::Run()
 {
-    Renderer&       renderer = m_state->Renderer;
-    const Pipeline& pipeline = m_state->Pipeline;
+    Renderer&       renderer     = m_state->Renderer;
+    const Pipeline& pipeline     = m_state->Pipeline;
+    const Buffer&   cubeVertices = m_state->CubeVertices;
+    const Buffer&   cubeIndices  = m_state->CubeIndices;
 
     // Fixed while the window cannot be resized.
     const VkExtent2D extent      = m_state->Swapchain.GetExtent();
@@ -208,7 +229,11 @@ bool Wotah::App::Run()
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
         vkCmdPushConstants(commandBuffer, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
                            &pushConstants);
-        vkCmdDraw(commandBuffer, CubeVertexCount, 1, 0, 0);
+        const VkBuffer     vertexBuffer = cubeVertices.GetHandle();
+        const VkDeviceSize vertexOffset = 0;
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, &vertexOffset);
+        vkCmdBindIndexBuffer(commandBuffer, cubeIndices.GetHandle(), 0, CubeGeometry::IndexType);
+        vkCmdDrawIndexed(commandBuffer, CubeGeometry::IndexCount, 1, 0, 0, 0);
 
         if (!renderer.EndFrame())
         {

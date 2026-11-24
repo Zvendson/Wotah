@@ -10,6 +10,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include <vk_mem_alloc.h>
+
 #include <cstring>
 #include <optional>
 #include <span>
@@ -232,13 +234,22 @@ bool Wotah::Device::Create(const Window& window, const std::string& appName)
         return false;
     }
     vkGetDeviceQueue(m_device, m_queueFamily, 0, &m_queue);
-    return true;
+
+    // GPU memory for buffers and images comes from VMA, which needs to know the Vulkan version the device runs.
+    VmaAllocatorCreateInfo allocatorInfo{};
+    allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
+    allocatorInfo.instance         = m_instance;
+    allocatorInfo.physicalDevice   = m_gpu;
+    allocatorInfo.device           = m_device;
+    return Succeeded(vmaCreateAllocator(&allocatorInfo, &m_allocator), "create the GPU memory allocator");
 }
 
 void Wotah::Device::Destroy()
 {
-    // Children before their parents: the device, then the surface, then the instance that made both.
-    // vkDestroySurfaceKHR accepts VK_NULL_HANDLE (Vulkan spec), so a part-way Create is fine.
+    // Children before their parents: the allocator, the device, then the surface, then the instance that made both.
+    // vmaDestroyAllocator and vkDestroySurfaceKHR accept null handles (VMA docs, Vulkan spec), so a part-way Create is
+    // fine.
+    vmaDestroyAllocator(m_allocator);
     if (m_device != VK_NULL_HANDLE)
     {
         vkDestroyDevice(m_device, nullptr);
@@ -255,6 +266,7 @@ void Wotah::Device::Destroy()
     m_queueFamily = 0;
     m_device      = VK_NULL_HANDLE;
     m_queue       = VK_NULL_HANDLE;
+    m_allocator   = nullptr;
 }
 
 void Wotah::Device::WaitUntilIdle() const

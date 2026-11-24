@@ -11,7 +11,9 @@ wotah_compile_shaders(TEST_SHADERS ${TEST_SHADER_OUT}
 add_executable(wotah_tests
     main.cpp
     test_utils.hpp
+    buffer_tests.cpp
     camera_tests.cpp
+    cube_geometry_tests.cpp
     gpu_tests.cpp
     input_tests.cpp
     logger_tests.cpp

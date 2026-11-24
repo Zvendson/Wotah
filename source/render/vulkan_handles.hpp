@@ -16,3 +16,7 @@ typedef struct VkPhysicalDevice_T* VkPhysicalDevice;
 typedef struct VkDevice_T*         VkDevice;
 typedef struct VkQueue_T*          VkQueue;
 typedef struct VkSurfaceKHR_T*     VkSurfaceKHR;
+
+// The Vulkan Memory Allocator's handles, declared as vk_mem_alloc.h declares them (VK_DEFINE_HANDLE).
+typedef struct VmaAllocator_T*  VmaAllocator;
+typedef struct VmaAllocation_T* VmaAllocation;
