@@ -6,11 +6,13 @@
 #include "app.hpp"
 
 #include "core/logger.hpp"
+#include "render/swapchain.hpp"
 
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include <vector>
 
 static const uint32_t kVertSpv[] = {
@@ -71,11 +73,7 @@ static constexpr const char* AppName = "Vulkan Square";
 struct Wotah::App::State
 {
     /** The swapchain, its images and one view per image. */
-    VkSurfaceFormatKHR       Format{};
-    VkExtent2D               Extent{};
-    VkSwapchainKHR           Swapchain = VK_NULL_HANDLE;
-    std::vector<VkImage>     Images;
-    std::vector<VkImageView> Views;
+    Wotah::Swapchain Swapchain;
 
     /** The pipeline that draws the square. */
     VkPipelineLayout PipelineLayout = VK_NULL_HANDLE;
@@ -118,66 +116,15 @@ bool Wotah::App::Create()
     {
         return false;
     }
-    const VkDevice         device  = m_device.GetHandle();
-    const VkPhysicalDevice gpu     = m_device.GetGpu();
-    const VkSurfaceKHR     surface = m_device.GetSurface();
+    const VkDevice device = m_device.GetHandle();
 
     // ---- Swapchain -----------------------------------------------------------
-    VkSurfaceCapabilitiesKHR caps;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &caps);
-
-    uint32_t fmtCount = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &fmtCount, nullptr);
-    std::vector<VkSurfaceFormatKHR> formats(fmtCount);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &fmtCount, formats.data());
-    state.Format = formats[0];
-
-    state.Extent = caps.currentExtent;
-    if (state.Extent.width == UINT32_MAX) // e.g. Wayland: surface size is chosen by us
+    if (!state.Swapchain.Create(m_device, m_window))
     {
-        const WindowSize framebufferSize = m_window.GetFramebufferSize();
-        state.Extent                     = {framebufferSize.Width, framebufferSize.Height};
+        return false;
     }
-
-    uint32_t imageCount = caps.minImageCount + 1;
-    if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount)
-    {
-        imageCount = caps.maxImageCount;
-    }
-
-    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
-    sci.surface          = surface;
-    sci.minImageCount    = imageCount;
-    sci.imageFormat      = state.Format.format;
-    sci.imageColorSpace  = state.Format.colorSpace;
-    sci.imageExtent      = state.Extent;
-    sci.imageArrayLayers = 1;
-    sci.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    sci.preTransform     = caps.currentTransform;
-    sci.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    sci.presentMode      = VK_PRESENT_MODE_FIFO_KHR; // vsync, always supported
-    sci.clipped          = VK_TRUE;
-
-    VK_CHECK(vkCreateSwapchainKHR(device, &sci, nullptr, &state.Swapchain));
-
-    vkGetSwapchainImagesKHR(device, state.Swapchain, &imageCount, nullptr);
-    state.Images.resize(imageCount);
-    vkGetSwapchainImagesKHR(device, state.Swapchain, &imageCount, state.Images.data());
-
-    // Views are created one by one, so a failure part way leaves only real handles behind for Destroy.
-    state.Views.reserve(imageCount);
-    for (uint32_t i = 0; i < imageCount; ++i)
-    {
-        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        vci.image            = state.Images[i];
-        vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-        vci.format           = state.Format.format;
-        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        VkImageView view;
-        VK_CHECK(vkCreateImageView(device, &vci, nullptr, &view));
-        state.Views.push_back(view);
-    }
+    const uint32_t imageCount  = state.Swapchain.GetImageCount();
+    const VkFormat colorFormat = state.Swapchain.GetFormat();
 
     // ---- Pipeline ------------------------------------------------------------
     VkShaderModule vert = createShader(device, kVertSpv, sizeof(kVertSpv));
@@ -229,7 +176,7 @@ bool Wotah::App::Create()
     // Dynamic rendering: tell the pipeline the attachment format instead of a render pass.
     VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     renderingInfo.colorAttachmentCount    = 1;
-    renderingInfo.pColorAttachmentFormats = &state.Format.format;
+    renderingInfo.pColorAttachmentFormats = &colorFormat;
 
     VkGraphicsPipelineCreateInfo pci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     pci.pNext               = &renderingInfo;
@@ -288,6 +235,9 @@ void Wotah::App::Run()
     const VkQueue   queue  = m_device.GetQueue();
     VkCommandBuffer cmd    = state.CommandBuffer;
 
+    // Fixed while the window cannot be resized.
+    const VkExtent2D extent = state.Swapchain.GetExtent();
+
     Start();
 
     // One frame in flight.
@@ -301,13 +251,12 @@ void Wotah::App::Run()
 
         vkWaitForFences(device, 1, &state.FrameFence, VK_TRUE, UINT64_MAX);
 
-        uint32_t idx;
-        VkResult acq =
-            vkAcquireNextImageKHR(device, state.Swapchain, UINT64_MAX, state.ImageAvailable, VK_NULL_HANDLE, &idx);
-        if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR)
+        const std::optional<uint32_t> acquired = state.Swapchain.AcquireNextImage(state.ImageAvailable);
+        if (!acquired)
         {
             continue;
         }
+        const uint32_t idx = *acquired;
         vkResetFences(device, 1, &state.FrameFence);
 
         vkResetCommandBuffer(cmd, 0);
@@ -315,35 +264,35 @@ void Wotah::App::Run()
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(cmd, &begin);
 
-        transition(cmd, state.Images[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0,
-                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        transition(cmd, state.Swapchain.GetImage(idx), VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
 
         VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-        color.imageView        = state.Views[idx];
+        color.imageView        = state.Swapchain.GetView(idx);
         color.imageLayout      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         color.loadOp           = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color.storeOp          = VK_ATTACHMENT_STORE_OP_STORE;
         color.clearValue.color = {{0.1f, 0.1f, 0.1f, 1.0f}}; // dark gray background
 
         VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-        ri.renderArea           = {{0, 0}, state.Extent};
+        ri.renderArea           = {{0, 0}, extent};
         ri.layerCount           = 1;
         ri.colorAttachmentCount = 1;
         ri.pColorAttachments    = &color;
 
         vkCmdBeginRendering(cmd, &ri);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state.Pipeline);
-        VkViewport viewport{0.0f, 0.0f, (float)state.Extent.width, (float)state.Extent.height, 0.0f, 1.0f};
-        VkRect2D   scissor{{0, 0}, state.Extent};
+        VkViewport viewport{0.0f, 0.0f, (float)extent.width, (float)extent.height, 0.0f, 1.0f};
+        VkRect2D   scissor{{0, 0}, extent};
         vkCmdSetViewport(cmd, 0, 1, &viewport);
         vkCmdSetScissor(cmd, 0, 1, &scissor);
         vkCmdDraw(cmd, 6, 1, 0, 0); // 6 vertices = 2 triangles = 1 square
         vkCmdEndRendering(cmd);
 
-        transition(cmd, state.Images[idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                   VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        transition(cmd, state.Swapchain.GetImage(idx), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0,
+                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         vkEndCommandBuffer(cmd);
 
@@ -358,13 +307,7 @@ void Wotah::App::Run()
         submit.pSignalSemaphores    = &state.RenderFinished[idx];
         VK_CHECK(vkQueueSubmit(queue, 1, &submit, state.FrameFence));
 
-        VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-        present.waitSemaphoreCount = 1;
-        present.pWaitSemaphores    = &state.RenderFinished[idx];
-        present.swapchainCount     = 1;
-        present.pSwapchains        = &state.Swapchain;
-        present.pImageIndices      = &idx;
-        vkQueuePresentKHR(queue, &present);
+        state.Swapchain.Present(queue, state.RenderFinished[idx], idx);
     }
 
     Stop();
@@ -393,16 +336,12 @@ void Wotah::App::Destroy()
         vkDestroyCommandPool(device, state.CommandPool, nullptr); // frees the command buffer too
         vkDestroyPipeline(device, state.Pipeline, nullptr);
         vkDestroyPipelineLayout(device, state.PipelineLayout, nullptr);
-        for (VkImageView view : state.Views)
-        {
-            vkDestroyImageView(device, view, nullptr);
-        }
-        vkDestroySwapchainKHR(device, state.Swapchain, nullptr);
     }
+    state.Swapchain.Destroy();
+    // Everything made on the device is gone; a fresh State forgets the handles, so a second Destroy does nothing.
+    m_state = std::make_unique<State>();
+
     m_device.Destroy();
     m_window.Destroy();
     Logger::Destroy(); // last, so everything above can still log
-
-    // Everything is gone; forget the handles so a second Destroy does nothing.
-    state = State{};
 }

@@ -6,6 +6,7 @@
 
 #include "core/logger.hpp"
 #include "platform/window.hpp"
+#include "render/vulkan_utils.hpp"
 
 #include <vulkan/vulkan.h>
 
@@ -38,17 +39,6 @@ namespace
         VkPhysicalDevice Gpu         = VK_NULL_HANDLE;
         uint32_t         QueueFamily = 0;
     };
-
-    /** True for VK_SUCCESS; anything else is logged with what was being done. */
-    bool Succeeded(VkResult result, const char* action)
-    {
-        if (result == VK_SUCCESS)
-        {
-            return true;
-        }
-        Wotah::Logger::Error("Could not {} (VkResult {})", action, static_cast<int>(result));
-        return false;
-    }
 
     /** Whether the validation layer is installed. */
     bool HasValidationLayer()
@@ -110,7 +100,7 @@ namespace
         }
 
         VkInstance instance = VK_NULL_HANDLE;
-        if (!Succeeded(vkCreateInstance(&createInfo, nullptr, &instance), "create the Vulkan instance"))
+        if (!Wotah::Succeeded(vkCreateInstance(&createInfo, nullptr, &instance), "create the Vulkan instance"))
         {
             return VK_NULL_HANDLE;
         }
@@ -145,13 +135,14 @@ namespace
     std::optional<GpuChoice> FindGpu(VkInstance instance, VkSurfaceKHR surface)
     {
         uint32_t count = 0;
-        if (!Succeeded(vkEnumeratePhysicalDevices(instance, &count, nullptr), "list the GPUs"))
+        if (!Wotah::Succeeded(vkEnumeratePhysicalDevices(instance, &count, nullptr), "list the GPUs"))
         {
             return std::nullopt;
         }
         std::vector<VkPhysicalDevice> gpus(count);
         const VkResult                result = vkEnumeratePhysicalDevices(instance, &count, gpus.data());
-        if (result != VK_INCOMPLETE && !Succeeded(result, "list the GPUs")) // VK_INCOMPLETE: a GPU appeared meanwhile
+        if (result != VK_INCOMPLETE &&
+            !Wotah::Succeeded(result, "list the GPUs")) // VK_INCOMPLETE: a GPU appeared meanwhile
         {
             return std::nullopt;
         }
@@ -199,7 +190,7 @@ namespace
         createInfo.ppEnabledExtensionNames = &swapchainExtension;
 
         VkDevice device = VK_NULL_HANDLE;
-        if (!Succeeded(vkCreateDevice(choice.Gpu, &createInfo, nullptr, &device), "create the logical device"))
+        if (!Wotah::Succeeded(vkCreateDevice(choice.Gpu, &createInfo, nullptr, &device), "create the logical device"))
         {
             return VK_NULL_HANDLE;
         }
@@ -274,5 +265,5 @@ void Wotah::Device::WaitUntilIdle() const
     }
     // Only fails when the device is lost; then there is nothing left to wait for, so the result is logged and
     // teardown goes on.
-    (void)Succeeded(vkDeviceWaitIdle(m_device), "wait for the GPU to finish");
+    (void)Wotah::Succeeded(vkDeviceWaitIdle(m_device), "wait for the GPU to finish");
 }

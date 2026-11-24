@@ -63,7 +63,11 @@ add_executable(square
     source/platform/window.cpp
     source/render/device.hpp
     source/render/device.cpp
+    source/render/swapchain.hpp
+    source/render/swapchain.cpp
     source/render/vulkan_handles.hpp
+    source/render/vulkan_utils.hpp
+    source/render/vulkan_utils.cpp
     ${SHADERS})
 # Project headers are included by their path from source/, e.g. "core/logger.hpp".
 target_include_directories(square PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/source ${SHADER_OUT})
