@@ -103,6 +103,7 @@ Wotah::Buffer::~Buffer()
 
 bool Wotah::Buffer::Create(const Device& device, VkDeviceSize size, VkBufferUsageFlags usage, BufferMemory memory)
 {
+    Destroy(); // a second Create replaces the first buffer instead of leaking it
     if (size == 0)
     {
         Logger::Error("A buffer needs a size above 0");

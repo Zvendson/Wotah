@@ -13,10 +13,11 @@ add_executable(wotah_tests
     test_utils.hpp
     buffer_tests.cpp
     camera_tests.cpp
-    cube_geometry_tests.cpp
     gpu_tests.cpp
     input_tests.cpp
     logger_tests.cpp
+    mesh_data_tests.cpp
+    mesh_tests.cpp
     utils_tests.cpp
     ${TEST_SHADERS})
 target_include_directories(wotah_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${TEST_SHADER_OUT})

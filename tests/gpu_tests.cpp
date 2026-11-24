@@ -7,8 +7,9 @@
 #include "platform/window.hpp"
 #include "render/buffer.hpp"
 #include "render/camera.hpp"
-#include "render/cube_geometry.hpp"
 #include "render/device.hpp"
+#include "render/mesh.hpp"
+#include "render/mesh_data.hpp"
 #include "render/pipeline.hpp"
 #include "render/renderer.hpp"
 #include "render/swapchain.hpp"
@@ -61,8 +62,8 @@ namespace
         settings.VertexShader     = CubeVertexShader;
         settings.FragmentShader   = CubeFragmentShader;
         settings.ColorFormat      = colorFormat;
-        settings.VertexBindings   = Wotah::CubeGeometry::Bindings;
-        settings.VertexAttributes = Wotah::CubeGeometry::Attributes;
+        settings.VertexBindings   = Wotah::MeshVertexBindings;
+        settings.VertexAttributes = Wotah::MeshVertexAttributes;
         settings.CullMode         = VK_CULL_MODE_BACK_BIT;
         settings.FrontFace        = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         settings.PushConstants    = ranges;
@@ -73,37 +74,14 @@ namespace
     constexpr std::array<VkPushConstantRange, 1> CubeRanges{
         {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(CubePushConstants)}}};
 
-    /** The cube's vertex and index buffers, uploaded as app.cpp does. */
-    struct CubeBuffers
-    {
-        Wotah::Buffer Vertices;
-        Wotah::Buffer Indices;
-
-        [[nodiscard]] bool Create(const Wotah::Device& device)
-        {
-            const std::span<const std::byte> vertexBytes = std::as_bytes(std::span(Wotah::CubeGeometry::Vertices));
-            const std::span<const std::byte> indexBytes  = std::as_bytes(std::span(Wotah::CubeGeometry::Indices));
-            return Vertices.Create(device, vertexBytes.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                   Wotah::BufferMemory::GpuOnly) &&
-                   Vertices.Upload(device, vertexBytes) &&
-                   Indices.Create(device, indexBytes.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                                  Wotah::BufferMemory::GpuOnly) &&
-                   Indices.Upload(device, indexBytes);
-        }
-    };
-
-    /** Records the cube's draw, as app.cpp does: pipeline, camera, buffers, indexed draw. */
-    void RecordCubeDraw(VkCommandBuffer commands, const Wotah::Pipeline& pipeline, const CubeBuffers& cube,
+    /** Records the cube's draw, as app.cpp does: pipeline, camera, mesh. */
+    void RecordCubeDraw(VkCommandBuffer commands, const Wotah::Pipeline& pipeline, const Wotah::Mesh& cube,
                         const CubePushConstants& pushConstants)
     {
-        const VkBuffer     vertexBuffer = cube.Vertices.GetHandle();
-        const VkDeviceSize vertexOffset = 0;
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
         vkCmdPushConstants(commands, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
                            &pushConstants);
-        vkCmdBindVertexBuffers(commands, 0, 1, &vertexBuffer, &vertexOffset);
-        vkCmdBindIndexBuffer(commands, cube.Indices.GetHandle(), 0, Wotah::CubeGeometry::IndexType);
-        vkCmdDrawIndexed(commands, Wotah::CubeGeometry::IndexCount, 1, 0, 0, 0);
+        cube.Draw(commands);
     }
 
     /** A memory type allowed by the mask that has every wanted property; fails the test when there is none. */
@@ -169,8 +147,8 @@ namespace
         // ---- The program's cube pipeline and buffers ----
         Wotah::Pipeline pipeline;
         REQUIRE(pipeline.Create(device, MakeCubeSettings(Format, CubeRanges)));
-        CubeBuffers cube;
-        REQUIRE(cube.Create(device));
+        Wotah::Mesh cube;
+        REQUIRE(cube.Create(device, Wotah::MakeCube()));
         CubePushConstants pushConstants;
         pushConstants.ViewProjection = camera.GetViewProjection();
 
@@ -469,8 +447,8 @@ TEST_SUITE("gpu")
         REQUIRE(swapchain.Create(gpu.Device, gpu.Window));
         Wotah::Pipeline pipeline;
         REQUIRE(pipeline.Create(gpu.Device, MakeCubeSettings(swapchain.GetFormat(), CubeRanges)));
-        CubeBuffers cube;
-        REQUIRE(cube.Create(gpu.Device));
+        Wotah::Mesh cube;
+        REQUIRE(cube.Create(gpu.Device, Wotah::MakeCube()));
         {
             Wotah::Renderer neverCreated;
         }

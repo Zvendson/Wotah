@@ -94,9 +94,12 @@ add_library(wotah STATIC
     source/render/buffer.cpp
     source/render/camera.hpp
     source/render/camera.cpp
-    source/render/cube_geometry.hpp
     source/render/device.hpp
     source/render/device.cpp
+    source/render/mesh.hpp
+    source/render/mesh.cpp
+    source/render/mesh_data.hpp
+    source/render/mesh_data.cpp
     source/render/pipeline.hpp
     source/render/pipeline.cpp
     source/render/renderer.hpp

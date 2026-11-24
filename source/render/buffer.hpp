@@ -50,8 +50,8 @@ namespace Wotah
 
         /**
          * Creates a buffer of size bytes for the given uses (VK_BUFFER_USAGE_*); GpuOnly buffers also accept copies,
-         * so Upload works on them. False (and logged) for a size of 0 or when Vulkan refuses. The device must outlive
-         * the buffer.
+         * so Upload works on them. Replaces a buffer created before. False (and logged) for a size of 0 or when Vulkan
+         * refuses. The device must outlive the buffer.
          */
         [[nodiscard]] bool Create(const Device& device, VkDeviceSize size, VkBufferUsageFlags usage,
                                   BufferMemory memory);
