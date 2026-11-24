@@ -36,18 +36,26 @@ FetchContent_Declare(spdlog
     GIT_TAG        v1.17.0)
 FetchContent_MakeAvailable(spdlog)
 
+# glm for vectors and matrices, header-only.
+set(GLM_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
+set(GLM_BUILD_LIBRARY OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(glm
+    GIT_REPOSITORY https://github.com/g-truc/glm.git
+    GIT_TAG        1.0.3)
+FetchContent_MakeAvailable(glm)
+
 # Compile GLSL -> SPIR-V as a C array initializer (*.inc) that the code #includes,
 # so there are no .spv files to locate at runtime.
 set(SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 foreach(stage vert frag)
-    set(src ${CMAKE_CURRENT_SOURCE_DIR}/shaders/square.${stage})
-    set(out ${SHADER_OUT}/square.${stage}.inc)
+    set(src ${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.${stage})
+    set(out ${SHADER_OUT}/cube.${stage}.inc)
     add_custom_command(
         OUTPUT  ${out}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUT}
         COMMAND ${Vulkan_GLSLC_EXECUTABLE} -mfmt=num ${src} -o ${out}
         DEPENDS ${src}
-        COMMENT "Compiling square.${stage}")
+        COMMENT "Compiling cube.${stage}")
     list(APPEND SHADERS ${out})
 endforeach()
 
@@ -61,6 +69,8 @@ add_executable(square
     source/core/logger.cpp
     source/platform/window.hpp
     source/platform/window.cpp
+    source/render/camera.hpp
+    source/render/camera.cpp
     source/render/device.hpp
     source/render/device.cpp
     source/render/pipeline.hpp
@@ -75,4 +85,6 @@ add_executable(square
     ${SHADERS})
 # Project headers are included by their path from source/, e.g. "core/logger.hpp".
 target_include_directories(square PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/source ${SHADER_OUT})
-target_link_libraries(square PRIVATE Vulkan::Vulkan glfw spdlog::spdlog)
+target_link_libraries(square PRIVATE Vulkan::Vulkan glfw spdlog::spdlog glm::glm)
+# glm's projections produce Vulkan's 0..1 depth range instead of OpenGL's -1..1.
+target_compile_definitions(square PRIVATE GLM_FORCE_DEPTH_ZERO_TO_ONE)

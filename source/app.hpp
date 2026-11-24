@@ -9,9 +9,12 @@
 #pragma once
 
 #include "platform/window.hpp"
+#include "render/camera.hpp"
 #include "render/device.hpp"
 
+#include <cstddef>
 #include <memory>
+#include <vector>
 
 namespace Wotah
 {
@@ -41,6 +44,15 @@ namespace Wotah
          */
         void Destroy();
 
+        /** Adds a camera and returns its index for SelectCamera; the active camera stays the same. */
+        std::size_t AddCamera(const Camera& camera);
+
+        /** Draws through the camera at index from the next frame on; false (and logged) for an unknown index. */
+        bool SelectCamera(std::size_t index);
+
+        /** The camera frames are drawn through; change it at any time. There is always one. */
+        [[nodiscard]] Camera& GetActiveCamera() noexcept { return m_cameras[m_activeCamera]; }
+
     private:
         /** Shows the window; the first thing Run does. */
         void Start();
@@ -63,5 +75,11 @@ namespace Wotah
         Device m_device;
 
         std::unique_ptr<State> m_state;
+
+        /** Every camera; never empty, so there is always an active one. Create sets up the first. */
+        std::vector<Camera> m_cameras{Camera{}};
+
+        /** The index of the camera frames are drawn through; always inside m_cameras. */
+        std::size_t m_activeCamera = 0;
     };
 } // namespace Wotah
