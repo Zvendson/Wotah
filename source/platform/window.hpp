@@ -1,6 +1,7 @@
 /**
  * @file window.hpp
- * The program's window, built on GLFW: opens it, shows it, handles its events and gives Vulkan a surface to draw on.
+ * The program's window, built on GLFW: opens it, shows it, collects its input events and gives Vulkan a surface to draw
+ * on.
  *
  *     Wotah::Window window;
  *     if (window.Create(size, "Title"))
@@ -9,6 +10,10 @@
  *         while (!window.ShouldClose())
  *         {
  *             window.PollEvents();
+ *             for (const Wotah::InputEvent& event : window.GetInputEvents())
+ *             {
+ *                 dispatcher.Dispatch(event);
+ *             }
  *             // draw a frame
  *         }
  *     }
@@ -18,11 +23,15 @@
  */
 #pragma once
 
+#include "input/input_event.hpp"
 #include "render/vulkan_handles.hpp"
+
+#include <glm/vec2.hpp>
 
 #include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 
 struct GLFWwindow;
 
@@ -64,10 +73,20 @@ namespace Wotah
         [[nodiscard]] bool ShouldClose() const;
 
         /**
-         * Handles the waiting window events. While the window is minimized it sleeps until the window comes back or
-         * is closed, so no frames are drawn for nothing.
+         * Handles the waiting window events and collects the input among them for GetInputEvents, replacing the last
+         * frame's. While the window is minimized it sleeps until the window comes back or is closed, so no frames are
+         * drawn for nothing.
          */
         void PollEvents();
+
+        /** The input events of the last PollEvents, in the order they happened. */
+        [[nodiscard]] std::span<const InputEvent> GetInputEvents() const noexcept { return m_inputEvents; }
+
+        /**
+         * Hides the cursor and locks it to the window, so the mouse can move without limits (e.g. to turn a camera),
+         * or gives it back. Mouse movement then reports the raw motion where the system offers it.
+         */
+        void SetCursorCaptured(bool isCaptured);
 
         /** The size of the drawable area in pixels; it can differ from the window size on high-DPI screens. */
         [[nodiscard]] WindowSize GetFramebufferSize() const;
@@ -85,7 +104,21 @@ namespace Wotah
         [[nodiscard]] VkSurfaceKHR CreateSurface(VkInstance instance) const;
 
     private:
+        /** GLFW's input callbacks; defined in window.cpp, they add to m_inputEvents. */
+        struct Callbacks;
+        friend struct Callbacks;
+
         /** The GLFW window; null before Create and after Destroy. */
         GLFWwindow* m_window = nullptr;
+
+        /** The input of the last PollEvents; kept between frames so it does not allocate again. */
+        std::vector<InputEvent> m_inputEvents;
+
+        /** The cursor at the last mouse movement, for the next movement's Delta; unknown until the first one. */
+        glm::vec2 m_lastCursorPosition{0.0f};
+        bool      m_hasLastCursorPosition = false;
+
+        /** Whether SetCursorCaptured locked the cursor. */
+        bool m_isCursorCaptured = false;
     };
 } // namespace Wotah

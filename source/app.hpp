@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "input/camera_controller.hpp"
+#include "input/input_dispatcher.hpp"
 #include "platform/window.hpp"
 #include "render/camera.hpp"
 #include "render/device.hpp"
@@ -81,5 +83,11 @@ namespace Wotah
 
         /** The index of the camera frames are drawn through; always inside m_cameras. */
         std::size_t m_activeCamera = 0;
+
+        /** Hands the window's input to the handlers, the UI first once there is one. */
+        InputDispatcher m_input;
+
+        /** Flies the active camera: W A S D, Space, Shift, and the right mouse button to turn. */
+        CameraController m_cameraController;
     };
 } // namespace Wotah

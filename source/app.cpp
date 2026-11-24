@@ -7,6 +7,7 @@
 #include "app.hpp"
 
 #include "core/logger.hpp"
+#include "input/input_event.hpp"
 #include "render/pipeline.hpp"
 #include "render/renderer.hpp"
 #include "render/swapchain.hpp"
@@ -15,9 +16,20 @@
 #include <glm/vec3.hpp>
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+
+/** The clock frame times are measured with: steady, so changing the system time cannot make a frame negative. */
+using Clock = std::chrono::steady_clock;
+
+/**
+ * The longest frame time the camera moves by: after a stall (dragging the window, a breakpoint) it continues from where
+ * it was instead of jumping far.
+ */
+static constexpr float MaxFrameSeconds = 0.1f;
 
 /** The cube's vertex shader (shaders/cube.vert), compiled to SPIR-V by the build. */
 static constexpr uint32_t CubeVertexShader[] = {
@@ -131,6 +143,9 @@ bool Wotah::App::Create()
         return false;
     }
     state.Renderer.SetClearColor(BackgroundColor);
+
+    // The camera controller gets whatever input no handler before it used; a UI will be added in front of it.
+    m_input.AddHandler(m_cameraController);
     return true;
 }
 
@@ -145,7 +160,8 @@ bool Wotah::App::Run()
 
     Start();
 
-    bool cleanEnd = true;
+    bool              cleanEnd  = true;
+    Clock::time_point lastFrame = Clock::now();
     while (!m_window.ShouldClose())
     {
         m_window.PollEvents();
@@ -153,6 +169,18 @@ bool Wotah::App::Run()
         {
             break;
         }
+
+        // ---- Input: hand it out, then let the camera fly by the time this frame took ----
+        for (const InputEvent& event : m_window.GetInputEvents())
+        {
+            m_input.Dispatch(event);
+        }
+        m_window.SetCursorCaptured(m_cameraController.IsTurning());
+
+        const Clock::time_point now = Clock::now();
+        const float frameSeconds    = std::min(std::chrono::duration<float>(now - lastFrame).count(), MaxFrameSeconds);
+        lastFrame                   = now;
+        m_cameraController.Update(GetActiveCamera(), frameSeconds);
 
         const FrameStart start = renderer.BeginFrame();
         if (start == FrameStart::Skip)

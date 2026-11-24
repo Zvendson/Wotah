@@ -67,6 +67,12 @@ add_executable(square
     source/core/utils.cpp
     source/core/logger.hpp
     source/core/logger.cpp
+    source/input/camera_controller.hpp
+    source/input/camera_controller.cpp
+    source/input/input_dispatcher.hpp
+    source/input/input_dispatcher.cpp
+    source/input/input_event.hpp
+    source/input/input_handler.hpp
     source/platform/window.hpp
     source/platform/window.cpp
     source/render/camera.hpp
