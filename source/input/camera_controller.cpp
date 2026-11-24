@@ -31,6 +31,15 @@ namespace
     /** Below this squared length a direction counts as zero. */
     constexpr float NearlyZeroSquared = 1.0e-12f;
 
+    /** One wheel step towards the target keeps 90% of the distance; one step back divides by it, so they cancel out. */
+    constexpr float ZoomStepFactor = 0.9f;
+
+    /** The closest zoom: twice the camera's near distance, so the target is never cut by the near plane. */
+    constexpr float ClosestZoomPerNear = 2.0f;
+
+    /** The furthest zoom: half the camera's far distance, so the target never falls behind the far plane. */
+    constexpr float FurthestZoomPerFar = 0.5f;
+
     /** -1, 0 or +1 from two opposite keys. */
     float Axis(bool positive, bool negative)
     {
@@ -51,6 +60,15 @@ namespace
         const glm::vec3 turned{std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw)};
         return turned * distance;
     }
+
+    /** The view shortened (positive steps) or lengthened by wheel steps, within the camera's zoom limits. */
+    glm::vec3 Zoom(const glm::vec3& view, float distance, float steps, const Wotah::Camera& camera)
+    {
+        const float closest  = camera.GetNearDistance() * ClosestZoomPerNear;
+        const float furthest = std::max(camera.GetFarDistance() * FurthestZoomPerFar, closest);
+        const float zoomed   = std::clamp(distance * std::pow(ZoomStepFactor, steps), closest, furthest);
+        return view * (zoomed / distance);
+    }
 } // namespace
 
 bool Wotah::CameraController::OnInput(const InputEvent& event)
@@ -58,6 +76,11 @@ bool Wotah::CameraController::OnInput(const InputEvent& event)
     switch (event.Type)
     {
         case InputEventType::KeyPressed:
+            if (event.Key == KeyCode::F)
+            {
+                m_isFocusRequested = m_isFocusRequested || !event.IsRepeat; // holding F asks once
+                return true;
+            }
             return SetHeld(event.Key, true);
         case InputEventType::KeyReleased:
             return SetHeld(event.Key, false);
@@ -76,10 +99,16 @@ bool Wotah::CameraController::OnInput(const InputEvent& event)
             }
             m_pendingTurn += event.Delta;
             return true;
+        case InputEventType::MouseScrolled:
+            if (event.Delta.y == 0.0f) // sideways scrolling does not zoom
+            {
+                return false;
+            }
+            m_pendingZoomSteps += event.Delta.y;
+            return true;
         case InputEventType::FocusLost:
             ReleaseAll();
             return false;
-        case InputEventType::MouseScrolled:
         case InputEventType::TextEntered:
             return false;
     }
@@ -88,20 +117,32 @@ bool Wotah::CameraController::OnInput(const InputEvent& event)
 
 void Wotah::CameraController::Update(Camera& camera, float seconds)
 {
-    const glm::vec3 position = camera.GetPosition();
-    glm::vec3       view     = camera.GetTarget() - position;
-    const float     distance = glm::length(view);
+    glm::vec3   position = camera.GetPosition();
+    glm::vec3   view     = camera.GetTarget() - position;
+    const float distance = glm::length(view);
     if (distance * distance < NearlyZeroSquared)
     {
-        m_pendingTurn = glm::vec2(0.0f);
-        return; // a camera on its target has no direction to move or turn along
+        m_pendingTurn      = glm::vec2(0.0f);
+        m_pendingZoomSteps = 0.0f;
+        return; // a camera on its target has no direction to move, turn or zoom along
     }
 
+    // Turning keeps the camera where it is and swings the target around it.
     const bool isTurned = m_pendingTurn != glm::vec2(0.0f);
     if (isTurned)
     {
         view          = Turn(view, distance, m_pendingTurn);
         m_pendingTurn = glm::vec2(0.0f);
+    }
+
+    // Zooming keeps the target where it is and slides the camera along the view towards or away from it.
+    const bool isZoomed = m_pendingZoomSteps != 0.0f;
+    if (isZoomed)
+    {
+        const glm::vec3 target = position + view;
+        view                   = Zoom(view, distance, m_pendingZoomSteps, camera);
+        position               = target - view;
+        m_pendingZoomSteps     = 0.0f;
     }
 
     // W/S along the view flattened onto the ground, A/D sideways, Space/Shift straight up and down.
@@ -118,7 +159,7 @@ void Wotah::CameraController::Update(Camera& camera, float seconds)
     }
 
     const bool isMoved = glm::dot(move, move) >= NearlyZeroSquared;
-    if (!isMoved && !isTurned)
+    if (!isMoved && !isTurned && !isZoomed)
     {
         return; // untouched, so the camera keeps its matrices
     }
@@ -159,9 +200,22 @@ bool Wotah::CameraController::SetHeld(KeyCode key, bool isHeld) noexcept
     }
 }
 
+bool Wotah::CameraController::TakeFocusRequest() noexcept
+{
+    if (!m_isFocusRequested)
+    {
+        return false;
+    }
+    m_isFocusRequested = false;
+    m_pendingTurn      = glm::vec2(0.0f);
+    m_pendingZoomSteps = 0.0f;
+    return true;
+}
+
 void Wotah::CameraController::ReleaseAll() noexcept
 {
-    m_held        = HeldKeys{};
-    m_isTurning   = false;
-    m_pendingTurn = glm::vec2(0.0f);
+    m_held             = HeldKeys{};
+    m_isTurning        = false;
+    m_pendingTurn      = glm::vec2(0.0f);
+    m_pendingZoomSteps = 0.0f;
 }

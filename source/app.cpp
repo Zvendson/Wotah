@@ -137,6 +137,7 @@ bool Wotah::App::Create()
     {
         return false;
     }
+    m_focusViews.front() = corner;
 
     if (!state.Renderer.Create(m_device, state.Swapchain))
     {
@@ -174,6 +175,10 @@ bool Wotah::App::Run()
         for (const InputEvent& event : m_window.GetInputEvents())
         {
             m_input.Dispatch(event);
+        }
+        if (m_cameraController.TakeFocusRequest())
+        {
+            FocusActiveCamera();
         }
         m_window.SetCursorCaptured(m_cameraController.IsTurning());
 
@@ -223,6 +228,7 @@ bool Wotah::App::Run()
 std::size_t Wotah::App::AddCamera(const Camera& camera)
 {
     m_cameras.push_back(camera);
+    m_focusViews.push_back(camera);
     return m_cameras.size() - 1;
 }
 
@@ -235,6 +241,12 @@ bool Wotah::App::SelectCamera(std::size_t index)
     }
     m_activeCamera = index;
     return true;
+}
+
+void Wotah::App::FocusActiveCamera()
+{
+    // The aspect ratio comes back too; Run sets the image's ratio again before the next frame.
+    m_cameras[m_activeCamera] = m_focusViews[m_activeCamera];
 }
 
 void Wotah::App::Start()

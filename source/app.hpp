@@ -46,7 +46,10 @@ namespace Wotah
          */
         void Destroy();
 
-        /** Adds a camera and returns its index for SelectCamera; the active camera stays the same. */
+        /**
+         * Adds a camera and returns its index for SelectCamera; the active camera stays the same. The camera as given
+         * becomes its focus view, which FocusActiveCamera (the F key) goes back to.
+         */
         std::size_t AddCamera(const Camera& camera);
 
         /** Draws through the camera at index from the next frame on; false (and logged) for an unknown index. */
@@ -54,6 +57,9 @@ namespace Wotah
 
         /** The camera frames are drawn through; change it at any time. There is always one. */
         [[nodiscard]] Camera& GetActiveCamera() noexcept { return m_cameras[m_activeCamera]; }
+
+        /** Puts the active camera back to its focus view: how it was when it was added. */
+        void FocusActiveCamera();
 
     private:
         /** Shows the window; the first thing Run does. */
@@ -81,13 +87,16 @@ namespace Wotah
         /** Every camera; never empty, so there is always an active one. Create sets up the first. */
         std::vector<Camera> m_cameras{Camera{}};
 
+        /** Each camera's focus view, at the same index as in m_cameras. */
+        std::vector<Camera> m_focusViews{Camera{}};
+
         /** The index of the camera frames are drawn through; always inside m_cameras. */
         std::size_t m_activeCamera = 0;
 
         /** Hands the window's input to the handlers, the UI first once there is one. */
         InputDispatcher m_input;
 
-        /** Flies the active camera: W A S D, Space, Shift, and the right mouse button to turn. */
+        /** Flies the active camera: W A S D, Space, Shift, the right mouse button to turn, the wheel, and F. */
         CameraController m_cameraController;
     };
 } // namespace Wotah
