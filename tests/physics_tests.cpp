@@ -2,7 +2,7 @@
  * @file physics_tests.cpp
  * The physics world (physics/physics_world.hpp): gravity, landing and resting on the ground, bouncing, balls pushing
  * each other, a box to land on, the turning kinematic cube, steps that do not depend on the frame rate, smooth blending
- * for drawing, and refused input. No GPU needed.
+ * for drawing, a world made again from the start, and refused input. No GPU needed.
  */
 #include "physics/physics_world.hpp"
 
@@ -289,6 +289,34 @@ TEST_SUITE("physics")
         const float fallen       = 100.0f - GetPosition(world, *ball).y;
         CHECK(fallen < 0.5f * Wotah::StandardGravity * limitSeconds * limitSeconds * 1.1f);
         CHECK(fallen > 0.0f);
+    }
+
+    TEST_CASE(
+        "creating a world again starts it afresh: nothing of the old one is left, and the same start runs the same")
+    {
+        // The program's Reset scene: the same world made again must replay exactly.
+        Wotah::PhysicsWorld world;
+        SetUpWorld(world, true);
+        const glm::vec3                    start{0.0f, 5.0f, 0.0f};
+        const std::optional<Wotah::BodyId> first = world.AddSphere(BallRadius, MakeBall(start));
+        REQUIRE(first.has_value());
+        Run(world, 0.5f);
+        const glm::vec3 halfwayBefore = GetPosition(world, *first);
+        Run(world, 2.0f); // it lands and rests on the floor
+
+        SetUpWorld(world, true);
+        const std::optional<Wotah::BodyId> again = world.AddSphere(BallRadius, MakeBall(start));
+        REQUIRE(again.has_value());
+        CHECK(GetPosition(world, *again).y == start.y); // back at the start, not where the old ball came to rest
+        Run(world, 0.5f);
+        CHECK(glm::length(GetPosition(world, *again) - halfwayBefore) < 1.0e-5f);
+
+        // The old ball is gone: the new one comes to rest on the floor right below its start, neither on top of the old
+        // one nor knocked aside by it.
+        Run(world, 2.0f);
+        const glm::vec3 rest = GetPosition(world, *again);
+        CHECK(std::abs(rest.y - BallRadius) < RestingSlack);
+        CHECK(glm::length(glm::vec2(rest.x, rest.z)) < RestingSlack);
     }
 
     TEST_CASE("bad bodies, steps and ids are refused, and several worlds live side by side")

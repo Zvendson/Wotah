@@ -60,17 +60,25 @@ namespace Wotah
         Enter        = 257,
         Tab          = 258,
         Backspace    = 259,
+        Insert       = 260,
         Delete       = 261,
         Right        = 262,
         Left         = 263,
         Down         = 264,
         Up           = 265,
+        PageUp       = 266,
+        PageDown     = 267,
+        Home         = 268,
+        End          = 269,
+        KeypadEnter  = 335,
         LeftShift    = 340,
         LeftControl  = 341,
         LeftAlt      = 342,
+        LeftSuper    = 343, // the Windows key, Command on a Mac keyboard
         RightShift   = 344,
         RightControl = 345,
         RightAlt     = 346,
+        RightSuper   = 347,
     };
 
     /** A mouse button; the values are GLFW 3.4's button numbers (glfw3.h, "Mouse buttons"). */

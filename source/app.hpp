@@ -14,6 +14,7 @@
 #include "render/camera.hpp"
 #include "render/device.hpp"
 #include "render/lighting.hpp"
+#include "ui/user_interface.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -23,6 +24,7 @@
 
 namespace Wotah
 {
+    struct ControlBarClicks;
     struct MeshData;
 
     /**
@@ -42,7 +44,10 @@ namespace Wotah
         App(const App&)            = delete;
         App& operator=(const App&) = delete;
 
-        /** Starts the log, opens the window (still hidden) and creates every Vulkan object; false when one failed. */
+        /**
+         * Starts the log, opens the window (still hidden), starts the UI and creates every Vulkan object; false when
+         * one failed.
+         */
         [[nodiscard]] bool Create();
 
         /**
@@ -52,8 +57,8 @@ namespace Wotah
         [[nodiscard]] bool Run();
 
         /**
-         * Frees every Vulkan object and the window, then closes the log; safe to call more than once or after a failed
-         * Create.
+         * Frees every Vulkan object, the UI and the window, then closes the log; safe to call more than once or after a
+         * failed Create.
          */
         void Destroy();
 
@@ -94,9 +99,24 @@ namespace Wotah
 
         /**
          * One frame: hands out the input, moves the camera by frameSeconds, makes the swapchain again when needed, and
-         * draws the scene; false (and logged) when Vulkan failed.
+         * draws the scene with the UI over it; false (and logged) when Vulkan failed.
          */
         [[nodiscard]] bool DrawFrame(float frameSeconds);
+
+        /**
+         * Puts this frame's UI together (the stats window and the control bar), for a frame of frameSeconds, at the
+         * swapchain's size, and does what was clicked in it.
+         */
+        void ShowUi(float frameSeconds);
+
+        /** Does what was clicked in the control bar: pauses or resumes the world, resets the camera or the scene. */
+        void ApplyClicks(const ControlBarClicks& clicks);
+
+        /**
+         * Puts the scene back as it started: a new physics world with the ground, the cube at its first turn and both
+         * balls where they began. A failure is logged; the scene then lacks what could not be made.
+         */
+        void ResetScene();
 
         /**
          * Waits until the GPU has finished the last frame, so nothing is destroyed while in use; the last thing Run
@@ -107,13 +127,17 @@ namespace Wotah
         /** The Vulkan handles; defined in app.cpp so this header stays free of Vulkan. */
         struct State;
 
-        // Order matters: members are destroyed in reverse, so the device goes before the window its surface is on.
+        // Order matters: members are destroyed in reverse, so the device goes before the window its surface is on, and
+        // the UI's renderer (in m_state) before the UI it is attached to.
 
         /** The window everything is drawn into. */
         Window m_window;
 
         /** The Vulkan instance, surface, GPU, device and queue. */
         Device m_device;
+
+        /** The windows drawn over the scene (Dear ImGui); the first to get the input. */
+        UserInterface m_ui;
 
         std::unique_ptr<State> m_state;
 
@@ -129,7 +153,7 @@ namespace Wotah
         /** What lights the scene; Create puts a sun and a moon in. */
         SceneLights m_lights;
 
-        /** Hands the window's input to the handlers, the UI first once there is one. */
+        /** Hands the window's input to the handlers: the UI first, then the camera controller. */
         InputDispatcher m_input;
 
         /** Flies the active camera: W A S D, Space, Shift, the right mouse button to turn, the wheel, and F. */
@@ -137,6 +161,9 @@ namespace Wotah
 
         /** The input the drawing thread took from the window this frame; kept, so it does not allocate again. */
         std::vector<InputEvent> m_frameInput;
+
+        /** Whether the world stands still (the control bar's Pause); the camera still flies. Drawing thread only. */
+        bool m_isPaused = false;
 
         /** Whether the drawing thread still draws; it clears this when it ends, for whatever reason. */
         std::atomic<bool> m_isDrawing = false;

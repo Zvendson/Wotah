@@ -65,7 +65,7 @@ IncludeCategories:
   - Regex: '^<Jolt/'
     Priority: 3
     SortPriority: 4
-  - Regex: '^<(doctest|GLFW|glm|nlohmann|spdlog|vulkan)'
+  - Regex: '^<(doctest|GLFW|glm|imgui|nlohmann|spdlog|vulkan)'
     Priority: 5
     SortPriority: 5
   # windows.h in a block before the other system headers, which need it.

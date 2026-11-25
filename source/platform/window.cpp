@@ -28,17 +28,25 @@ static_assert(static_cast<int>(Wotah::KeyCode::Escape) == GLFW_KEY_ESCAPE);
 static_assert(static_cast<int>(Wotah::KeyCode::Enter) == GLFW_KEY_ENTER);
 static_assert(static_cast<int>(Wotah::KeyCode::Tab) == GLFW_KEY_TAB);
 static_assert(static_cast<int>(Wotah::KeyCode::Backspace) == GLFW_KEY_BACKSPACE);
+static_assert(static_cast<int>(Wotah::KeyCode::Insert) == GLFW_KEY_INSERT);
 static_assert(static_cast<int>(Wotah::KeyCode::Delete) == GLFW_KEY_DELETE);
 static_assert(static_cast<int>(Wotah::KeyCode::Right) == GLFW_KEY_RIGHT);
 static_assert(static_cast<int>(Wotah::KeyCode::Left) == GLFW_KEY_LEFT);
 static_assert(static_cast<int>(Wotah::KeyCode::Down) == GLFW_KEY_DOWN);
 static_assert(static_cast<int>(Wotah::KeyCode::Up) == GLFW_KEY_UP);
+static_assert(static_cast<int>(Wotah::KeyCode::PageUp) == GLFW_KEY_PAGE_UP);
+static_assert(static_cast<int>(Wotah::KeyCode::PageDown) == GLFW_KEY_PAGE_DOWN);
+static_assert(static_cast<int>(Wotah::KeyCode::Home) == GLFW_KEY_HOME);
+static_assert(static_cast<int>(Wotah::KeyCode::End) == GLFW_KEY_END);
+static_assert(static_cast<int>(Wotah::KeyCode::KeypadEnter) == GLFW_KEY_KP_ENTER);
 static_assert(static_cast<int>(Wotah::KeyCode::LeftShift) == GLFW_KEY_LEFT_SHIFT);
 static_assert(static_cast<int>(Wotah::KeyCode::LeftControl) == GLFW_KEY_LEFT_CONTROL);
 static_assert(static_cast<int>(Wotah::KeyCode::LeftAlt) == GLFW_KEY_LEFT_ALT);
+static_assert(static_cast<int>(Wotah::KeyCode::LeftSuper) == GLFW_KEY_LEFT_SUPER);
 static_assert(static_cast<int>(Wotah::KeyCode::RightShift) == GLFW_KEY_RIGHT_SHIFT);
 static_assert(static_cast<int>(Wotah::KeyCode::RightControl) == GLFW_KEY_RIGHT_CONTROL);
 static_assert(static_cast<int>(Wotah::KeyCode::RightAlt) == GLFW_KEY_RIGHT_ALT);
+static_assert(static_cast<int>(Wotah::KeyCode::RightSuper) == GLFW_KEY_RIGHT_SUPER);
 static_assert(static_cast<int>(Wotah::MouseButton::Left) == GLFW_MOUSE_BUTTON_LEFT);
 static_assert(static_cast<int>(Wotah::MouseButton::Right) == GLFW_MOUSE_BUTTON_RIGHT);
 static_assert(static_cast<int>(Wotah::MouseButton::Middle) == GLFW_MOUSE_BUTTON_MIDDLE);
@@ -151,6 +159,13 @@ struct Wotah::Window::Callbacks
         window.m_drawableChanged.notify_all();
     }
 
+    static void OnResize(GLFWwindow* handle, int width, int height)
+    {
+        Window&                window = From(handle);
+        const std::scoped_lock lock(window.m_mutex);
+        window.m_size = {ToPixels(width), ToPixels(height)};
+    }
+
     static void OnMinimize(GLFWwindow* handle, int isMinimized)
     {
         Window& window = From(handle);
@@ -208,12 +223,16 @@ bool Wotah::Window::Create(const WindowSize& size, const std::string& title)
         return false;
     }
 
-    int width  = 0;
-    int height = 0;
+    int width        = 0;
+    int height       = 0;
+    int screenWidth  = 0;
+    int screenHeight = 0;
     glfwGetFramebufferSize(m_window, &width, &height);
+    glfwGetWindowSize(m_window, &screenWidth, &screenHeight);
     {
         const std::scoped_lock lock(m_mutex);
         m_framebufferSize = {ToPixels(width), ToPixels(height)};
+        m_size            = {ToPixels(screenWidth), ToPixels(screenHeight)};
         m_inputEvents.reserve(ExpectedEventsPerFrame);
     }
 
@@ -226,6 +245,7 @@ bool Wotah::Window::Create(const WindowSize& size, const std::string& title)
     glfwSetScrollCallback(m_window, Callbacks::OnScroll);
     glfwSetWindowFocusCallback(m_window, Callbacks::OnFocus);
     glfwSetFramebufferSizeCallback(m_window, Callbacks::OnFramebufferResize);
+    glfwSetWindowSizeCallback(m_window, Callbacks::OnResize);
     glfwSetWindowIconifyCallback(m_window, Callbacks::OnMinimize);
     return true;
 }
@@ -246,6 +266,7 @@ void Wotah::Window::Destroy()
     const std::scoped_lock lock(m_mutex);
     m_inputEvents.clear();
     m_framebufferSize = {};
+    m_size            = {};
     m_isMinimized     = false;
     m_wasResized      = false;
 }
@@ -319,6 +340,12 @@ Wotah::WindowSize Wotah::Window::GetFramebufferSize() const
 {
     const std::scoped_lock lock(m_mutex);
     return m_framebufferSize;
+}
+
+Wotah::WindowSize Wotah::Window::GetSize() const
+{
+    const std::scoped_lock lock(m_mutex);
+    return m_size;
 }
 
 bool Wotah::Window::WaitForDrawableArea(const std::stop_token& stop)

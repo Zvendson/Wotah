@@ -120,6 +120,13 @@ namespace Wotah
         void SetSize(const WindowSize& size);
 
         /**
+         * The size of the window's inside in screen units, the units of the cursor's positions, as of the last handled
+         * event. On screens the system scales (e.g. Wayland at 200 %) it is smaller than GetFramebufferSize; elsewhere
+         * the two are equal. Any thread.
+         */
+        [[nodiscard]] WindowSize GetSize() const;
+
+        /**
          * The size of the drawable area in pixels, as of the last handled event; it can differ from the window size on
          * high-DPI screens. Any thread.
          */
@@ -175,8 +182,9 @@ namespace Wotah
         /** The input collected since TakeInputEvents last took it. */
         std::vector<InputEvent> m_inputEvents;
 
-        /** The drawable area's size, kept by the callbacks: GLFW only answers on the main thread. */
+        /** The drawable area's size and the window's, kept by the callbacks: GLFW only answers on the main thread. */
         WindowSize m_framebufferSize;
+        WindowSize m_size;
 
         /** Whether the window is minimized. */
         bool m_isMinimized = false;

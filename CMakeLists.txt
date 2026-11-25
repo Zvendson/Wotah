@@ -90,8 +90,27 @@ FetchContent_Declare(JoltPhysics
     SOURCE_SUBDIR  Build)
 FetchContent_MakeAvailable(JoltPhysics)
 
+# Dear ImGui for the windows and widgets drawn over the scene (ui/), with its Vulkan backend (render/ui_renderer.cpp).
+# It has no CMake project of its own, so its files are built here. Its GLFW backend is left out: it calls GLFW on the
+# drawing thread, which GLFW forbids; ui/user_interface.cpp hands ImGui the window's input events instead. The tests add
+# its null backend (tests/CMakeLists.txt).
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.93.0)
+FetchContent_MakeAvailable(imgui)
+add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
+# Only today's names: what ImGui marks obsolete is left out, so nothing here starts to depend on it.
+target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
+
 # Their headers are theirs: no warnings from inside them (Vulkan::Vulkan is imported, so already a system folder).
-foreach(third_party glfw spdlog glm VulkanMemoryAllocator Jolt)
+foreach(third_party glfw spdlog glm VulkanMemoryAllocator Jolt imgui)
     wotah_mark_system(${third_party})
 endforeach()
 
@@ -178,15 +197,28 @@ add_library(wotah STATIC
     source/render/sky.cpp
     source/render/swapchain.hpp
     source/render/swapchain.cpp
+    source/render/ui_renderer.hpp
+    source/render/ui_renderer.cpp
     source/render/vulkan_handles.hpp
     source/render/vulkan_memory_allocator.cpp
     source/render/vulkan_utils.hpp
     source/render/vulkan_utils.cpp
+    source/ui/card.hpp
+    source/ui/card.cpp
+    source/ui/control_bar.hpp
+    source/ui/control_bar.cpp
+    source/ui/stats_window.hpp
+    source/ui/stats_window.cpp
+    source/ui/theme.hpp
+    source/ui/theme.cpp
+    source/ui/user_interface.hpp
+    source/ui/user_interface.cpp
     ${SHADERS})
 # Project headers are included by their path from source/, e.g. "core/logger.hpp".
 target_include_directories(wotah PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/source ${SHADER_OUT})
 target_link_libraries(wotah PUBLIC Vulkan::Vulkan glfw spdlog::spdlog glm::glm GPUOpen::VulkanMemoryAllocator)
 target_link_libraries(wotah PRIVATE Jolt) # only physics/*.cpp see it
+target_link_libraries(wotah PRIVATE imgui) # only ui/*.cpp and render/ui_renderer.cpp see it
 # glm's projections produce Vulkan's 0..1 depth range instead of OpenGL's -1..1.
 target_compile_definitions(wotah PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE
     WOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS} WOTAH_SHADOW_CASCADES=${WOTAH_SHADOW_CASCADES})

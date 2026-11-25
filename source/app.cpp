@@ -5,7 +5,8 @@
  * sun in the east casting the shadows, as on a clear day (the moon is up but too faint to show). Gravity and collisions
  * come from the physics world (Jolt). Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the
  * shapes are Meshes on the GPU, camera and object matrices come in as push constants, and the lights through a uniform
- * buffer with every light's shadow map beside it.
+ * buffer with every light's shadow map beside it. Over the scene lie a small stats window and a control bar (Dear
+ * ImGui) that pauses the world and resets the scene or the camera.
  */
 #include "app.hpp"
 
@@ -20,6 +21,9 @@
 #include "render/renderer.hpp"
 #include "render/sky.hpp"
 #include "render/swapchain.hpp"
+#include "render/ui_renderer.hpp"
+#include "ui/control_bar.hpp"
+#include "ui/stats_window.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
@@ -292,7 +296,7 @@ static void DrawMesh(VkCommandBuffer commandBuffer, const Wotah::Pipeline& pipel
 
 /**
  * The Vulkan objects the application creates on top of the device. Declared in creation order, so they are destroyed
- * in reverse: the meshes and pipelines first, the renderer before the swapchain it draws into.
+ * in reverse: the UI's renderer, the meshes and pipelines first, the renderer before the swapchain it draws into.
  */
 struct Wotah::App::State
 {
@@ -327,6 +331,9 @@ struct Wotah::App::State
     Wotah::BodyId       CubeBody;
     Wotah::BodyId       BallBody;
     Wotah::BodyId       DroppedBallBody;
+
+    /** Draws the UI over the scene, last in every frame. */
+    Wotah::UiRenderer UiRenderer;
 };
 
 Wotah::App::App()
@@ -403,6 +410,12 @@ bool Wotah::App::Create()
         return false;
     }
 
+    // The UI over the scene: ImGui first, then its renderer, which attaches to it and draws into the same frames.
+    if (!m_ui.Create() || !state.UiRenderer.Create(m_device, colorFormat, depthFormat))
+    {
+        return false;
+    }
+
     // The first camera looks at the cube from above a corner; Run keeps every active camera's aspect ratio in step
     // with the image.
     Camera& corner = m_cameras.front();
@@ -414,7 +427,8 @@ bool Wotah::App::Create()
     }
     m_focusViews.front() = corner;
 
-    // The camera controller gets whatever input no handler before it used; a UI will be added in front of it.
+    // The UI is asked first and keeps what lands on its windows; the camera controller gets the rest.
+    m_input.AddHandler(m_ui);
     m_input.AddHandler(m_cameraController);
     return true;
 }
@@ -552,8 +566,11 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     m_window.RequestCursorCaptured(m_cameraController.IsTurning());
     m_cameraController.Update(GetActiveCamera(), frameSeconds);
 
-    // The world moves on by the time this frame took: the cube turns, the balls fall, bounce and roll.
-    m_state->Physics.Step(frameSeconds);
+    // The world moves on by the time this frame took, unless paused: the cube turns, the balls fall, bounce and roll.
+    if (!m_isPaused)
+    {
+        m_state->Physics.Step(frameSeconds);
+    }
 
     // A new window size, or a swapchain the system no longer finds fitting: make it again before drawing. While the
     // user drags the window's edge this happens every few frames, so the picture follows the edge.
@@ -564,6 +581,10 @@ bool Wotah::App::DrawFrame(float frameSeconds)
             return false;
         }
     }
+
+    // The UI's windows for this frame, at the swapchain's size; only shapes on the CPU so far, drawn after the scene.
+    // What was clicked happens right away, so a reset scene is already drawn in this frame.
+    ShowUi(frameSeconds);
 
     const FrameStart start = renderer.BeginFrame();
     if (start != FrameStart::Ready)
@@ -610,7 +631,53 @@ bool Wotah::App::DrawFrame(float frameSeconds)
         pushConstants.Model = object.Model;
         DrawMesh(commandBuffer, *object.Pipeline, scene.Lighting, *object.Mesh, pushConstants);
     }
-    return renderer.EndFrame();
+
+    // The UI last, so it lies over everything.
+    return m_state->UiRenderer.Draw(commandBuffer) && renderer.EndFrame();
+}
+
+void Wotah::App::ShowUi(float frameSeconds)
+{
+    const VkExtent2D extent = m_state->Swapchain.GetExtent();
+    const WindowSize pictureSize{extent.width, extent.height};
+
+    FrameStats stats;
+    stats.PictureWidth   = extent.width;
+    stats.PictureHeight  = extent.height;
+    stats.CameraPosition = GetActiveCamera().GetPosition();
+
+    m_ui.BeginFrame(m_window.GetSize(), pictureSize, frameSeconds);
+    ShowStatsWindow(stats);
+    const ControlBarClicks clicks = ShowControlBar(m_isPaused);
+    m_ui.EndFrame();
+
+    ApplyClicks(clicks);
+}
+
+void Wotah::App::ApplyClicks(const ControlBarClicks& clicks)
+{
+    if (clicks.TogglePause)
+    {
+        m_isPaused = !m_isPaused;
+    }
+    if (clicks.ResetCamera)
+    {
+        FocusActiveCamera();
+    }
+    if (clicks.ResetScene)
+    {
+        ResetScene(); // paused or not stays as it was, so a paused scene can be reset and then watched again
+    }
+}
+
+void Wotah::App::ResetScene()
+{
+    // A new world is the exact start: Create replaces the old world with an empty one (physics/physics_world.hpp). The
+    // ground's collision shape is made again from its heights, a short hitch once per click.
+    if (!CreatePhysics(MakeTerrainMesh(m_state->GroundShape)))
+    {
+        Logger::Error("Could not reset the scene");
+    }
 }
 
 std::size_t Wotah::App::AddCamera(const Camera& camera)
@@ -649,9 +716,10 @@ void Wotah::App::Stop()
 
 void Wotah::App::Destroy()
 {
-    // Children before their parents: the objects made on the device (a fresh State destroys the old one, renderer
-    // first), the device, the window, then the log.
+    // Children before their parents: the objects made on the device (a fresh State destroys the old one, the UI's
+    // renderer first), the UI it was attached to, the device, the window, then the log.
     m_state = std::make_unique<State>();
+    m_ui.Destroy();
     m_device.Destroy();
     m_window.Destroy();
     Logger::Destroy(); // last, so everything above can still log

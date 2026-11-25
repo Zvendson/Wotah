@@ -1,7 +1,8 @@
 /**
  * @file gpu_tests.cpp
  * Tests that need a Vulkan 1.3 GPU: the window, device, swapchain, pipelines with every option, frames through the
- * renderer, depth images, shadows, and the example scene (cube and ball) drawn offscreen and read back. Every window
+ * renderer, depth images, shadows, the example scene (cube and ball) drawn offscreen and read back, and the UI drawn
+ * over it. Every window
  * stays hidden, so running the tests never shows anything on screen. Skip them with --test-suite-exclude=gpu on
  * machines without a GPU.
  */
@@ -19,14 +20,19 @@
 #include "render/shadow_maps.hpp"
 #include "render/sky.hpp"
 #include "render/swapchain.hpp"
+#include "render/ui_renderer.hpp"
 #include "render/vulkan_utils.hpp"
 #include "test_utils.hpp"
+#include "ui/control_bar.hpp"
+#include "ui/stats_window.hpp"
+#include "ui/user_interface.hpp"
 
 #include <doctest/doctest.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/trigonometric.hpp>
 #include <glm/vec3.hpp>
+#include <imgui.h>
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
@@ -147,7 +153,10 @@ namespace
         mesh.Draw(commands);
     }
 
-    /** What an offscreen picture shows: its lights, which parts are in it, where the ball lies, and the draw order. */
+    /**
+     * What an offscreen picture shows: its lights, which parts are in it, where the ball lies, the draw order, and the
+     * UI over it all when Ui is set (not owned; its last ended UI frame is drawn).
+     */
     struct OffscreenScene
     {
         Wotah::SceneLights Lights;
@@ -157,7 +166,12 @@ namespace
         bool               IsBallFirst  = false;
         bool               IsGroundLast = false;
         glm::vec3          BallPlace    = BallPosition;
+        Wotah::UiRenderer* Ui           = nullptr;
     };
+
+    /** The offscreen pictures' size and color format (DrawSceneOffscreen); the program's window is as large. */
+    constexpr VkExtent2D OffscreenSize{600, 600};
+    constexpr VkFormat   OffscreenColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
 
     /** The program's scene on the GPU: the lights, the sky, the ground, both shapes and their pipelines. */
     struct Scene
@@ -337,8 +351,8 @@ namespace
     std::vector<uint8_t> DrawSceneOffscreen(const Wotah::Device& device, const Wotah::Camera& camera,
                                             const OffscreenScene& what)
     {
-        constexpr VkExtent2D Size{600, 600};
-        constexpr VkFormat   ColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
+        constexpr VkExtent2D Size        = OffscreenSize;
+        constexpr VkFormat   ColorFormat = OffscreenColorFormat;
 
         // ---- The images to draw into, and a buffer the CPU can read the picture from ----
         Wotah::Image color;
@@ -409,6 +423,10 @@ namespace
         vkCmdSetViewport(commands, 0, 1, &viewport);
         vkCmdSetScissor(commands, 0, 1, &scissor);
         scene.Record(commands, camera.GetViewProjection(), what);
+        if (what.Ui != nullptr)
+        {
+            REQUIRE(what.Ui->Draw(commands)); // last, over everything, as app.cpp does
+        }
         vkCmdEndRendering(commands);
 
         ChangeLayout(commands, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -648,6 +666,58 @@ namespace
         return count;
     }
 
+    /** The RGB of the pixel at (x, y), counted from the top-left corner, in a picture from DrawSceneOffscreen. */
+    std::array<int, 3> GetPixel(const std::vector<uint8_t>& pixels, uint32_t x, uint32_t y)
+    {
+        REQUIRE(x < OffscreenSize.width);
+        REQUIRE(y < OffscreenSize.height);
+        const std::size_t index = (std::size_t{y} * OffscreenSize.width + x) * 4;
+        return {pixels[index], pixels[index + 1], pixels[index + 2]};
+    }
+
+    /** A part of a picture from DrawSceneOffscreen, in pixels from the top left; Right and Bottom lie just outside. */
+    struct PixelArea
+    {
+        uint32_t Left   = 0;
+        uint32_t Top    = 0;
+        uint32_t Right  = 0;
+        uint32_t Bottom = 0;
+    };
+
+    /** How many pixels inside area are light in every channel, as the UI's text is and nothing else in its panels. */
+    std::size_t CountLightPixels(const std::vector<uint8_t>& pixels, const PixelArea& area)
+    {
+        REQUIRE(area.Right <= OffscreenSize.width);
+        REQUIRE(area.Bottom <= OffscreenSize.height);
+        constexpr uint8_t LightLevel = 0xB0;
+        std::size_t       count      = 0;
+        for (uint32_t y = area.Top; y < area.Bottom; ++y)
+        {
+            for (uint32_t x = area.Left; x < area.Right; ++x)
+            {
+                const std::size_t index = (std::size_t{y} * OffscreenSize.width + x) * 4;
+                if (pixels[index] > LightLevel && pixels[index + 1] > LightLevel && pixels[index + 2] > LightLevel)
+                {
+                    ++count;
+                }
+            }
+        }
+        return count;
+    }
+
+    /** One UI frame of the program: the stats window and the control bar, laid out and drawn at size. */
+    void ShowUiFrame(Wotah::UserInterface& ui, const Wotah::WindowSize& size)
+    {
+        constexpr float   FrameSeconds = 1.0f / 60.0f;
+        Wotah::FrameStats stats;
+        stats.PictureWidth  = size.Width;
+        stats.PictureHeight = size.Height;
+        ui.BeginFrame(size, size, FrameSeconds);
+        Wotah::ShowStatsWindow(stats);
+        (void)Wotah::ShowControlBar(false); // nothing is clicked in these tests
+        ui.EndFrame();
+    }
+
     /** How many pixels are clearly blue: the ball, never the orange cube or the gray background. */
     std::size_t CountBluePixels(const std::vector<uint8_t>& pixels)
     {
@@ -675,6 +745,8 @@ TEST_SUITE("gpu")
         CHECK_FALSE(window.GetRequiredInstanceExtensions().empty());
         CHECK(window.GetFramebufferSize().Width == HiddenWindowSize.Width);
         CHECK(window.GetFramebufferSize().Height == HiddenWindowSize.Height);
+        CHECK(window.GetSize().Width == HiddenWindowSize.Width); // the tests' screens are not scaled
+        CHECK(window.GetSize().Height == HiddenWindowSize.Height);
         window.PollEvents(); // nothing waiting: returns right away
         CHECK_FALSE(window.ShouldClose());
 
@@ -1157,6 +1229,8 @@ TEST_SUITE("gpu")
             gpu.Window.PollEvents();
             CHECK(gpu.Window.TakeResize());
             CHECK_FALSE(gpu.Window.TakeResize()); // answered once
+            CHECK(gpu.Window.GetSize().Width == size.Width);
+            CHECK(gpu.Window.GetSize().Height == size.Height);
 
             REQUIRE(renderer.RecreateSwapchain(gpu.Device, gpu.Window));
             CHECK(swapchain.GetExtent().width == size.Width);
@@ -1511,5 +1585,123 @@ TEST_SUITE("gpu")
         CHECK(commands.Get() != VK_NULL_HANDLE);
         CHECK(commands.SubmitAndWait()); // nothing recorded: still runs
         CHECK(commands.Get() == VK_NULL_HANDLE);
+    }
+
+    TEST_CASE("the UI: the stats card over the scene, see-through, in a thin light border, with a shadow and its text")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        const std::optional<VkFormat> depthFormat = Wotah::FindDepthFormat(gpu.Device);
+        REQUIRE(depthFormat.has_value());
+        Wotah::UserInterface ui;
+        REQUIRE(ui.Create());
+        Wotah::UiRenderer uiRenderer;
+        REQUIRE(uiRenderer.Create(gpu.Device, OffscreenColorFormat, *depthFormat));
+
+        // ImGui measures a window that sizes itself in its first frame and shows it from the next (imgui.cpp, Begin),
+        // so a few frames run before the one that is drawn.
+        constexpr int               FirstFrames = 3;
+        constexpr Wotah::WindowSize Size{OffscreenSize.width, OffscreenSize.height};
+        for (int frame = 0; frame < FirstFrames; ++frame)
+        {
+            ShowUiFrame(ui, Size);
+        }
+        OffscreenScene what;
+        what.HasShapes                    = false; // only the background behind the UI
+        what.Ui                           = &uiRenderer;
+        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, Wotah::Camera{}, what);
+
+        // The panel: the theme's slate with a little of the background (the program's, 0.1 gray) showing through; the
+        // shadow beneath darkens that part by less than a level. The pixel lies in the window's left padding, beside
+        // its rows (as in ui_tests.cpp).
+        constexpr float    Background  = 0.1f;
+        constexpr uint32_t PanelPixelX = 18;
+        constexpr uint32_t PanelPixelY = 62;
+        const ImVec4&      panel       = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+        const float        throughPart = (1.0f - panel.w) * Background;
+        CHECK(IsColorNear(GetPixel(pixels, PanelPixelX, PanelPixelY), panel.x * panel.w + throughPart,
+                          panel.y * panel.w + throughPart, panel.z * panel.w + throughPart));
+
+        // Along the panel's row, coming in from the background on the right, the first light pixel is the window's
+        // border: well lighter than the panel inside it (55 against 22 when measured). Just outside it lies the shadow,
+        // darker than the background (18 to 21 against 26).
+        constexpr int BorderLift  = 25;
+        constexpr int ShadowDepth = 4;
+        const int     panelLevel  = GetPixel(pixels, PanelPixelX, PanelPixelY)[0];
+        const int     background  = ToPixel(Background);
+        uint32_t      edge        = OffscreenSize.width - 1;
+        while (edge > PanelPixelX && GetPixel(pixels, edge, PanelPixelY)[0] < panelLevel + BorderLift)
+        {
+            --edge;
+        }
+        REQUIRE(edge > PanelPixelX); // a border was found
+        CHECK(GetPixel(pixels, edge + 2, PanelPixelY)[0] <= background - ShadowDepth);
+
+        // The text, drawn from the font pictures the UI renderer sent to the GPU: light pixels in the stats window's
+        // corner, and in the control bar's buttons at the bottom middle.
+        constexpr PixelArea StatsCorner{0, 0, 250, 250};
+        constexpr PixelArea BottomMiddle{100, 500, 500, 600};
+        CHECK(CountLightPixels(pixels, StatsCorner) > 100);
+        CHECK(CountLightPixels(pixels, BottomMiddle) > 100);
+
+        // Away from the window the background stays as it was.
+        CHECK(IsColorNear(GetPixel(pixels, OffscreenSize.width - 10, OffscreenSize.height - 10), Background, Background,
+                          Background));
+    }
+
+    TEST_CASE("the UI draws in the renderer's frames; its renderer needs the running UI and comes once")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        Wotah::Swapchain swapchain;
+        REQUIRE(swapchain.Create(gpu.Device, gpu.Window));
+        Wotah::Renderer renderer;
+        REQUIRE(renderer.Create(gpu.Device, swapchain));
+        const VkFormat colorFormat = swapchain.GetFormat();
+        const VkFormat depthFormat = renderer.GetDepthFormat();
+        {
+            Wotah::UiRenderer withoutUi;
+            CHECK_FALSE(withoutUi.Create(gpu.Device, colorFormat, depthFormat)); // the UI does not run yet
+            CHECK_FALSE(withoutUi.Draw(VK_NULL_HANDLE)); // never created: refused before it records anything
+        }
+
+        Wotah::UserInterface ui;
+        REQUIRE(ui.Create());
+        Wotah::UiRenderer uiRenderer;
+        REQUIRE(uiRenderer.Create(gpu.Device, colorFormat, depthFormat));
+        {
+            Wotah::UiRenderer second;
+            CHECK_FALSE(second.Create(gpu.Device, colorFormat, depthFormat)); // one at a time
+        }
+
+        constexpr int FrameCount = 10;
+        int           drawn      = 0;
+        for (int frame = 0; frame < FrameCount; ++frame)
+        {
+            gpu.Window.PollEvents();
+            const VkExtent2D        extent = swapchain.GetExtent();
+            const Wotah::WindowSize size{extent.width, extent.height};
+            ShowUiFrame(ui, size);
+            const Wotah::FrameStart start = renderer.BeginFrame();
+            REQUIRE(start != Wotah::FrameStart::Failed);
+            if (start == Wotah::FrameStart::Skip)
+            {
+                continue;
+            }
+            renderer.BeginScene();
+            REQUIRE(uiRenderer.Draw(renderer.GetCommandBuffer()));
+            REQUIRE(renderer.EndFrame());
+            ++drawn;
+        }
+        gpu.Device.WaitUntilIdle();
+        CHECK(drawn == FrameCount);
+
+        // The UI keeps running while its renderer is attached (logged), and stops once the renderer is gone.
+        ui.Destroy();
+        CHECK(ImGui::GetCurrentContext() != nullptr);
+        uiRenderer.Destroy();
+        uiRenderer.Destroy(); // twice is safe
+        ui.Destroy();
+        CHECK(ImGui::GetCurrentContext() == nullptr);
     }
 }
