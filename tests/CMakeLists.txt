@@ -21,8 +21,10 @@ add_executable(wotah_tests
     mesh_data_tests.cpp
     mesh_tests.cpp
     utils_tests.cpp
+    vulkan_utils_tests.cpp
     ${TEST_SHADERS})
 target_include_directories(wotah_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${TEST_SHADER_OUT})
 target_link_libraries(wotah_tests PRIVATE wotah doctest)
+wotah_set_warnings(wotah_tests)
 
 add_test(NAME wotah_tests COMMAND wotah_tests)

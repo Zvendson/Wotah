@@ -109,7 +109,8 @@ bool Wotah::Lighting::Create(const Device& device)
     binding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     binding.descriptorCount = 1;
     binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    VkDescriptorSetLayoutCreateInfo layoutInfo =
+        Wotah::MakeVulkanInfo<VkDescriptorSetLayoutCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
     layoutInfo.bindingCount = 1;
     layoutInfo.pBindings    = &binding;
     if (!Succeeded(vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, &m_setLayout),
@@ -122,7 +123,8 @@ bool Wotah::Lighting::Create(const Device& device)
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSize.descriptorCount = 1;
-    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    VkDescriptorPoolCreateInfo poolInfo =
+        Wotah::MakeVulkanInfo<VkDescriptorPoolCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
     poolInfo.maxSets       = 1;
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes    = &poolSize;
@@ -131,7 +133,8 @@ bool Wotah::Lighting::Create(const Device& device)
         return false;
     }
 
-    VkDescriptorSetAllocateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    VkDescriptorSetAllocateInfo setInfo =
+        Wotah::MakeVulkanInfo<VkDescriptorSetAllocateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO);
     setInfo.descriptorPool     = m_pool;
     setInfo.descriptorSetCount = 1;
     setInfo.pSetLayouts        = &m_setLayout;
@@ -142,14 +145,14 @@ bool Wotah::Lighting::Create(const Device& device)
 
     // The set points at the buffer once; afterwards only the buffer's bytes change.
     VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = m_buffer.GetHandle();
-    bufferInfo.range  = sizeof(GpuSceneLights);
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet          = m_set;
-    write.dstBinding      = 0;
-    write.descriptorCount = 1;
-    write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    write.pBufferInfo     = &bufferInfo;
+    bufferInfo.buffer          = m_buffer.GetHandle();
+    bufferInfo.range           = sizeof(GpuSceneLights);
+    VkWriteDescriptorSet write = Wotah::MakeVulkanInfo<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+    write.dstSet               = m_set;
+    write.dstBinding           = 0;
+    write.descriptorCount      = 1;
+    write.descriptorType       = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.pBufferInfo          = &bufferInfo;
     vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
 
     return Update(SceneLights{}); // defined content before the first frame

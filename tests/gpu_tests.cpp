@@ -18,6 +18,7 @@
 #include "render/renderer.hpp"
 #include "render/sky.hpp"
 #include "render/swapchain.hpp"
+#include "render/vulkan_utils.hpp"
 #include "test_utils.hpp"
 
 #include <doctest/doctest.h>
@@ -248,7 +249,8 @@ namespace
     void ChangeLayout(VkCommandBuffer commands, const Wotah::Image& image, VkImageLayout from, VkImageLayout to,
                       VkPipelineStageFlags sourceStage, VkPipelineStageFlags targetStage)
     {
-        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        VkImageMemoryBarrier barrier =
+            Wotah::MakeVulkanInfo<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
         barrier.srcAccessMask       = VK_ACCESS_MEMORY_WRITE_BIT;
         barrier.dstAccessMask       = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
         barrier.oldLayout           = from;
@@ -288,18 +290,21 @@ namespace
 
         // ---- Record: clear, draw, copy to the buffer ----
         const VkDevice          handle = device.GetHandle();
-        VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        VkCommandPoolCreateInfo poolInfo =
+            Wotah::MakeVulkanInfo<VkCommandPoolCreateInfo>(VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO);
         poolInfo.queueFamilyIndex = device.GetQueueFamily();
         VkCommandPool pool        = VK_NULL_HANDLE;
         REQUIRE(vkCreateCommandPool(handle, &poolInfo, nullptr, &pool) == VK_SUCCESS);
-        VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        VkCommandBufferAllocateInfo commandInfo =
+            Wotah::MakeVulkanInfo<VkCommandBufferAllocateInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
         commandInfo.commandPool        = pool;
         commandInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         commandInfo.commandBufferCount = 1;
         VkCommandBuffer commands       = VK_NULL_HANDLE;
         REQUIRE(vkAllocateCommandBuffers(handle, &commandInfo, &commands) == VK_SUCCESS);
 
-        VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        VkCommandBufferBeginInfo beginInfo =
+            Wotah::MakeVulkanInfo<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
         REQUIRE(vkBeginCommandBuffer(commands, &beginInfo) == VK_SUCCESS);
         ChangeLayout(commands, color, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
@@ -307,19 +312,21 @@ namespace
                      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                      VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
 
-        VkRenderingAttachmentInfo colorAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        VkRenderingAttachmentInfo colorAttachment =
+            Wotah::MakeVulkanInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
         colorAttachment.imageView        = color.GetView();
         colorAttachment.imageLayout      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         colorAttachment.loadOp           = VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAttachment.storeOp          = VK_ATTACHMENT_STORE_OP_STORE;
         colorAttachment.clearValue.color = {{0.1f, 0.1f, 0.1f, 1.0f}}; // the program's background
-        VkRenderingAttachmentInfo depthAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        VkRenderingAttachmentInfo depthAttachment =
+            Wotah::MakeVulkanInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
         depthAttachment.imageView                     = depth.GetView();
         depthAttachment.imageLayout                   = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         depthAttachment.loadOp                        = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAttachment.storeOp                       = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         depthAttachment.clearValue.depthStencil.depth = 1.0f; // the far plane
-        VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        VkRenderingInfo rendering      = Wotah::MakeVulkanInfo<VkRenderingInfo>(VK_STRUCTURE_TYPE_RENDERING_INFO);
         rendering.renderArea           = {{0, 0}, Size};
         rendering.layerCount           = 1;
         rendering.colorAttachmentCount = 1;
@@ -341,14 +348,14 @@ namespace
         region.imageExtent      = {Size.width, Size.height, 1};
         vkCmdCopyImageToBuffer(commands, color.GetHandle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.GetHandle(),
                                1, &region);
-        VkMemoryBarrier toHost{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-        toHost.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        toHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        VkMemoryBarrier toHost = Wotah::MakeVulkanInfo<VkMemoryBarrier>(VK_STRUCTURE_TYPE_MEMORY_BARRIER);
+        toHost.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toHost.dstAccessMask   = VK_ACCESS_HOST_READ_BIT;
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &toHost, 0,
                              nullptr, 0, nullptr);
         REQUIRE(vkEndCommandBuffer(commands) == VK_SUCCESS);
 
-        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        VkSubmitInfo submit       = Wotah::MakeVulkanInfo<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
         submit.commandBufferCount = 1;
         submit.pCommandBuffers    = &commands;
         REQUIRE(vkQueueSubmit(device.GetQueue(), 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS);
@@ -559,8 +566,8 @@ TEST_SUITE("gpu")
         CHECK(device.GetHandle() != VK_NULL_HANDLE);
         CHECK(device.GetQueue() != VK_NULL_HANDLE);
 
-        VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        VkFence           fence = VK_NULL_HANDLE;
+        VkFenceCreateInfo fenceInfo = Wotah::MakeVulkanInfo<VkFenceCreateInfo>(VK_STRUCTURE_TYPE_FENCE_CREATE_INFO);
+        VkFence           fence     = VK_NULL_HANDLE;
         CHECK(vkCreateFence(device.GetHandle(), &fenceInfo, nullptr, &fence) == VK_SUCCESS);
         vkDestroyFence(device.GetHandle(), fence, nullptr);
         device.WaitUntilIdle();
@@ -597,15 +604,16 @@ TEST_SUITE("gpu")
 
         // Take one image; an empty submit waits on the semaphore so it is used up cleanly.
         const VkDevice        device = gpu.Device.GetHandle();
-        VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        VkSemaphore           imageAvailable = VK_NULL_HANDLE;
+        VkSemaphoreCreateInfo semaphoreInfo =
+            Wotah::MakeVulkanInfo<VkSemaphoreCreateInfo>(VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO);
+        VkSemaphore imageAvailable = VK_NULL_HANDLE;
         REQUIRE(vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailable) == VK_SUCCESS);
         CHECK(swapchain.AcquireNextImage(imageAvailable).has_value());
         const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-        VkSubmitInfo               submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submit.waitSemaphoreCount = 1;
-        submit.pWaitSemaphores    = &imageAvailable;
-        submit.pWaitDstStageMask  = &waitStage;
+        VkSubmitInfo               submit    = Wotah::MakeVulkanInfo<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
+        submit.waitSemaphoreCount            = 1;
+        submit.pWaitSemaphores               = &imageAvailable;
+        submit.pWaitDstStageMask             = &waitStage;
         CHECK(vkQueueSubmit(gpu.Device.GetQueue(), 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS);
         gpu.Device.WaitUntilIdle();
         vkDestroySemaphore(device, imageAvailable, nullptr);
@@ -643,7 +651,8 @@ TEST_SUITE("gpu")
         waveBinding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         waveBinding.descriptorCount = 1;
         waveBinding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
-        VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        VkDescriptorSetLayoutCreateInfo setInfo =
+            Wotah::MakeVulkanInfo<VkDescriptorSetLayoutCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
         setInfo.bindingCount            = 1;
         setInfo.pBindings               = &waveBinding;
         VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;

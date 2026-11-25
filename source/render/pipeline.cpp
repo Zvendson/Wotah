@@ -36,7 +36,8 @@ namespace
         ShaderModule(VkDevice device, std::span<const uint32_t> code, const char* name)
             : m_device(device)
         {
-            VkShaderModuleCreateInfo createInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+            VkShaderModuleCreateInfo createInfo =
+                Wotah::MakeVulkanInfo<VkShaderModuleCreateInfo>(VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
             createInfo.codeSize = code.size_bytes();
             createInfo.pCode    = code.data();
             if (vkCreateShaderModule(m_device, &createInfo, nullptr, &m_module) != VK_SUCCESS)
@@ -140,7 +141,8 @@ bool Wotah::Pipeline::Create(const Device& device, const PipelineSettings& setti
     m_device = device.GetHandle();
 
     // ---- Layout: what data the shaders get -----------------------------------
-    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    VkPipelineLayoutCreateInfo layoutInfo =
+        Wotah::MakeVulkanInfo<VkPipelineLayoutCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
     layoutInfo.setLayoutCount         = CountOf(settings.DescriptorSetLayouts);
     layoutInfo.pSetLayouts            = settings.DescriptorSetLayouts.data();
     layoutInfo.pushConstantRangeCount = CountOf(settings.PushConstants);
@@ -169,52 +171,64 @@ bool Wotah::Pipeline::Create(const Device& device, const PipelineSettings& setti
     stages[1].pName  = ShaderEntryPoint;
 
     // ---- Fixed steps -------------------------------------------------------------
-    VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineVertexInputStateCreateInfo vertexInput = Wotah::MakeVulkanInfo<VkPipelineVertexInputStateCreateInfo>(
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
     vertexInput.vertexBindingDescriptionCount   = CountOf(settings.VertexBindings);
     vertexInput.pVertexBindingDescriptions      = settings.VertexBindings.data();
     vertexInput.vertexAttributeDescriptionCount = CountOf(settings.VertexAttributes);
     vertexInput.pVertexAttributeDescriptions    = settings.VertexAttributes.data();
 
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly =
+        Wotah::MakeVulkanInfo<VkPipelineInputAssemblyStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO);
     inputAssembly.topology = settings.Topology;
 
-    VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    VkPipelineViewportStateCreateInfo viewport =
+        Wotah::MakeVulkanInfo<VkPipelineViewportStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO);
     viewport.viewportCount = 1;
     viewport.scissorCount  = 1;
 
-    VkPipelineRasterizationStateCreateInfo rasterization{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    VkPipelineRasterizationStateCreateInfo rasterization =
+        Wotah::MakeVulkanInfo<VkPipelineRasterizationStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO);
     rasterization.polygonMode = settings.PolygonMode;
     rasterization.cullMode    = settings.CullMode;
     rasterization.frontFace   = settings.FrontFace;
     rasterization.lineWidth   = 1.0f; // wider lines need the wideLines GPU feature
 
     // shortcut: one sample per pixel; add a sample count here together with a multisampled color image.
-    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    VkPipelineMultisampleStateCreateInfo multisample = Wotah::MakeVulkanInfo<VkPipelineMultisampleStateCreateInfo>(
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO);
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    VkPipelineDepthStencilStateCreateInfo depth = Wotah::MakeVulkanInfo<VkPipelineDepthStencilStateCreateInfo>(
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
     depth.depthTestEnable  = settings.DepthTest ? VK_TRUE : VK_FALSE;
     depth.depthWriteEnable = settings.DepthWrite ? VK_TRUE : VK_FALSE;
     depth.depthCompareOp   = settings.DepthCompare;
 
     const VkPipelineColorBlendAttachmentState blendState = MakeBlendState(settings.Blend);
-    VkPipelineColorBlendStateCreateInfo       blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    VkPipelineColorBlendStateCreateInfo       blend      = Wotah::MakeVulkanInfo<VkPipelineColorBlendStateCreateInfo>(
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
     blend.attachmentCount = 1;
     blend.pAttachments    = &blendState;
 
-    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    VkPipelineDynamicStateCreateInfo dynamic =
+        Wotah::MakeVulkanInfo<VkPipelineDynamicStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO);
     dynamic.dynamicStateCount = static_cast<uint32_t>(DynamicStates.size());
     dynamic.pDynamicStates    = DynamicStates.data();
 
     // Dynamic rendering: the pipeline is told the image formats instead of a render pass.
     // shortcut: no stencil image; add a stencil format once something draws with a stencil.
-    VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    VkPipelineRenderingCreateInfo rendering =
+        Wotah::MakeVulkanInfo<VkPipelineRenderingCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO);
     rendering.colorAttachmentCount    = 1;
     rendering.pColorAttachmentFormats = &settings.ColorFormat;
     rendering.depthAttachmentFormat   = settings.DepthFormat;
 
     // ---- The pipeline ------------------------------------------------------------
-    VkGraphicsPipelineCreateInfo createInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    VkGraphicsPipelineCreateInfo createInfo =
+        Wotah::MakeVulkanInfo<VkGraphicsPipelineCreateInfo>(VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO);
     createInfo.pNext               = &rendering;
     createInfo.stageCount          = static_cast<uint32_t>(stages.size());
     createInfo.pStages             = stages.data();

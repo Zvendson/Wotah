@@ -74,17 +74,17 @@ bool Wotah::Image::Create(const Device& device, VkExtent2D extent, VkFormat form
     m_extent    = extent;
     m_aspect    = GetAspectOf(format);
 
-    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    imageInfo.imageType     = VK_IMAGE_TYPE_2D;
-    imageInfo.format        = format;
-    imageInfo.extent        = {extent.width, extent.height, 1};
-    imageInfo.mipLevels     = 1;
-    imageInfo.arrayLayers   = 1;
-    imageInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.usage         = usage;
-    imageInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE; // one queue does everything
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageCreateInfo imageInfo = Wotah::MakeVulkanInfo<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+    imageInfo.imageType         = VK_IMAGE_TYPE_2D;
+    imageInfo.format            = format;
+    imageInfo.extent            = {extent.width, extent.height, 1};
+    imageInfo.mipLevels         = 1;
+    imageInfo.arrayLayers       = 1;
+    imageInfo.samples           = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling            = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage             = usage;
+    imageInfo.sharingMode       = VK_SHARING_MODE_EXCLUSIVE; // one queue does everything
+    imageInfo.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VmaAllocationCreateInfo allocationInfo{};
     allocationInfo.usage = VMA_MEMORY_USAGE_AUTO; // GPU-only memory, as the CPU never touches an image directly
@@ -94,7 +94,8 @@ bool Wotah::Image::Create(const Device& device, VkExtent2D extent, VkFormat form
         return false;
     }
 
-    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    VkImageViewCreateInfo viewInfo =
+        Wotah::MakeVulkanInfo<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
     viewInfo.image            = m_image;
     viewInfo.viewType         = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format           = format;

@@ -78,7 +78,8 @@ namespace
     /** Records a layout change of a whole image. */
     void ChangeLayout(VkCommandBuffer commandBuffer, VkImage image, const LayoutChange& change)
     {
-        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        VkImageMemoryBarrier barrier =
+            Wotah::MakeVulkanInfo<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
         barrier.srcAccessMask       = change.SourceAccess;
         barrier.dstAccessMask       = change.TargetAccess;
         barrier.oldLayout           = change.From;
@@ -94,8 +95,9 @@ namespace
     /** A binary semaphore (not CreateSemaphore, a <windows.h> macro); VK_NULL_HANDLE (and logged) on failure. */
     VkSemaphore CreateBinarySemaphore(VkDevice device)
     {
-        VkSemaphoreCreateInfo createInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        VkSemaphore           semaphore = VK_NULL_HANDLE;
+        VkSemaphoreCreateInfo createInfo =
+            Wotah::MakeVulkanInfo<VkSemaphoreCreateInfo>(VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO);
+        VkSemaphore semaphore = VK_NULL_HANDLE;
         if (!Wotah::Succeeded(vkCreateSemaphore(device, &createInfo, nullptr, &semaphore), "create a semaphore"))
         {
             return VK_NULL_HANDLE;
@@ -124,7 +126,8 @@ bool Wotah::Renderer::Create(const Device& device, Swapchain& swapchain)
     }
 
     // The command buffer is reset and recorded again every frame.
-    VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    VkCommandPoolCreateInfo poolInfo =
+        Wotah::MakeVulkanInfo<VkCommandPoolCreateInfo>(VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO);
     poolInfo.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     poolInfo.queueFamilyIndex = device.GetQueueFamily();
     if (!Succeeded(vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_commandPool), "create the command pool"))
@@ -132,7 +135,8 @@ bool Wotah::Renderer::Create(const Device& device, Swapchain& swapchain)
         return false;
     }
 
-    VkCommandBufferAllocateInfo bufferInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    VkCommandBufferAllocateInfo bufferInfo =
+        Wotah::MakeVulkanInfo<VkCommandBufferAllocateInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
     bufferInfo.commandPool        = m_commandPool;
     bufferInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     bufferInfo.commandBufferCount = 1;
@@ -153,8 +157,8 @@ bool Wotah::Renderer::Create(const Device& device, Swapchain& swapchain)
     }
 
     // Created signalled, so the first BeginFrame does not wait for a frame that never ran.
-    VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    VkFenceCreateInfo fenceInfo = Wotah::MakeVulkanInfo<VkFenceCreateInfo>(VK_STRUCTURE_TYPE_FENCE_CREATE_INFO);
+    fenceInfo.flags             = VK_FENCE_CREATE_SIGNALED_BIT;
     return Succeeded(vkCreateFence(m_device, &fenceInfo, nullptr, &m_frameFence), "create the frame fence");
 }
 
@@ -230,7 +234,8 @@ Wotah::FrameStart Wotah::Renderer::BeginFrame()
     }
 
     // ---- Start recording -----------------------------------------------------
-    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    VkCommandBufferBeginInfo beginInfo =
+        Wotah::MakeVulkanInfo<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (!Succeeded(vkBeginCommandBuffer(m_commandBuffer, &beginInfo), "start recording the frame"))
     {
@@ -241,7 +246,8 @@ Wotah::FrameStart Wotah::Renderer::BeginFrame()
 
     const VkExtent2D extent = m_swapchain->GetExtent();
 
-    VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    VkRenderingAttachmentInfo color =
+        Wotah::MakeVulkanInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
     color.imageView        = m_swapchain->GetView(m_imageIndex);
     color.imageLayout      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp           = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -249,14 +255,15 @@ Wotah::FrameStart Wotah::Renderer::BeginFrame()
     color.clearValue.color = m_clearColor;
 
     // The depth only matters while drawing, so it is not kept after the frame.
-    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    VkRenderingAttachmentInfo depth =
+        Wotah::MakeVulkanInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
     depth.imageView                     = m_depth.GetView();
     depth.imageLayout                   = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     depth.loadOp                        = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth.storeOp                       = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depth.clearValue.depthStencil.depth = FarDepth;
 
-    VkRenderingInfo renderingInfo{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    VkRenderingInfo renderingInfo      = Wotah::MakeVulkanInfo<VkRenderingInfo>(VK_STRUCTURE_TYPE_RENDERING_INFO);
     renderingInfo.renderArea           = {{0, 0}, extent};
     renderingInfo.layerCount           = 1;
     renderingInfo.colorAttachmentCount = 1;
@@ -286,7 +293,7 @@ bool Wotah::Renderer::EndFrame()
     const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     const VkSemaphore          drawn     = m_renderFinished[m_imageIndex];
 
-    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    VkSubmitInfo submitInfo         = Wotah::MakeVulkanInfo<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
     submitInfo.waitSemaphoreCount   = 1;
     submitInfo.pWaitSemaphores      = &m_imageAvailable;
     submitInfo.pWaitDstStageMask    = &waitStage;

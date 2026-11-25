@@ -13,6 +13,27 @@ else()
     add_compile_options($<$<CONFIG:Release>:-g>)
 endif()
 
+# Strict warnings, every one an error, for the project's own targets (wotah, square, wotah_tests). Third-party headers
+# are not checked: MSVC skips every <...> include (/external), GCC and Clang skip system include folders
+# (wotah_mark_system below).
+function(wotah_set_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /WX /permissive- /external:anglebrackets /external:W0)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow
+            -Wdouble-promotion -Werror)
+    endif()
+endfunction()
+
+# Makes a third-party target's include folders system folders for whoever links it, so GCC and Clang do not report
+# warnings inside its headers. (CMake 3.25 has FetchContent's SYSTEM option for this; 3.24 is the minimum here.)
+function(wotah_mark_system target)
+    get_target_property(directories ${target} INTERFACE_INCLUDE_DIRECTORIES)
+    if(directories)
+        set_target_properties(${target} PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${directories}")
+    endif()
+endfunction()
+
 # Vulkan headers/loader + glslc (shader compiler) from the Vulkan SDK
 find_package(Vulkan REQUIRED COMPONENTS glslc)
 
@@ -50,6 +71,11 @@ FetchContent_Declare(VulkanMemoryAllocator
     GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
     GIT_TAG        v3.5.0)
 FetchContent_MakeAvailable(VulkanMemoryAllocator)
+
+# Their headers are theirs: no warnings from inside them (Vulkan::Vulkan is imported, so already a system folder).
+foreach(third_party glfw spdlog glm VulkanMemoryAllocator)
+    wotah_mark_system(${third_party})
+endforeach()
 
 # Compile GLSL -> SPIR-V as a C array initializer (*.inc) that the code #includes, so there are no .spv files to locate
 # at runtime. Puts the generated files' paths into out_var; each shader becomes <output_dir>/<file name>.inc. Shaders
@@ -137,8 +163,11 @@ target_link_libraries(wotah PUBLIC Vulkan::Vulkan glfw spdlog::spdlog glm::glm G
 target_compile_definitions(wotah PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE
     WOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS})
 
+wotah_set_warnings(wotah)
+
 add_executable(square source/main.cpp)
 target_link_libraries(square PRIVATE wotah)
+wotah_set_warnings(square)
 
 # Tests: doctest, in tests/; run them with "ctest --preset <preset>" or the wotah_tests program.
 # doctest is one header; its own CMake file is skipped (SOURCE_SUBDIR has none) because it targets old CMake versions.

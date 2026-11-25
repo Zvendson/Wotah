@@ -106,7 +106,8 @@ bool Wotah::Swapchain::Create(const Device& device, const Window& window)
     m_format = formats.front();
     m_extent = ChooseExtent(capabilities, window);
 
-    VkSwapchainCreateInfoKHR createInfo{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    VkSwapchainCreateInfoKHR createInfo =
+        Wotah::MakeVulkanInfo<VkSwapchainCreateInfoKHR>(VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
     createInfo.surface          = surface;
     createInfo.minImageCount    = ChooseImageCount(capabilities);
     createInfo.imageFormat      = m_format.format;
@@ -141,7 +142,8 @@ bool Wotah::Swapchain::Create(const Device& device, const Window& window)
     m_views.reserve(m_images.size());
     for (VkImage image : m_images)
     {
-        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        VkImageViewCreateInfo viewInfo =
+            Wotah::MakeVulkanInfo<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
         viewInfo.image            = image;
         viewInfo.viewType         = VK_IMAGE_VIEW_TYPE_2D;
         viewInfo.format           = m_format.format;
@@ -202,7 +204,7 @@ std::optional<uint32_t> Wotah::Swapchain::AcquireNextImage(VkSemaphore imageAvai
 
 void Wotah::Swapchain::Present(VkQueue queue, VkSemaphore renderFinished, uint32_t imageIndex)
 {
-    VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    VkPresentInfoKHR presentInfo   = Wotah::MakeVulkanInfo<VkPresentInfoKHR>(VK_STRUCTURE_TYPE_PRESENT_INFO_KHR);
     presentInfo.waitSemaphoreCount = 1;
     presentInfo.pWaitSemaphores    = &renderFinished;
     presentInfo.swapchainCount     = 1;

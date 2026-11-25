@@ -45,7 +45,8 @@ namespace
     {
         const VkDevice handle = device.GetHandle();
 
-        VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        VkCommandPoolCreateInfo poolInfo =
+            Wotah::MakeVulkanInfo<VkCommandPoolCreateInfo>(VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO);
         poolInfo.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT; // lives only for this copy
         poolInfo.queueFamilyIndex = device.GetQueueFamily();
         VkCommandPool pool        = VK_NULL_HANDLE;
@@ -55,34 +56,36 @@ namespace
         }
 
         // Each step runs only when the ones before it worked; whatever was made is freed at the end in any case.
-        VkCommandBufferAllocateInfo bufferInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        VkCommandBufferAllocateInfo bufferInfo =
+            Wotah::MakeVulkanInfo<VkCommandBufferAllocateInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
         bufferInfo.commandPool        = pool;
         bufferInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         bufferInfo.commandBufferCount = 1;
         VkCommandBuffer commands      = VK_NULL_HANDLE;
         bool isDone = Wotah::Succeeded(vkAllocateCommandBuffers(handle, &bufferInfo, &commands), "allocate an upload");
 
-        VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        VkCommandBufferBeginInfo beginInfo =
+            Wotah::MakeVulkanInfo<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         isDone = isDone && Wotah::Succeeded(vkBeginCommandBuffer(commands, &beginInfo), "start recording an upload");
         if (isDone)
         {
             vkCmdCopyBuffer(commands, source, target, 1, &region);
 
-            VkMemoryBarrier visible{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-            visible.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            visible.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+            VkMemoryBarrier visible = Wotah::MakeVulkanInfo<VkMemoryBarrier>(VK_STRUCTURE_TYPE_MEMORY_BARRIER);
+            visible.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
+            visible.dstAccessMask   = VK_ACCESS_MEMORY_READ_BIT;
             vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
                                  &visible, 0, nullptr, 0, nullptr);
         }
         isDone = isDone && Wotah::Succeeded(vkEndCommandBuffer(commands), "finish recording an upload");
 
-        VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        VkFence           fence = VK_NULL_HANDLE;
+        VkFenceCreateInfo fenceInfo = Wotah::MakeVulkanInfo<VkFenceCreateInfo>(VK_STRUCTURE_TYPE_FENCE_CREATE_INFO);
+        VkFence           fence     = VK_NULL_HANDLE;
         isDone =
             isDone && Wotah::Succeeded(vkCreateFence(handle, &fenceInfo, nullptr, &fence), "create an upload fence");
 
-        VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        VkSubmitInfo submitInfo       = Wotah::MakeVulkanInfo<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers    = &commands;
         isDone =
@@ -112,10 +115,10 @@ bool Wotah::Buffer::Create(const Device& device, VkDeviceSize size, VkBufferUsag
     m_allocator = device.GetAllocator();
     m_memory    = memory;
 
-    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bufferInfo.size        = size;
-    bufferInfo.usage       = memory == BufferMemory::GpuOnly ? usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT : usage;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // one queue does everything
+    VkBufferCreateInfo bufferInfo = Wotah::MakeVulkanInfo<VkBufferCreateInfo>(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
+    bufferInfo.size               = size;
+    bufferInfo.usage              = memory == BufferMemory::GpuOnly ? usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT : usage;
+    bufferInfo.sharingMode        = VK_SHARING_MODE_EXCLUSIVE; // one queue does everything
 
     VmaAllocationCreateInfo allocationInfo{};
     allocationInfo.usage = VMA_MEMORY_USAGE_AUTO;

@@ -78,11 +78,12 @@ namespace
             return VK_NULL_HANDLE;
         }
 
-        VkApplicationInfo appInfo{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-        appInfo.pApplicationName = appName.c_str();
-        appInfo.apiVersion       = VK_API_VERSION_1_3;
+        VkApplicationInfo appInfo = Wotah::MakeVulkanInfo<VkApplicationInfo>(VK_STRUCTURE_TYPE_APPLICATION_INFO);
+        appInfo.pApplicationName  = appName.c_str();
+        appInfo.apiVersion        = VK_API_VERSION_1_3;
 
-        VkInstanceCreateInfo createInfo{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+        VkInstanceCreateInfo createInfo =
+            Wotah::MakeVulkanInfo<VkInstanceCreateInfo>(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
         createInfo.pApplicationInfo        = &appInfo;
         createInfo.enabledExtensionCount   = static_cast<uint32_t>(extensions.size()); // GLFW gave it as a uint32_t
         createInfo.ppEnabledExtensionNames = extensions.data();
@@ -174,18 +175,20 @@ namespace
     /** The logical device with one queue from the chosen family, the swapchain extension and dynamic rendering. */
     VkDevice CreateLogicalDevice(const GpuChoice& choice)
     {
-        VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+        VkDeviceQueueCreateInfo queueInfo =
+            Wotah::MakeVulkanInfo<VkDeviceQueueCreateInfo>(VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO);
         queueInfo.queueFamilyIndex = choice.QueueFamily;
         queueInfo.queueCount       = 1;
         queueInfo.pQueuePriorities = &QueuePriority;
 
         // Dynamic rendering draws without VkRenderPass / VkFramebuffer; it is core in Vulkan 1.3 but still opt-in.
-        VkPhysicalDeviceVulkan13Features features13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+        VkPhysicalDeviceVulkan13Features features13 = Wotah::MakeVulkanInfo<VkPhysicalDeviceVulkan13Features>(
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
         features13.dynamicRendering = VK_TRUE;
 
         const char* const  swapchainExtension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-        VkDeviceCreateInfo createInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-        createInfo.pNext                   = &features13;
+        VkDeviceCreateInfo createInfo = Wotah::MakeVulkanInfo<VkDeviceCreateInfo>(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
+        createInfo.pNext              = &features13;
         createInfo.queueCreateInfoCount    = 1;
         createInfo.pQueueCreateInfos       = &queueInfo;
         createInfo.enabledExtensionCount   = 1;
