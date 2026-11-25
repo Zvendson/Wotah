@@ -1,9 +1,9 @@
 /**
  * @file gpu_tests.cpp
  * Tests that need a Vulkan 1.3 GPU: the window, device, swapchain, pipelines with every option, frames through the
- * renderer, depth images, and the example scene (cube and ball) drawn offscreen and read back. Every window stays
- * hidden, so running the tests never shows anything on screen. Skip them with --test-suite-exclude=gpu on machines
- * without a GPU.
+ * renderer, depth images, shadows, and the example scene (cube and ball) drawn offscreen and read back. Every window
+ * stays hidden, so running the tests never shows anything on screen. Skip them with --test-suite-exclude=gpu on
+ * machines without a GPU.
  */
 #include "platform/window.hpp"
 #include "render/buffer.hpp"
@@ -16,6 +16,7 @@
 #include "render/mesh_data.hpp"
 #include "render/pipeline.hpp"
 #include "render/renderer.hpp"
+#include "render/shadow_maps.hpp"
 #include "render/sky.hpp"
 #include "render/swapchain.hpp"
 #include "render/vulkan_utils.hpp"
@@ -28,6 +29,7 @@
 #include <glm/vec3.hpp>
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -59,6 +61,9 @@ namespace
     };
     constexpr uint32_t BallFragmentShader[] = {
 #include "ball.frag.inc"
+    };
+    constexpr uint32_t ShadowVertexShader[] = {
+#include "shadow.vert.inc"
     };
 
     /** The test shaders (tests/shaders/water_test.*): vertex input, push constants and a uniform buffer. */
@@ -111,6 +116,26 @@ namespace
         return settings;
     }
 
+    /** The shadow pipeline's settings, as app.cpp builds them: depth only, no culling, depths pushed back a little. */
+    Wotah::PipelineSettings MakeShadowSettings(VkFormat shadowFormat)
+    {
+        Wotah::PipelineSettings settings;
+        settings.VertexShader      = ShadowVertexShader;
+        settings.DepthFormat       = shadowFormat;
+        settings.VertexBindings    = Wotah::MeshVertexBindings;
+        settings.VertexAttributes  = Wotah::MeshVertexAttributes;
+        settings.CullMode          = VK_CULL_MODE_NONE;
+        settings.DepthTest         = true;
+        settings.DepthWrite        = true;
+        settings.DepthBiasConstant = 2.0f;
+        settings.DepthBiasSlope    = 2.0f;
+        settings.PushConstants     = MeshRanges;
+        return settings;
+    }
+
+    /** Where the program's shadow casters can stand (app.cpp): the whole ground and room above it. */
+    constexpr Wotah::ShadowArea GroundShadows{glm::vec3(0.0f), 1.41421356f * GroundSize * 0.5f + 2.0f};
+
     /** Records one mesh's draw, as app.cpp does: pipeline, lights, camera and place, mesh. */
     void RecordMeshDraw(VkCommandBuffer commands, const Wotah::Pipeline& pipeline, const Wotah::Lighting& lighting,
                         const Wotah::Mesh& mesh, const MeshPushConstants& pushConstants)
@@ -142,6 +167,7 @@ namespace
         Wotah::Pipeline TerrainPipeline;
         Wotah::Pipeline CubePipeline;
         Wotah::Pipeline BallPipeline;
+        Wotah::Pipeline ShadowPipeline;
         Wotah::Mesh     Terrain;
         Wotah::Mesh     Cube;
         Wotah::Mesh     Ball;
@@ -149,12 +175,13 @@ namespace
         [[nodiscard]] bool Create(const Wotah::Device& device, VkFormat colorFormat, VkFormat depthFormat,
                                   const Wotah::SceneLights& lights)
         {
-            if (!Lighting.Create(device) || !Lighting.Update(lights))
+            if (!Lighting.Create(device) || !Lighting.Update(lights, Wotah::Camera{}))
             {
                 return false;
             }
             const std::array<VkDescriptorSetLayout, 1> setLayouts{Lighting.GetSetLayout()};
             return Sky.Create(device, colorFormat, depthFormat) &&
+                   ShadowPipeline.Create(device, MakeShadowSettings(Lighting.GetShadowMaps().GetFormat())) &&
                    TerrainPipeline.Create(
                        device, MakeMeshSettings(TerrainFragmentShader, colorFormat, depthFormat, setLayouts)) &&
                    Terrain.Create(device, Wotah::MakeTerrainMesh(Wotah::MakeFlatHeightField(
@@ -189,6 +216,47 @@ namespace
             {
                 RecordGround(commands, viewProjection);
             }
+        }
+
+        /**
+         * Records every shadow map of every light that casts shadows, as app.cpp does: ground and shapes, as far as the
+         * options include them. Before the scene, outside its drawing.
+         */
+        void RecordShadows(VkCommandBuffer commands, const OffscreenScene& what) const
+        {
+            const Wotah::ShadowMaps& maps = Lighting.GetShadowMaps();
+            for (uint32_t layer = 0; layer < Wotah::MaxDirectionalLights * Wotah::ShadowCascadeCount; ++layer)
+            {
+                const std::optional<glm::mat4> lightView = Lighting.FindShadowViewProjection(
+                    layer / Wotah::ShadowCascadeCount, layer % Wotah::ShadowCascadeCount);
+                if (!lightView || !maps.BeginLayer(commands, layer))
+                {
+                    continue;
+                }
+                vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, ShadowPipeline.GetHandle());
+                if (what.HasGround)
+                {
+                    RecordCaster(commands, *lightView, Terrain, glm::mat4(1.0f));
+                }
+                if (what.HasShapes)
+                {
+                    RecordCaster(commands, *lightView, Cube, glm::translate(glm::mat4(1.0f), CubePosition));
+                    RecordCaster(commands, *lightView, Ball, glm::translate(glm::mat4(1.0f), what.BallPlace));
+                }
+                maps.EndLayer(commands, layer);
+            }
+        }
+
+        /** Records one shadow caster into the light's map. */
+        void RecordCaster(VkCommandBuffer commands, const glm::mat4& lightView, const Wotah::Mesh& mesh,
+                          const glm::mat4& model) const
+        {
+            MeshPushConstants caster;
+            caster.ViewProjection = lightView;
+            caster.Model          = model;
+            vkCmdPushConstants(commands, ShadowPipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(caster),
+                               &caster);
+            mesh.Draw(commands);
         }
 
         /** Records the ground, as app.cpp does: the terrain where its heights say, no transform. */
@@ -287,6 +355,7 @@ namespace
 
         Scene scene;
         REQUIRE(scene.Create(device, ColorFormat, *depthFormat, what.Lights));
+        REQUIRE(scene.Lighting.Update(what.Lights, camera)); // the shadow cascades follow the camera
 
         // ---- Record: clear, draw, copy to the buffer ----
         const VkDevice          handle = device.GetHandle();
@@ -306,6 +375,7 @@ namespace
         VkCommandBufferBeginInfo beginInfo =
             Wotah::MakeVulkanInfo<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
         REQUIRE(vkBeginCommandBuffer(commands, &beginInfo) == VK_SUCCESS);
+        scene.RecordShadows(commands, what); // the lights' shadow maps first, as the program does
         ChangeLayout(commands, color, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
         ChangeLayout(commands, depth, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -435,6 +505,8 @@ namespace
             Wotah::Camera    camera;
             const VkExtent2D extent = swapchain.GetExtent();
             (void)camera.SetAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
+            scene.RecordShadows(renderer.GetCommandBuffer(), what);
+            renderer.BeginScene();
             scene.Record(renderer.GetCommandBuffer(), camera.GetViewProjection(), what);
             if (!renderer.EndFrame())
             {
@@ -476,6 +548,8 @@ namespace
             (void)camera.SetAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
             if (start == Wotah::FrameStart::Ready)
             {
+                scene.RecordShadows(renderer.GetCommandBuffer(), what);
+                renderer.BeginScene();
                 scene.Record(renderer.GetCommandBuffer(), camera.GetViewProjection(), what);
             }
             if (start == Wotah::FrameStart::Failed || !renderer.EndFrame())
@@ -516,6 +590,62 @@ namespace
             window.Wake();
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
+    }
+
+    /**
+     * The RGB the picture (600 x 600, from DrawSceneOffscreen) shows where camera sees the world point; the point must
+     * be in view.
+     */
+    std::array<int, 3> GetColorAt(const std::vector<uint8_t>& pixels, const Wotah::Camera& camera,
+                                  const glm::vec3& point)
+    {
+        constexpr int   PictureSize = 600;
+        const glm::vec4 clip        = camera.GetViewProjection() * glm::vec4(point, 1.0f);
+        const int       x = static_cast<int>((clip.x / clip.w * 0.5f + 0.5f) * static_cast<float>(PictureSize));
+        const int       y = static_cast<int>((clip.y / clip.w * 0.5f + 0.5f) * static_cast<float>(PictureSize));
+        REQUIRE(x >= 0);
+        REQUIRE(x < PictureSize);
+        REQUIRE(y >= 0);
+        REQUIRE(y < PictureSize);
+        const std::size_t index = (static_cast<std::size_t>(y) * PictureSize + static_cast<std::size_t>(x)) * 4;
+        return {pixels[index], pixels[index + 1], pixels[index + 2]};
+    }
+
+    /** A camera above the ground south of the cube, looking down at it at a slant: ground on every side shows. */
+    Wotah::Camera MakeShadowCamera()
+    {
+        Wotah::Camera camera;
+        camera.SetPosition({0.0f, 6.0f, 4.0f});
+        camera.SetTarget({0.0f, 0.0f, 0.0f});
+        (void)camera.SetClipDistances(0.1f, 100.0f); // valid values
+        return camera;
+    }
+
+    /** A white light falling at 45 degrees along the x axis: towards +x (from the west) or -x (from the east). */
+    Wotah::DirectionalLight MakeSideLight(float towardsX, float intensity)
+    {
+        Wotah::DirectionalLight light;
+        light.Direction = {towardsX, -1.0f, 0.0f};
+        light.Intensity = intensity;
+        return light;
+    }
+
+    /** How many pixels of two pictures differ by more than slack in any channel. */
+    std::size_t CountDifferentPixels(const std::vector<uint8_t>& first, const std::vector<uint8_t>& second, int slack)
+    {
+        std::size_t count = 0;
+        for (std::size_t index = 0; index + 3 < first.size() && index + 3 < second.size(); index += 4)
+        {
+            for (std::size_t channel = 0; channel < 3; ++channel)
+            {
+                if (std::abs(first[index + channel] - second[index + channel]) > slack)
+                {
+                    ++count;
+                    break;
+                }
+            }
+        }
+        return count;
     }
 
     /** How many pixels are clearly blue: the ball, never the orange cube or the gray background. */
@@ -698,19 +828,41 @@ TEST_SUITE("gpu")
             Wotah::Pipeline pipeline;
             CHECK(pipeline.Create(gpu.Device, additive));
         }
+        SUBCASE("depth only, with a depth bias: the shadow pipeline")
+        {
+            Wotah::PipelineSettings depthOnly = water;
+            depthOnly.FragmentShader          = {};
+            depthOnly.ColorFormat             = VK_FORMAT_UNDEFINED;
+            depthOnly.DepthBiasConstant       = 2.0f;
+            depthOnly.DepthBiasSlope          = 2.0f;
+            Wotah::Pipeline pipeline;
+            CHECK(pipeline.Create(gpu.Device, depthOnly));
+            Wotah::Pipeline shadows;
+            CHECK(shadows.Create(gpu.Device, MakeShadowSettings(lighting.GetShadowMaps().GetFormat())));
+        }
         SUBCASE("settings that do not fit are refused")
         {
             Wotah::PipelineSettings noShaders;
-            noShaders.ColorFormat                 = colorFormat;
-            Wotah::PipelineSettings noDepthFormat = water;
-            noDepthFormat.DepthFormat             = VK_FORMAT_UNDEFINED;
-            Wotah::PipelineSettings noColorFormat = water;
-            noColorFormat.ColorFormat             = VK_FORMAT_UNDEFINED;
+            noShaders.ColorFormat                    = colorFormat;
+            Wotah::PipelineSettings noDepthFormat    = water;
+            noDepthFormat.DepthFormat                = VK_FORMAT_UNDEFINED;
+            Wotah::PipelineSettings noColorFormat    = water; // a fragment shader with nothing to write color into
+            noColorFormat.ColorFormat                = VK_FORMAT_UNDEFINED;
+            Wotah::PipelineSettings noFragmentShader = water; // color to write, but nothing that writes it
+            noFragmentShader.FragmentShader          = {};
+            Wotah::PipelineSettings drawsIntoNothing = water; // depth only, but without a depth format
+            drawsIntoNothing.FragmentShader          = {};
+            drawsIntoNothing.ColorFormat             = VK_FORMAT_UNDEFINED;
+            drawsIntoNothing.DepthFormat             = VK_FORMAT_UNDEFINED;
+            drawsIntoNothing.DepthTest               = false;
+            drawsIntoNothing.DepthWrite              = false;
 
             Wotah::Pipeline pipeline;
             CHECK_FALSE(pipeline.Create(gpu.Device, noShaders));
             CHECK_FALSE(pipeline.Create(gpu.Device, noDepthFormat));
             CHECK_FALSE(pipeline.Create(gpu.Device, noColorFormat));
+            CHECK_FALSE(pipeline.Create(gpu.Device, noFragmentShader));
+            CHECK_FALSE(pipeline.Create(gpu.Device, drawsIntoNothing));
             CHECK(pipeline.GetHandle() == VK_NULL_HANDLE);
         }
         SUBCASE("destroying twice clears the handles")
@@ -759,9 +911,16 @@ TEST_SUITE("gpu")
             what.Lights      = MakeOldLight();
             what.HasSky      = true;
             what.IsBallFirst = frame % 2 == 0;
+            scene.RecordShadows(renderer.GetCommandBuffer(), what);
+            renderer.BeginScene();
             scene.Record(renderer.GetCommandBuffer(), camera.GetViewProjection(), what);
             REQUIRE(renderer.EndFrame());
             ++drawn;
+        }
+        // A frame that draws nothing and never calls BeginScene: EndFrame begins it, so the image is cleared and shown.
+        if (renderer.BeginFrame() == Wotah::FrameStart::Ready)
+        {
+            CHECK(renderer.EndFrame());
         }
         gpu.Device.WaitUntilIdle();
         CHECK(drawn == FrameCount);
@@ -842,16 +1001,16 @@ TEST_SUITE("gpu")
 
         Wotah::SceneLights lights;
         lights.DirectionalLights.resize(Wotah::MaxDirectionalLights);
-        CHECK(lighting.Update(lights));
+        CHECK(lighting.Update(lights, Wotah::Camera{}));
 
         lights.DirectionalLights.resize(Wotah::MaxDirectionalLights + 1);
-        CHECK_FALSE(lighting.Update(lights)); // one too many
+        CHECK_FALSE(lighting.Update(lights, Wotah::Camera{})); // one too many
 
         lights.DirectionalLights.resize(1);
         lights.DirectionalLights[0].Direction = glm::vec3(0.0f);
-        CHECK_FALSE(lighting.Update(lights)); // no direction
+        CHECK_FALSE(lighting.Update(lights, Wotah::Camera{})); // no direction
         lights.DirectionalLights[0].Direction = glm::vec3(std::numeric_limits<float>::quiet_NaN());
-        CHECK_FALSE(lighting.Update(lights));
+        CHECK_FALSE(lighting.Update(lights, Wotah::Camera{}));
 
         lighting.Destroy();
         lighting.Destroy(); // twice is safe
@@ -1076,6 +1235,231 @@ TEST_SUITE("gpu")
         CHECK(events.capacity() > 0);
     }
 
+    TEST_CASE("shadows: the cube's shadow falls on the ground away from the light, right from its foot")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        const Wotah::Camera camera = MakeShadowCamera();
+
+        // One light from the west at 45 degrees: the cube (1 high, x -0.5..0.5) throws its shadow 1 unit to the east.
+        OffscreenScene scene;
+        scene.Lights.AmbientColor      = glm::vec3(0.2f);
+        scene.Lights.DirectionalLights = {MakeSideLight(1.0f, 0.8f)};
+        scene.Lights.Shadows           = GroundShadows;
+        scene.HasGround                = true;
+        OffscreenScene noShadows       = scene;
+        noShadows.Lights.Shadows       = {};
+
+        const std::vector<uint8_t> shadowed   = DrawSceneOffscreen(gpu.Device, camera, scene);
+        const std::vector<uint8_t> unshadowed = DrawSceneOffscreen(gpu.Device, camera, noShadows);
+
+        // Points on the ground in tiles of the same checker shade (shaders/terrain.frag), away from the ball's shadow.
+        const glm::vec3 inShadow{1.2f, 0.0f, 0.3f};    // east of the cube
+        const glm::vec3 atTheFoot{0.6f, 0.0f, 0.3f};   // right next to the cube's east face
+        const glm::vec3 inTheLight{-0.8f, 0.0f, 0.3f}; // west of the cube, facing the light
+
+        // In the shadow only the ambient light is left: 0.2 against 0.2 + 0.8 * cos 45 = 0.77 in the light.
+        const std::array<int, 3> dark = GetColorAt(shadowed, camera, inShadow);
+        const std::array<int, 3> foot = GetColorAt(shadowed, camera, atTheFoot);
+        const std::array<int, 3> lit  = GetColorAt(shadowed, camera, inTheLight);
+        CHECK(dark[1] < lit[1] / 2);
+        CHECK(foot[1] < lit[1] / 2); // the shadow starts at the cube, it does not float away from it
+
+        // Where the light reaches, shadows change nothing; without shadows the same spot is lit.
+        const std::array<int, 3> litWithout  = GetColorAt(unshadowed, camera, inTheLight);
+        const std::array<int, 3> darkWithout = GetColorAt(unshadowed, camera, inShadow);
+        CHECK(IsColorNear(lit, static_cast<float>(litWithout[0]) / 255.0f, static_cast<float>(litWithout[1]) / 255.0f,
+                          static_cast<float>(litWithout[2]) / 255.0f));
+        CHECK(darkWithout[1] > lit[1] * 3 / 4);
+    }
+
+    TEST_CASE("every light casts its own shadow, each taking away only its own light; a dark light casts none")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        const Wotah::Camera camera = MakeShadowCamera();
+
+        // Two equal lights at 45 degrees, one from the west and one from the east: a shadow on each side of the cube.
+        OffscreenScene scene;
+        scene.Lights.AmbientColor         = glm::vec3(0.2f);
+        scene.Lights.DirectionalLights    = {MakeSideLight(1.0f, 0.5f), MakeSideLight(-1.0f, 0.5f)};
+        scene.Lights.Shadows              = GroundShadows;
+        scene.HasGround                   = true;
+        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, camera, scene);
+
+        const glm::vec3 east{1.2f, 0.0f, 0.3f};  // in the western light's shadow only
+        const glm::vec3 west{-0.8f, 0.0f, 0.3f}; // in the eastern light's shadow only
+        const glm::vec3 open{0.3f, 0.0f, 1.6f};  // south of the cube: both lights reach it
+
+        // Lit by both: 0.2 + 2 * 0.5 * cos 45 = 0.91; by one: 0.2 + 0.35 = 0.55, so about 0.61 of it; by none: 0.22.
+        const std::array<int, 3> eastColor = GetColorAt(pixels, camera, east);
+        const std::array<int, 3> westColor = GetColorAt(pixels, camera, west);
+        const std::array<int, 3> openColor = GetColorAt(pixels, camera, open);
+        const float              eastShare = static_cast<float>(eastColor[1]) / static_cast<float>(openColor[1]);
+        const float              westShare = static_cast<float>(westColor[1]) / static_cast<float>(openColor[1]);
+        CHECK(eastShare > 0.5f);
+        CHECK(eastShare < 0.72f);
+        CHECK(westShare > 0.5f);
+        CHECK(westShare < 0.72f);
+
+        // The eastern light switched off: it casts no shadow, so the west side is as bright as the open ground.
+        OffscreenScene oneDark                        = scene;
+        oneDark.Lights.DirectionalLights[1].Intensity = 0.0f;
+        const std::vector<uint8_t> darkPixels         = DrawSceneOffscreen(gpu.Device, camera, oneDark);
+        const std::array<int, 3>   westNow            = GetColorAt(darkPixels, camera, west);
+        const std::array<int, 3>   openNow            = GetColorAt(darkPixels, camera, open);
+        CHECK(std::abs(westNow[1] - openNow[1]) <= 3);
+    }
+
+    TEST_CASE("shadows leave open ground clean: no stripes or speckles, even from a light low over the horizon")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        // The program's sun (45 degrees) and moon (about 17 degrees over the horizon): flat ground cannot shadow
+        // itself, so with shadows on, the ground alone must look exactly as without them (shadow acne would not).
+        Wotah::DirectionalLight sun;
+        sun.Direction = Wotah::MakeLightDirection(glm::radians(90.0f), glm::radians(45.0f));
+        sun.Intensity = 0.9f;
+        Wotah::DirectionalLight moon;
+        moon.Direction = {0.3f, -0.3f, -1.0f};
+        moon.Intensity = 0.5f;
+        OffscreenScene ground;
+        ground.Lights.DirectionalLights = {sun, moon};
+        ground.Lights.Shadows           = GroundShadows;
+        ground.HasGround                = true;
+        ground.HasShapes                = false;
+        OffscreenScene noShadows        = ground;
+        noShadows.Lights.Shadows        = {};
+
+        for (const Wotah::Camera& camera : {MakeShadowCamera(), MakeStartCamera()})
+        {
+            const std::vector<uint8_t> with    = DrawSceneOffscreen(gpu.Device, camera, ground);
+            const std::vector<uint8_t> without = DrawSceneOffscreen(gpu.Device, camera, noShadows);
+            CHECK(CountDifferentPixels(with, without, 2) == 0);
+        }
+    }
+
+    TEST_CASE("shadows leave lit shapes clean: no rings on the ball, no speckles on the cube, even in low light")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        // A light low over the horizon, grazing the ball's side and the cube's face: where a surface could shadow
+        // itself most. Nothing stands between the light and the shapes, so with shadows on they must look as without.
+        Wotah::DirectionalLight low;
+        low.Direction = {1.0f, -0.25f, -0.3f};
+        low.Intensity = 0.9f;
+        OffscreenScene shapes;
+        shapes.Lights.AmbientColor      = glm::vec3(0.15f);
+        shapes.Lights.DirectionalLights = {low};
+        shapes.Lights.Shadows           = GroundShadows;
+        OffscreenScene noShadows        = shapes;
+        noShadows.Lights.Shadows        = {};
+
+        Wotah::Camera close;
+        close.SetPosition({-2.6f, 1.2f, 0.6f});
+        close.SetTarget({-0.7f, 0.4f, -0.4f});
+        (void)close.SetClipDistances(0.1f, 100.0f); // valid values
+
+        const std::size_t different = CountDifferentPixels(DrawSceneOffscreen(gpu.Device, close, shapes),
+                                                           DrawSceneOffscreen(gpu.Device, close, noShadows), 2);
+        CAPTURE(different);
+        CHECK(different == 0);
+    }
+
+    TEST_CASE("shadow edges are sharp close to the camera")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        // The western light at 45 degrees: the cube's top edge (x 0.5, 1 high) ends its shadow at x 1.5.
+        OffscreenScene scene;
+        scene.Lights.AmbientColor      = glm::vec3(0.2f);
+        scene.Lights.DirectionalLights = {MakeSideLight(1.0f, 0.8f)};
+        scene.Lights.Shadows           = GroundShadows;
+        scene.HasGround                = true;
+
+        // Close above that edge: one picture pixel is about 3 mm of ground there.
+        Wotah::Camera close;
+        close.SetPosition({1.5f, 1.2f, 1.5f});
+        close.SetTarget({1.5f, 0.0f, 0.3f});
+        (void)close.SetClipDistances(0.1f, 100.0f); // valid values
+        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, close, scene);
+
+        // Walk across the edge on the ground in 2.5 mm steps and measure how far the change from shadow to light
+        // stretches (10 % to 90 % of the way); the checker tile is the same over the whole walk (x 1..2, z 0..1).
+        constexpr float  Step  = 0.0025f;
+        constexpr int    Steps = 160; // x 1.3 .. 1.7
+        std::vector<int> green;
+        for (int step = 0; step <= Steps; ++step)
+        {
+            green.push_back(GetColorAt(pixels, close, {1.3f + Step * static_cast<float>(step), 0.0f, 0.3f})[1]);
+        }
+        const int dark = *std::min_element(green.begin(), green.end());
+        const int lit  = *std::max_element(green.begin(), green.end());
+        REQUIRE(lit - dark > 40); // there is an edge to measure
+        const int  low  = dark + (lit - dark) / 10;
+        const int  high = dark + (lit - dark) * 9 / 10;
+        const auto between =
+            std::count_if(green.begin(), green.end(), [low, high](int value) { return value > low && value < high; });
+        const float width = static_cast<float>(between) * Step;
+        CAPTURE(width);
+        CHECK(width < 0.01f); // at most 1 cm of blur
+    }
+
+    TEST_CASE("the lights hand out each shadow-casting light's view, and none without a shadow area or light")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        Wotah::Lighting lighting;
+        REQUIRE(lighting.Create(gpu.Device));
+        CHECK(lighting.GetShadowMaps().GetArrayView() != VK_NULL_HANDLE);
+        CHECK(lighting.GetShadowMaps().GetSampler() != VK_NULL_HANDLE);
+        CHECK(lighting.GetShadowMaps().GetFormat() == VK_FORMAT_D16_UNORM);
+
+        CHECK(lighting.GetShadowMaps().GetLightCapacity() == 1); // room for one light to start with
+
+        const Wotah::Camera camera = MakeStartCamera();
+        Wotah::SceneLights  lights;
+        lights.DirectionalLights = {MakeSideLight(1.0f, 1.0f), MakeSideLight(-1.0f, 0.0f)};
+        REQUIRE(lighting.Update(lights, camera));
+        CHECK_FALSE(lighting.FindShadowViewProjection(0, 0).has_value()); // no shadow area yet
+
+        // A view per cascade, each the light's view of that cascade's stretch of the camera's view.
+        lights.Shadows = GroundShadows;
+        REQUIRE(lighting.Update(lights, camera));
+        const std::optional<Wotah::CascadeEnds> ends =
+            Wotah::MakeCascadeEnds(camera.GetNearDistance(), std::min(lights.ShadowReach, camera.GetFarDistance()));
+        REQUIRE(ends.has_value());
+        const std::optional<Wotah::ShadowArea> nearest =
+            Wotah::MakeCascadeArea(camera, camera.GetNearDistance(), (*ends)[0]);
+        REQUIRE(nearest.has_value());
+        const std::optional<glm::mat4> first = lighting.FindShadowViewProjection(0, 0);
+        REQUIRE(first.has_value());
+        CHECK(*first ==
+              *Wotah::MakeShadowViewProjection(lights.DirectionalLights[0].Direction, *nearest, GroundShadows));
+        for (uint32_t cascade = 1; cascade < Wotah::ShadowCascadeCount; ++cascade)
+        {
+            CHECK(lighting.FindShadowViewProjection(0, cascade).has_value());
+        }
+        CHECK_FALSE(lighting.FindShadowViewProjection(0, Wotah::ShadowCascadeCount).has_value()); // no such cascade
+        CHECK_FALSE(lighting.FindShadowViewProjection(1, 0).has_value());                         // a dark light
+        CHECK_FALSE(lighting.FindShadowViewProjection(2, 0).has_value());                         // no such light
+        CHECK_FALSE(lighting.FindShadowViewProjection(Wotah::MaxDirectionalLights, 0).has_value());
+
+        // Every light casting shadows: the maps make room for all of them.
+        lights.DirectionalLights.assign(Wotah::MaxDirectionalLights, MakeSideLight(1.0f, 0.5f));
+        REQUIRE(lighting.Update(lights, camera));
+        CHECK(lighting.GetShadowMaps().GetLightCapacity() == Wotah::MaxDirectionalLights);
+        CHECK(lighting.FindShadowViewProjection(Wotah::MaxDirectionalLights - 1, Wotah::ShadowCascadeCount - 1)
+                  .has_value());
+
+        // A layer that does not exist is refused without recording anything.
+        CHECK_FALSE(
+            lighting.GetShadowMaps().BeginLayer(VK_NULL_HANDLE, Wotah::GetShadowLayer(Wotah::MaxDirectionalLights, 0)));
+    }
+
     TEST_CASE("depth formats and images")
     {
         HiddenGpu gpu;
@@ -1096,6 +1480,13 @@ TEST_SUITE("gpu")
         CHECK(image.GetExtent().width == 64);
         CHECK(image.GetExtent().height == 32);
 
+        // Layers: one image, a view of all of them; no layers is refused.
+        REQUIRE(image.Create(gpu.Device, {32, 32}, *depthFormat,
+                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 3));
+        CHECK(image.GetLayerCount() == 3);
+        CHECK(image.GetView() != VK_NULL_HANDLE);
+        CHECK_FALSE(image.Create(gpu.Device, {32, 32}, *depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0));
+
         // A second Create replaces the first; a color format gets a color view.
         REQUIRE(image.Create(gpu.Device, {16, 16}, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT));
         CHECK(image.GetAspect() == VK_IMAGE_ASPECT_COLOR_BIT);
@@ -1104,5 +1495,21 @@ TEST_SUITE("gpu")
         image.Destroy(); // twice is safe
         CHECK(image.GetHandle() == VK_NULL_HANDLE);
         CHECK(image.GetView() == VK_NULL_HANDLE);
+        CHECK(image.GetLayerCount() == 0);
+    }
+
+    TEST_CASE("one-time commands: run once and waited for; submitting without a start is refused")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        {
+            Wotah::OneTimeCommands neverBegun; // destroyed without Begin: safe
+        }
+        Wotah::OneTimeCommands commands;
+        CHECK_FALSE(commands.SubmitAndWait()); // logged
+        REQUIRE(commands.Begin(gpu.Device));
+        CHECK(commands.Get() != VK_NULL_HANDLE);
+        CHECK(commands.SubmitAndWait()); // nothing recorded: still runs
+        CHECK(commands.Get() == VK_NULL_HANDLE);
     }
 }

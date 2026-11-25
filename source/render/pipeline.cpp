@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 
 namespace
@@ -78,14 +79,22 @@ namespace
     bool AreSettingsUsable(const Wotah::PipelineSettings& settings)
     {
         bool usable = true;
-        if (settings.VertexShader.empty() || settings.FragmentShader.empty())
+        if (settings.VertexShader.empty())
         {
-            Wotah::Logger::Error("A pipeline needs a vertex and a fragment shader");
+            Wotah::Logger::Error("A pipeline needs a vertex shader");
             usable = false;
         }
-        if (settings.ColorFormat == VK_FORMAT_UNDEFINED)
+        // A fragment shader writes color, so it comes with a color format; without both the pipeline writes depth only.
+        const bool hasFragmentShader = !settings.FragmentShader.empty();
+        const bool hasColorFormat    = settings.ColorFormat != VK_FORMAT_UNDEFINED;
+        if (hasFragmentShader != hasColorFormat)
         {
-            Wotah::Logger::Error("A pipeline needs the color format it draws into");
+            Wotah::Logger::Error("A pipeline needs a fragment shader and a color format together, or neither");
+            usable = false;
+        }
+        if (!hasColorFormat && settings.DepthFormat == VK_FORMAT_UNDEFINED)
+        {
+            Wotah::Logger::Error("A pipeline needs a color or a depth format to draw into");
             usable = false;
         }
         if ((settings.DepthTest || settings.DepthWrite) && settings.DepthFormat == VK_FORMAT_UNDEFINED)
@@ -153,9 +162,15 @@ bool Wotah::Pipeline::Create(const Device& device, const PipelineSettings& setti
     }
 
     // ---- Shaders ---------------------------------------------------------------
-    const ShaderModule vertexShader(m_device, settings.VertexShader, "vertex");
-    const ShaderModule fragmentShader(m_device, settings.FragmentShader, "fragment");
-    if (vertexShader.Get() == VK_NULL_HANDLE || fragmentShader.Get() == VK_NULL_HANDLE)
+    // A depth-only pipeline has no fragment shader; the module is only made when there is one.
+    const bool                  isDepthOnly = settings.FragmentShader.empty();
+    const ShaderModule          vertexShader(m_device, settings.VertexShader, "vertex");
+    std::optional<ShaderModule> fragmentShader;
+    if (!isDepthOnly)
+    {
+        fragmentShader.emplace(m_device, settings.FragmentShader, "fragment");
+    }
+    if (vertexShader.Get() == VK_NULL_HANDLE || (fragmentShader && fragmentShader->Get() == VK_NULL_HANDLE))
     {
         return false;
     }
@@ -167,7 +182,7 @@ bool Wotah::Pipeline::Create(const Device& device, const PipelineSettings& setti
     stages[0].pName  = ShaderEntryPoint;
     stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fragmentShader.Get();
+    stages[1].module = fragmentShader ? fragmentShader->Get() : VK_NULL_HANDLE;
     stages[1].pName  = ShaderEntryPoint;
 
     // ---- Fixed steps -------------------------------------------------------------
@@ -195,6 +210,12 @@ bool Wotah::Pipeline::Create(const Device& device, const PipelineSettings& setti
     rasterization.cullMode    = settings.CullMode;
     rasterization.frontFace   = settings.FrontFace;
     rasterization.lineWidth   = 1.0f; // wider lines need the wideLines GPU feature
+    if (settings.DepthBiasConstant != 0.0f || settings.DepthBiasSlope != 0.0f)
+    {
+        rasterization.depthBiasEnable         = VK_TRUE;
+        rasterization.depthBiasConstantFactor = settings.DepthBiasConstant;
+        rasterization.depthBiasSlopeFactor    = settings.DepthBiasSlope;
+    }
 
     // shortcut: one sample per pixel; add a sample count here together with a multisampled color image.
     VkPipelineMultisampleStateCreateInfo multisample = Wotah::MakeVulkanInfo<VkPipelineMultisampleStateCreateInfo>(
@@ -210,7 +231,7 @@ bool Wotah::Pipeline::Create(const Device& device, const PipelineSettings& setti
     const VkPipelineColorBlendAttachmentState blendState = MakeBlendState(settings.Blend);
     VkPipelineColorBlendStateCreateInfo       blend      = Wotah::MakeVulkanInfo<VkPipelineColorBlendStateCreateInfo>(
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
-    blend.attachmentCount = 1;
+    blend.attachmentCount = isDepthOnly ? 0 : 1;
     blend.pAttachments    = &blendState;
 
     VkPipelineDynamicStateCreateInfo dynamic =
@@ -222,15 +243,15 @@ bool Wotah::Pipeline::Create(const Device& device, const PipelineSettings& setti
     // shortcut: no stencil image; add a stencil format once something draws with a stencil.
     VkPipelineRenderingCreateInfo rendering =
         Wotah::MakeVulkanInfo<VkPipelineRenderingCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO);
-    rendering.colorAttachmentCount    = 1;
-    rendering.pColorAttachmentFormats = &settings.ColorFormat;
+    rendering.colorAttachmentCount    = isDepthOnly ? 0 : 1;
+    rendering.pColorAttachmentFormats = isDepthOnly ? nullptr : &settings.ColorFormat;
     rendering.depthAttachmentFormat   = settings.DepthFormat;
 
     // ---- The pipeline ------------------------------------------------------------
     VkGraphicsPipelineCreateInfo createInfo =
         Wotah::MakeVulkanInfo<VkGraphicsPipelineCreateInfo>(VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO);
     createInfo.pNext               = &rendering;
-    createInfo.stageCount          = static_cast<uint32_t>(stages.size());
+    createInfo.stageCount          = isDepthOnly ? 1 : static_cast<uint32_t>(stages.size());
     createInfo.pStages             = stages.data();
     createInfo.pVertexInputState   = &vertexInput;
     createInfo.pInputAssemblyState = &inputAssembly;

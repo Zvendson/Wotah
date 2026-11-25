@@ -2,7 +2,8 @@
  * @file renderer.hpp
  * Runs a frame: waits for the GPU, takes a swapchain image, records into a command buffer that draws into it (with a
  * depth image, so nearer surfaces hide farther ones) with dynamic rendering, submits the work and shows the image. What
- * is drawn stays with the caller.
+ * is drawn stays with the caller. Between BeginFrame and BeginScene the frame can record its own passes first, such as
+ * the shadow maps.
  *
  *     Wotah::Renderer renderer;
  *     if (renderer.Create(device, swapchain))
@@ -10,6 +11,8 @@
  *         const Wotah::FrameStart start = renderer.BeginFrame();
  *         if (start == Wotah::FrameStart::Ready)
  *         {
+ *             // passes before the scene, e.g. the shadow maps
+ *             renderer.BeginScene();
  *             vkCmdBindPipeline(renderer.GetCommandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
  *             vkCmdDraw(renderer.GetCommandBuffer(), 3, 1, 0, 0);
  *             renderer.EndFrame();
@@ -35,7 +38,7 @@ namespace Wotah
     /** What BeginFrame did. */
     enum class FrameStart
     {
-        /** The command buffer is recording into the next image: draw, then call EndFrame. */
+        /** The command buffer is recording the next frame: record passes, BeginScene, draw, then EndFrame. */
         Ready,
         /** No image could be taken this time; skip the frame and try again. */
         Skip,
@@ -79,16 +82,24 @@ namespace Wotah
         void SetClearColor(const VkClearColorValue& color) noexcept { m_clearColor = color; }
 
         /**
-         * Waits until the GPU has finished the previous frame, takes the next swapchain image and starts recording:
-         * the image and the depth are cleared, and viewport and scissor cover all of it. On Ready, draw into
-         * GetCommandBuffer and call EndFrame.
+         * Waits until the GPU has finished the previous frame, takes the next swapchain image and starts recording. On
+         * Ready, record passes that come before the scene (shadow maps), then BeginScene, draw, and EndFrame.
          */
         [[nodiscard]] FrameStart BeginFrame();
+
+        /**
+         * Starts drawing into the frame's image: the image and the depth are cleared, and viewport and scissor cover
+         * all of it. Once per frame, after BeginFrame said Ready.
+         */
+        void BeginScene();
 
         /** The command buffer of the frame between BeginFrame and EndFrame. */
         [[nodiscard]] VkCommandBuffer GetCommandBuffer() const noexcept { return m_commandBuffer; }
 
-        /** Stops recording, submits the frame and shows the image; false (and logged) when Vulkan failed. */
+        /**
+         * Stops recording, submits the frame and shows the image; false (and logged) when Vulkan failed. Runs
+         * BeginScene first if the frame never did, so the image is still cleared.
+         */
         [[nodiscard]] bool EndFrame();
 
     private:
@@ -116,5 +127,8 @@ namespace Wotah
 
         /** The swapchain image of the frame being recorded. */
         uint32_t m_imageIndex = 0;
+
+        /** Whether BeginScene ran in the frame being recorded. */
+        bool m_isSceneBegun = false;
     };
 } // namespace Wotah

@@ -84,6 +84,9 @@ set(WOTAH_SHADER_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 # The most directional lights at once: one number for the C++ code (render/lighting.hpp) and the shaders
 # (shaders/lighting.glsl), so their light arrays always match.
 set(WOTAH_MAX_DIRECTIONAL_LIGHTS 8)
+# How many shadow maps (cascades) each light has, nearest stretch of the view first: for C++ (render/shadow_maps.hpp)
+# and the shaders (shaders/lighting.glsl).
+set(WOTAH_SHADOW_CASCADES 4)
 set(WOTAH_SHADER_INCLUDES ${WOTAH_SHADER_INCLUDE_DIR}/atmosphere.glsl ${WOTAH_SHADER_INCLUDE_DIR}/lighting.glsl)
 function(wotah_compile_shaders out_var output_dir)
     set(outputs "")
@@ -94,7 +97,8 @@ function(wotah_compile_shaders out_var output_dir)
             OUTPUT  ${output}
             COMMAND ${CMAKE_COMMAND} -E make_directory ${output_dir}
             COMMAND ${Vulkan_GLSLC_EXECUTABLE} -mfmt=num -I ${WOTAH_SHADER_INCLUDE_DIR}
-                    -DWOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS} ${source} -o ${output}
+                    -DWOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS}
+                    -DWOTAH_SHADOW_CASCADES=${WOTAH_SHADOW_CASCADES} ${source} -o ${output}
             DEPENDS ${source} ${WOTAH_SHADER_INCLUDES}
             COMMENT "Compiling ${name}")
         list(APPEND outputs ${output})
@@ -109,7 +113,8 @@ wotah_compile_shaders(SHADERS ${SHADER_OUT}
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ball.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/fullscreen.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/sky.frag
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/terrain.frag)
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/terrain.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow.vert)
 
 # Everything but the entry point, so the program and the tests run the same code.
 add_library(wotah STATIC
@@ -147,6 +152,8 @@ add_library(wotah STATIC
     source/render/pipeline.cpp
     source/render/renderer.hpp
     source/render/renderer.cpp
+    source/render/shadow_maps.hpp
+    source/render/shadow_maps.cpp
     source/render/sky.hpp
     source/render/sky.cpp
     source/render/swapchain.hpp
@@ -161,7 +168,7 @@ target_include_directories(wotah PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/source ${SHA
 target_link_libraries(wotah PUBLIC Vulkan::Vulkan glfw spdlog::spdlog glm::glm GPUOpen::VulkanMemoryAllocator)
 # glm's projections produce Vulkan's 0..1 depth range instead of OpenGL's -1..1.
 target_compile_definitions(wotah PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE
-    WOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS})
+    WOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS} WOTAH_SHADOW_CASCADES=${WOTAH_SHADOW_CASCADES})
 
 wotah_set_warnings(wotah)
 

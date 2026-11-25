@@ -182,8 +182,9 @@ void Wotah::Renderer::Destroy()
     m_commandBuffer  = VK_NULL_HANDLE;
     m_imageAvailable = VK_NULL_HANDLE;
     m_renderFinished.clear();
-    m_frameFence = VK_NULL_HANDLE;
-    m_imageIndex = 0;
+    m_frameFence   = VK_NULL_HANDLE;
+    m_imageIndex   = 0;
+    m_isSceneBegun = false;
 }
 
 bool Wotah::Renderer::RecreateSwapchain(const Device& device, const Window& window)
@@ -241,6 +242,13 @@ Wotah::FrameStart Wotah::Renderer::BeginFrame()
     {
         return FrameStart::Failed;
     }
+    m_isSceneBegun = false;
+    return FrameStart::Ready;
+}
+
+void Wotah::Renderer::BeginScene()
+{
+    m_isSceneBegun = true;
     ChangeLayout(m_commandBuffer, m_swapchain->GetImage(m_imageIndex), ToDrawTarget);
     ChangeLayout(m_commandBuffer, m_depth.GetHandle(), ToDepthTarget);
 
@@ -277,11 +285,14 @@ Wotah::FrameStart Wotah::Renderer::BeginFrame()
     const VkRect2D   scissor{{0, 0}, extent};
     vkCmdSetViewport(m_commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(m_commandBuffer, 0, 1, &scissor);
-    return FrameStart::Ready;
 }
 
 bool Wotah::Renderer::EndFrame()
 {
+    if (!m_isSceneBegun)
+    {
+        BeginScene(); // the image must still be cleared and made ready to show
+    }
     vkCmdEndRendering(m_commandBuffer);
     ChangeLayout(m_commandBuffer, m_swapchain->GetImage(m_imageIndex), ToPresent);
     if (!Succeeded(vkEndCommandBuffer(m_commandBuffer), "finish recording the frame"))

@@ -43,17 +43,18 @@ namespace Wotah
 
     /**
      * Everything a pipeline is built from. Only the shaders and the color format have to be set; every other field has
-     * a default that draws filled, unculled triangles without vertex buffers, depth or blending.
+     * a default that draws filled, unculled triangles without vertex buffers, depth or blending. A depth-only pipeline
+     * (shadow maps) leaves out the fragment shader and the color format and sets a DepthFormat.
      * The spans only need to stay valid during Pipeline::Create, which copies what it needs.
      */
     struct PipelineSettings
     {
         /** The vertex shader's SPIR-V words; its entry point is "main". */
         std::span<const uint32_t> VertexShader;
-        /** The fragment shader's SPIR-V words; its entry point is "main". */
+        /** The fragment shader's SPIR-V words; its entry point is "main". Empty for a depth-only pipeline. */
         std::span<const uint32_t> FragmentShader;
 
-        /** The format of the image the pipeline draws into, e.g. Swapchain::GetFormat. */
+        /** The format of the image the pipeline draws into, e.g. Swapchain::GetFormat; undefined for depth only. */
         VkFormat ColorFormat = VK_FORMAT_UNDEFINED;
         /** The format of the depth image; VK_FORMAT_UNDEFINED draws without one. */
         VkFormat DepthFormat = VK_FORMAT_UNDEFINED;
@@ -78,6 +79,13 @@ namespace Wotah
         bool DepthWrite = false;
         /** Which fragments pass the depth test: by default those closer than what is drawn. */
         VkCompareOp DepthCompare = VK_COMPARE_OP_LESS;
+        /**
+         * How far written depths are pushed away: a constant part in the depth format's smallest steps, and a part
+         * that grows with how steeply the triangle faces away. Both 0 (the default) push nothing; shadow maps push a
+         * little, so lit surfaces do not shadow themselves.
+         */
+        float DepthBiasConstant = 0.0f;
+        float DepthBiasSlope    = 0.0f;
 
         /** How the output mixes with the image's color. */
         BlendMode Blend = BlendMode::Opaque;

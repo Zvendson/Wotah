@@ -8,6 +8,8 @@
 layout(location = 0) in vec3 inWorldNormal;
 layout(location = 1) in vec3 inLocalPosition; // -0.5 .. 0.5 per axis
 layout(location = 2) in vec3 inLocalNormal;   // the face's axis in the cube's own space
+layout(location = 3) in float inViewDepth;
+layout(location = 4) in vec3 inWorldPosition;
 
 layout(location = 0) out vec4 outColor;
 
@@ -20,7 +22,7 @@ const float NotAnEdge    = 1.0e6; // pushes the face's own axis out of the edge 
 
 void main()
 {
-    vec3 lit = Light(BaseColor, inWorldNormal);
+    vec3 lit = Light(BaseColor, inWorldNormal, inWorldPosition, inViewDepth);
 
     // The distance to the face's border along each axis, in cube units. On a face, the axis it faces is always at the
     // border (|position| = 0.5), so that axis is left out; the nearest of the other two is the nearest edge. The cube's

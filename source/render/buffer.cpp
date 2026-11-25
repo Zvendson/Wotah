@@ -18,9 +18,6 @@
 
 namespace
 {
-    /** No time limit when waiting for an upload to finish. */
-    constexpr uint64_t NoTimeout = UINT64_MAX;
-
     /** How VMA should place the memory: the CPU writes in order, reads at random, or never touches it. */
     VmaAllocationCreateFlags GetAllocationFlags(Wotah::BufferMemory memory)
     {
@@ -37,65 +34,24 @@ namespace
     }
 
     /**
-     * Records a copy from source to target (offset bytes in) on a one-time command buffer, submits it and waits for
-     * it. A barrier at the end makes the copied bytes visible to everything the queue runs afterwards, so the buffer
-     * can be drawn from right away.
+     * Copies from source to target (offset bytes in) on one-time commands and waits for it. A barrier at the end makes
+     * the copied bytes visible to everything the queue runs afterwards, so the buffer can be drawn from right away.
      */
     bool CopyAndWait(const Wotah::Device& device, VkBuffer source, VkBuffer target, const VkBufferCopy& region)
     {
-        const VkDevice handle = device.GetHandle();
-
-        VkCommandPoolCreateInfo poolInfo =
-            Wotah::MakeVulkanInfo<VkCommandPoolCreateInfo>(VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO);
-        poolInfo.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT; // lives only for this copy
-        poolInfo.queueFamilyIndex = device.GetQueueFamily();
-        VkCommandPool pool        = VK_NULL_HANDLE;
-        if (!Wotah::Succeeded(vkCreateCommandPool(handle, &poolInfo, nullptr, &pool), "create an upload command pool"))
+        Wotah::OneTimeCommands commands;
+        if (!commands.Begin(device))
         {
             return false;
         }
+        vkCmdCopyBuffer(commands.Get(), source, target, 1, &region);
 
-        // Each step runs only when the ones before it worked; whatever was made is freed at the end in any case.
-        VkCommandBufferAllocateInfo bufferInfo =
-            Wotah::MakeVulkanInfo<VkCommandBufferAllocateInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
-        bufferInfo.commandPool        = pool;
-        bufferInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        bufferInfo.commandBufferCount = 1;
-        VkCommandBuffer commands      = VK_NULL_HANDLE;
-        bool isDone = Wotah::Succeeded(vkAllocateCommandBuffers(handle, &bufferInfo, &commands), "allocate an upload");
-
-        VkCommandBufferBeginInfo beginInfo =
-            Wotah::MakeVulkanInfo<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        isDone = isDone && Wotah::Succeeded(vkBeginCommandBuffer(commands, &beginInfo), "start recording an upload");
-        if (isDone)
-        {
-            vkCmdCopyBuffer(commands, source, target, 1, &region);
-
-            VkMemoryBarrier visible = Wotah::MakeVulkanInfo<VkMemoryBarrier>(VK_STRUCTURE_TYPE_MEMORY_BARRIER);
-            visible.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
-            visible.dstAccessMask   = VK_ACCESS_MEMORY_READ_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
-                                 &visible, 0, nullptr, 0, nullptr);
-        }
-        isDone = isDone && Wotah::Succeeded(vkEndCommandBuffer(commands), "finish recording an upload");
-
-        VkFenceCreateInfo fenceInfo = Wotah::MakeVulkanInfo<VkFenceCreateInfo>(VK_STRUCTURE_TYPE_FENCE_CREATE_INFO);
-        VkFence           fence     = VK_NULL_HANDLE;
-        isDone =
-            isDone && Wotah::Succeeded(vkCreateFence(handle, &fenceInfo, nullptr, &fence), "create an upload fence");
-
-        VkSubmitInfo submitInfo       = Wotah::MakeVulkanInfo<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers    = &commands;
-        isDone =
-            isDone && Wotah::Succeeded(vkQueueSubmit(device.GetQueue(), 1, &submitInfo, fence), "submit an upload");
-        isDone =
-            isDone && Wotah::Succeeded(vkWaitForFences(handle, 1, &fence, VK_TRUE, NoTimeout), "wait for an upload");
-
-        vkDestroyFence(handle, fence, nullptr);
-        vkDestroyCommandPool(handle, pool, nullptr); // frees the command buffer too
-        return isDone;
+        VkMemoryBarrier visible = Wotah::MakeVulkanInfo<VkMemoryBarrier>(VK_STRUCTURE_TYPE_MEMORY_BARRIER);
+        visible.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
+        visible.dstAccessMask   = VK_ACCESS_MEMORY_READ_BIT;
+        vkCmdPipelineBarrier(commands.Get(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
+                             &visible, 0, nullptr, 0, nullptr);
+        return commands.SubmitAndWait();
     }
 } // namespace
 

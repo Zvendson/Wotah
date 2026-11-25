@@ -60,26 +60,29 @@ Wotah::Image::~Image()
     Destroy();
 }
 
-bool Wotah::Image::Create(const Device& device, VkExtent2D extent, VkFormat format, VkImageUsageFlags usage)
+bool Wotah::Image::Create(const Device& device, VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
+                          uint32_t layerCount)
 {
     Destroy(); // a second Create replaces the first image instead of leaking it
-    if (extent.width == 0 || extent.height == 0)
+    if (extent.width == 0 || extent.height == 0 || layerCount == 0)
     {
-        Logger::Error("An image needs a size above 0, not {}x{}", extent.width, extent.height);
+        Logger::Error("An image needs a size and a layer count above 0, not {}x{} with {} layers", extent.width,
+                      extent.height, layerCount);
         return false;
     }
-    m_device    = device.GetHandle();
-    m_allocator = device.GetAllocator();
-    m_format    = format;
-    m_extent    = extent;
-    m_aspect    = GetAspectOf(format);
+    m_device     = device.GetHandle();
+    m_allocator  = device.GetAllocator();
+    m_format     = format;
+    m_extent     = extent;
+    m_aspect     = GetAspectOf(format);
+    m_layerCount = layerCount;
 
     VkImageCreateInfo imageInfo = Wotah::MakeVulkanInfo<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
     imageInfo.imageType         = VK_IMAGE_TYPE_2D;
     imageInfo.format            = format;
     imageInfo.extent            = {extent.width, extent.height, 1};
     imageInfo.mipLevels         = 1;
-    imageInfo.arrayLayers       = 1;
+    imageInfo.arrayLayers       = layerCount;
     imageInfo.samples           = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling            = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.usage             = usage;
@@ -97,9 +100,9 @@ bool Wotah::Image::Create(const Device& device, VkExtent2D extent, VkFormat form
     VkImageViewCreateInfo viewInfo =
         Wotah::MakeVulkanInfo<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
     viewInfo.image            = m_image;
-    viewInfo.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.viewType         = layerCount == 1 ? VK_IMAGE_VIEW_TYPE_2D : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     viewInfo.format           = format;
-    viewInfo.subresourceRange = {m_aspect, 0, 1, 0, 1}; // the whole image: one mip level, one layer
+    viewInfo.subresourceRange = {m_aspect, 0, 1, 0, layerCount}; // the whole image: one mip level, every layer
     return Succeeded(vkCreateImageView(m_device, &viewInfo, nullptr, &m_view), "create an image view");
 }
 
@@ -122,4 +125,5 @@ void Wotah::Image::Destroy()
     m_format     = VK_FORMAT_UNDEFINED;
     m_extent     = {};
     m_aspect     = 0;
+    m_layerCount = 0;
 }
