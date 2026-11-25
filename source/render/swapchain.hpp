@@ -43,7 +43,9 @@ namespace Wotah
         /**
          * Creates the swapchain for the device's surface in the surface's first listed format, at the surface's size
          * (or the window's drawable size where the system leaves the size to us), with vsync, and a view for every
-         * image; false (and logged) when a step fails. The device must outlive the swapchain.
+         * image; false (and logged) when a step fails. Replaces a swapchain created before, so it also makes the
+         * swapchain again at a new window size (wait until the GPU no longer uses the old one). The device must outlive
+         * the swapchain.
          */
         [[nodiscard]] bool Create(const Device& device, const Window& window);
 
@@ -58,6 +60,12 @@ namespace Wotah
 
         /** Shows the image at imageIndex once renderFinished is signalled. */
         void Present(VkQueue queue, VkSemaphore renderFinished, uint32_t imageIndex);
+
+        /**
+         * Whether taking or showing an image found that the images no longer fit the window (a new size, another
+         * screen): the owner should make the swapchain again. Create clears it.
+         */
+        [[nodiscard]] bool IsOutOfDate() const noexcept { return m_isOutOfDate; }
 
         /** The images' pixel format. */
         [[nodiscard]] VkFormat GetFormat() const noexcept { return m_format.format; }
@@ -83,5 +91,8 @@ namespace Wotah
         VkSwapchainKHR           m_swapchain = VK_NULL_HANDLE;
         std::vector<VkImage>     m_images;
         std::vector<VkImageView> m_views; // one per image, same index
+
+        /** Set when the system reports the images no longer fit; see IsOutOfDate. */
+        bool m_isOutOfDate = false;
     };
 } // namespace Wotah

@@ -303,10 +303,6 @@ bool Wotah::App::Run()
 
     // The objects stay where they are; only the camera moves.
 
-    // Fixed while the window cannot be resized.
-    const VkExtent2D extent      = m_state->Swapchain.GetExtent();
-    const float      aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
-
     Start();
 
     bool              cleanEnd  = true;
@@ -335,6 +331,16 @@ bool Wotah::App::Run()
         lastFrame                   = now;
         m_cameraController.Update(GetActiveCamera(), frameSeconds);
 
+        // A new window size, or a swapchain the system no longer finds fitting: make it again before drawing.
+        if (m_window.TakeResize() || m_state->Swapchain.IsOutOfDate())
+        {
+            if (!renderer.RecreateSwapchain(m_device, m_window))
+            {
+                cleanEnd = false;
+                break;
+            }
+        }
+
         const FrameStart start = renderer.BeginFrame();
         if (start == FrameStart::Skip)
         {
@@ -346,9 +352,12 @@ bool Wotah::App::Run()
             break;
         }
 
-        // Whichever camera is active now, it sees the image's shape; an unchanged ratio keeps its matrices.
-        Camera& camera = GetActiveCamera();
-        (void)camera.SetAspectRatio(aspectRatio); // the image size is never 0, so this cannot fail
+        // Whichever camera is active now, it sees the image's shape, also right after a resize; an unchanged ratio
+        // keeps its matrices. The image is never 0 wide or high (the window waits while it has no area), so the ratio
+        // is always valid.
+        const VkExtent2D extent = m_state->Swapchain.GetExtent();
+        Camera&          camera = GetActiveCamera();
+        (void)camera.SetAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
         // The GPU is done with the last frame (BeginFrame waited for it), so the lights can be rewritten. Bad lights
         // are logged by Update and the last good ones stay, so the frame still draws.
         (void)m_state->Lighting.Update(m_lights);

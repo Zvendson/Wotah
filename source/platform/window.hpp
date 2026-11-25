@@ -58,7 +58,7 @@ namespace Wotah
         Window& operator=(const Window&) = delete;
 
         /**
-         * Starts GLFW and opens a fixed-size window without an OpenGL context, still hidden; false (and logged)
+         * Starts GLFW and opens a resizable window without an OpenGL context, still hidden; false (and logged)
          * when that fails.
          */
         [[nodiscard]] bool Create(const WindowSize& size, const std::string& title);
@@ -74,8 +74,8 @@ namespace Wotah
 
         /**
          * Handles the waiting window events and collects the input among them for GetInputEvents, replacing the last
-         * frame's. While the window is minimized it sleeps until the window comes back or is closed, so no frames are
-         * drawn for nothing.
+         * frame's. While the window is minimized or has no drawable area it sleeps until that changes or the window is
+         * closed, so no frames are drawn for nothing.
          */
         void PollEvents();
 
@@ -87,6 +87,15 @@ namespace Wotah
          * or gives it back. Mouse movement then reports the raw motion where the system offers it.
          */
         void SetCursorCaptured(bool isCaptured);
+
+        /**
+         * Whether the drawable area changed size since the last call (the user resized the window, or SetSize did):
+         * the swapchain must be made again. Answers each change once.
+         */
+        [[nodiscard]] bool TakeResize() noexcept;
+
+        /** Resizes the window (its inside, in screen units); logged and ignored for a size of 0. */
+        void SetSize(const WindowSize& size);
 
         /** The size of the drawable area in pixels; it can differ from the window size on high-DPI screens. */
         [[nodiscard]] WindowSize GetFramebufferSize() const;
@@ -120,5 +129,11 @@ namespace Wotah
 
         /** Whether SetCursorCaptured locked the cursor. */
         bool m_isCursorCaptured = false;
+
+        /** Whether the drawable area changed size since TakeResize last answered. */
+        bool m_wasResized = false;
+
+        /** Whether the drawable area is larger than nothing in both directions. */
+        [[nodiscard]] bool HasDrawableArea() const;
     };
 } // namespace Wotah

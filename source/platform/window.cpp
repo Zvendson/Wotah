@@ -130,6 +130,11 @@ struct Wotah::Window::Callbacks
         From(handle).m_inputEvents.push_back(event);
     }
 
+    static void OnFramebufferResize(GLFWwindow* handle, int /*width*/, int /*height*/)
+    {
+        From(handle).m_wasResized = true; // the new size is read when the swapchain is made again
+    }
+
     static void OnFocus(GLFWwindow* handle, int isFocused)
     {
         if (isFocused == GLFW_TRUE)
@@ -167,7 +172,7 @@ bool Wotah::Window::Create(const WindowSize& size, const std::string& title)
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // Vulkan draws, so no OpenGL context
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);   // fixed size, so the swapchain never needs to be made again
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);    // the user can resize it; TakeResize tells the renderer
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);     // shown by Show, once everything is ready
     m_window =
         glfwCreateWindow(static_cast<int>(size.Width), static_cast<int>(size.Height), title.c_str(), nullptr, nullptr);
@@ -186,6 +191,7 @@ bool Wotah::Window::Create(const WindowSize& size, const std::string& title)
     glfwSetCursorPosCallback(m_window, Callbacks::OnCursorMove);
     glfwSetScrollCallback(m_window, Callbacks::OnScroll);
     glfwSetWindowFocusCallback(m_window, Callbacks::OnFocus);
+    glfwSetFramebufferSizeCallback(m_window, Callbacks::OnFramebufferResize);
     return true;
 }
 
@@ -201,6 +207,7 @@ void Wotah::Window::Destroy()
     m_inputEvents.clear();
     m_hasLastCursorPosition = false;
     m_isCursorCaptured      = false;
+    m_wasResized            = false;
 }
 
 void Wotah::Window::Show()
@@ -218,12 +225,36 @@ void Wotah::Window::PollEvents()
     m_inputEvents.clear(); // keeps its memory
     glfwPollEvents();
 
-    // Closing a minimized window (from the taskbar) leaves it minimized, so the close request also ends the wait;
-    // without that check the program would sleep here forever.
-    while (glfwGetWindowAttrib(m_window, GLFW_ICONIFIED) == GLFW_TRUE && !ShouldClose())
+    // While the window has nothing to draw into (minimized, or resized down to nothing) no swapchain can be made, so
+    // it sleeps until that changes. Closing a minimized window (from the taskbar) leaves it minimized, so the close
+    // request also ends the wait; without that check the program would sleep here forever.
+    while (!ShouldClose() && (glfwGetWindowAttrib(m_window, GLFW_ICONIFIED) == GLFW_TRUE || !HasDrawableArea()))
     {
         glfwWaitEvents();
     }
+}
+
+bool Wotah::Window::TakeResize() noexcept
+{
+    const bool wasResized = m_wasResized;
+    m_wasResized          = false;
+    return wasResized;
+}
+
+void Wotah::Window::SetSize(const WindowSize& size)
+{
+    if (size.Width == 0 || size.Height == 0 || size.Width > INT_MAX || size.Height > INT_MAX)
+    {
+        Logger::Error("The window size {}x{} is not usable", size.Width, size.Height);
+        return;
+    }
+    glfwSetWindowSize(m_window, static_cast<int>(size.Width), static_cast<int>(size.Height));
+}
+
+bool Wotah::Window::HasDrawableArea() const
+{
+    const WindowSize size = GetFramebufferSize();
+    return size.Width > 0 && size.Height > 0;
 }
 
 void Wotah::Window::SetCursorCaptured(bool isCaptured)

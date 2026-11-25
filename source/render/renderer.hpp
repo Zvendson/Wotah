@@ -30,6 +30,7 @@ namespace Wotah
 {
     class Device;
     class Swapchain;
+    class Window;
 
     /** What BeginFrame did. */
     enum class FrameStart
@@ -64,6 +65,13 @@ namespace Wotah
         /** Frees everything Create made; safe to call more than once or after a failed Create. */
         void Destroy();
 
+        /**
+         * Makes the swapchain again at the window's current size (after Window::TakeResize or Swapchain::IsOutOfDate),
+         * with a depth image and semaphores to match. Waits until the GPU is idle first. The pipelines stay, as
+         * viewport and scissor are set every frame; false (and logged) when Vulkan fails or the image format changed.
+         */
+        [[nodiscard]] bool RecreateSwapchain(const Device& device, const Window& window);
+
         /** The depth image's format; pipelines that draw in this renderer's frames need it (DepthFormat). */
         [[nodiscard]] VkFormat GetDepthFormat() const noexcept { return m_depth.GetFormat(); }
 
@@ -84,6 +92,12 @@ namespace Wotah
         [[nodiscard]] bool EndFrame();
 
     private:
+        /** Makes one "drawn" semaphore per swapchain image; false (and logged) when one fails. */
+        [[nodiscard]] bool CreateDrawnSemaphores();
+
+        /** Frees the "drawn" semaphores. */
+        void DestroyDrawnSemaphores() noexcept;
+
         /** The device and swapchain the renderer draws with; not owned. */
         VkDevice   m_device    = VK_NULL_HANDLE;
         VkQueue    m_queue     = VK_NULL_HANDLE;

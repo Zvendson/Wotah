@@ -11,6 +11,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -46,7 +47,10 @@ namespace
         return formats;
     }
 
-    /** The image size: the surface's own, or the window's drawable size where the system leaves it to us (Wayland). */
+    /**
+     * The image size: the surface's own, or the window's drawable size where the system leaves it to us (Wayland),
+     * kept within the sizes the surface allows (Vulkan spec, VkSwapchainCreateInfoKHR::imageExtent).
+     */
     VkExtent2D ChooseExtent(const VkSurfaceCapabilitiesKHR& capabilities, const Wotah::Window& window)
     {
         if (capabilities.currentExtent.width != SizeChosenBySwapchain)
@@ -54,7 +58,9 @@ namespace
             return capabilities.currentExtent;
         }
         const Wotah::WindowSize framebufferSize = window.GetFramebufferSize();
-        return {framebufferSize.Width, framebufferSize.Height};
+        return {
+            std::clamp(framebufferSize.Width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+            std::clamp(framebufferSize.Height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)};
     }
 
     /** One image more than the minimum, so the GPU rarely waits for the screen, within the surface's maximum. */
@@ -76,6 +82,7 @@ Wotah::Swapchain::~Swapchain()
 
 bool Wotah::Swapchain::Create(const Device& device, const Window& window)
 {
+    Destroy(); // a second Create replaces the first swapchain, e.g. at a new window size
     m_device = device.GetHandle();
 
     const VkPhysicalDevice gpu     = device.GetGpu();
@@ -168,6 +175,7 @@ void Wotah::Swapchain::Destroy()
     m_swapchain = VK_NULL_HANDLE;
     m_images.clear();
     m_views.clear();
+    m_isOutOfDate = false;
 }
 
 std::optional<uint32_t> Wotah::Swapchain::AcquireNextImage(VkSemaphore imageAvailable)
@@ -175,10 +183,18 @@ std::optional<uint32_t> Wotah::Swapchain::AcquireNextImage(VkSemaphore imageAvai
     uint32_t       index = 0;
     const VkResult result =
         vkAcquireNextImageKHR(m_device, m_swapchain, NoTimeout, imageAvailable, VK_NULL_HANDLE, &index);
-    // Suboptimal still gives a usable image. shortcut: any other result only skips the frame; make the swapchain
-    // again on VK_ERROR_OUT_OF_DATE_KHR once the window can be resized.
+    // Out of date: the images no longer fit the window, none was taken. Suboptimal: the image is usable this once, but
+    // the swapchain should be made again. Either way IsOutOfDate tells the owner to rebuild it.
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+    {
+        m_isOutOfDate = true;
+    }
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
     {
+        if (result != VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            (void)Succeeded(result, "take the next swapchain image"); // logs why
+        }
         return std::nullopt;
     }
     return index;
@@ -193,9 +209,15 @@ void Wotah::Swapchain::Present(VkQueue queue, VkSemaphore renderFinished, uint32
     presentInfo.pSwapchains        = &m_swapchain;
     presentInfo.pImageIndices      = &imageIndex;
 
-    // shortcut: the result is ignored as before, since a fixed-size window keeps its swapchain valid; handle
-    // VK_ERROR_OUT_OF_DATE_KHR together with resizing.
-    (void)vkQueuePresentKHR(queue, &presentInfo);
+    // The image no longer fitting the window is no failure: the owner rebuilds the swapchain (IsOutOfDate). Anything
+    // else is logged; the next frame tries again.
+    const VkResult result = vkQueuePresentKHR(queue, &presentInfo);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+    {
+        m_isOutOfDate = true;
+        return;
+    }
+    (void)Succeeded(result, "show the frame");
 }
 
 VkImage Wotah::Swapchain::GetImage(uint32_t index) const noexcept

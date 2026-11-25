@@ -402,8 +402,40 @@ namespace
         return camera;
     }
 
-    /** How many pixels are clearly blue: the ball, never the orange cube or the gray background. */
-    std::size_t CountBluePixels(const std::vector<uint8_t>& pixels)
+    /**
+     * Draws frames as app.cpp's loop does: polls the window, makes the swapchain again when the window was resized or
+     * the swapchain is out of date, then draws the scene. True when every frame was drawn.
+     */
+    bool DrawFramesLikeApp(Wotah::Testing::HiddenGpu& gpu, Wotah::Swapchain& swapchain, Wotah::Renderer& renderer,
+                           const Scene& scene, const OffscreenScene& what, int count)
+    {
+        for (int frame = 0; frame < count; ++frame)
+        {
+            gpu.Window.PollEvents();
+            if ((gpu.Window.TakeResize() || swapchain.IsOutOfDate()) &&
+                !renderer.RecreateSwapchain(gpu.Device, gpu.Window))
+            {
+                return false;
+            }
+            if (renderer.BeginFrame() != Wotah::FrameStart::Ready)
+            {
+                return false;
+            }
+            Wotah::Camera    camera;
+            const VkExtent2D extent = swapchain.GetExtent();
+            (void)camera.SetAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
+            scene.Record(renderer.GetCommandBuffer(), camera.GetViewProjection(), what);
+            if (!renderer.EndFrame())
+            {
+                return false;
+            }
+        }
+        gpu.Device.WaitUntilIdle();
+        return true;
+    }
+
+    /** How many pixels are clearly blue: the ball, never the orange cube or the gray background. */ std::size_t
+    CountBluePixels(const std::vector<uint8_t>& pixels)
     {
         constexpr int ClearMargin = 40;
         std::size_t   count       = 0;
@@ -851,6 +883,46 @@ TEST_SUITE("gpu")
         what.IsBallFirst                       = true;
         CHECK(DrawSceneOffscreen(gpu.Device, MakeStartCamera(), what) == groundFirst);
         CHECK(CountPixels(groundFirst, 0xED, 0x76, 0x00) > 3000); // the cube's top still shows
+    }
+
+    TEST_CASE("resizing: the window reports it once, the swapchain is made again at the new size, frames go on")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        Wotah::Swapchain swapchain;
+        REQUIRE(swapchain.Create(gpu.Device, gpu.Window));
+        Wotah::Renderer renderer;
+        REQUIRE(renderer.Create(gpu.Device, swapchain));
+        Scene scene;
+        REQUIRE(scene.Create(gpu.Device, swapchain.GetFormat(), renderer.GetDepthFormat(), MakeOldLight()));
+        CHECK_FALSE(gpu.Window.TakeResize());
+        CHECK_FALSE(swapchain.IsOutOfDate());
+
+        OffscreenScene what;
+        what.Lights    = MakeOldLight();
+        what.HasSky    = true;
+        what.HasGround = true;
+        CHECK(DrawFramesLikeApp(gpu, swapchain, renderer, scene, what, 5));
+
+        for (const Wotah::WindowSize size : {Wotah::WindowSize{800, 300}, Wotah::WindowSize{320, 640}})
+        {
+            CAPTURE(size.Width);
+            CAPTURE(size.Height);
+            gpu.Window.SetSize(size);
+            gpu.Window.PollEvents();
+            CHECK(gpu.Window.TakeResize());
+            CHECK_FALSE(gpu.Window.TakeResize()); // answered once
+
+            REQUIRE(renderer.RecreateSwapchain(gpu.Device, gpu.Window));
+            CHECK(swapchain.GetExtent().width == size.Width);
+            CHECK(swapchain.GetExtent().height == size.Height);
+            CHECK_FALSE(swapchain.IsOutOfDate());
+            CHECK(DrawFramesLikeApp(gpu, swapchain, renderer, scene, what, 5));
+        }
+
+        gpu.Window.SetSize({0, 100}); // refused and logged, the window keeps its size
+        gpu.Window.PollEvents();
+        CHECK_FALSE(gpu.Window.TakeResize());
     }
 
     TEST_CASE("depth formats and images")

@@ -4,6 +4,7 @@
  */
 #include "render/renderer.hpp"
 
+#include "core/logger.hpp"
 #include "render/device.hpp"
 #include "render/image.hpp"
 #include "render/swapchain.hpp"
@@ -146,18 +147,9 @@ bool Wotah::Renderer::Create(const Device& device, Swapchain& swapchain)
         return false;
     }
 
-    // One "drawn" semaphore per swapchain image, not per frame: the screen may still wait on an image's semaphore
-    // when the next frame starts, so it is only reused once that same image comes back from the swapchain.
-    const uint32_t imageCount = swapchain.GetImageCount();
-    m_renderFinished.reserve(imageCount);
-    for (uint32_t index = 0; index < imageCount; ++index)
+    if (!CreateDrawnSemaphores())
     {
-        const VkSemaphore semaphore = CreateBinarySemaphore(m_device);
-        if (semaphore == VK_NULL_HANDLE)
-        {
-            return false;
-        }
-        m_renderFinished.push_back(semaphore);
+        return false;
     }
 
     // Created signalled, so the first BeginFrame does not wait for a frame that never ran.
@@ -172,10 +164,8 @@ void Wotah::Renderer::Destroy()
     {
         // Every vkDestroy* below accepts VK_NULL_HANDLE (Vulkan spec), so a part-way Create is fine.
         vkDestroyFence(m_device, m_frameFence, nullptr);
-        for (VkSemaphore semaphore : m_renderFinished)
-        {
-            vkDestroySemaphore(m_device, semaphore, nullptr);
-        }
+        DestroyDrawnSemaphores();
+
         vkDestroySemaphore(m_device, m_imageAvailable, nullptr);
         vkDestroyCommandPool(m_device, m_commandPool, nullptr); // frees the command buffer too
     }
@@ -190,6 +180,32 @@ void Wotah::Renderer::Destroy()
     m_renderFinished.clear();
     m_frameFence = VK_NULL_HANDLE;
     m_imageIndex = 0;
+}
+
+bool Wotah::Renderer::RecreateSwapchain(const Device& device, const Window& window)
+{
+    // The swapchain's images, the depth image and the "drawn" semaphores all go; the GPU must be done with them.
+    device.WaitUntilIdle();
+
+    const VkFormat colorFormat = m_swapchain->GetFormat();
+    const VkFormat depthFormat = m_depth.GetFormat();
+    if (!m_swapchain->Create(device, window))
+    {
+        return false;
+    }
+
+    // The pipelines were built for the old color format; the system keeps it in practice, but it is checked, as a
+    // different format would make every pipeline wrong.
+    if (m_swapchain->GetFormat() != colorFormat)
+    {
+        Logger::Error("The screen's image format changed from {} to {}; the pipelines no longer fit",
+                      static_cast<int>(colorFormat), static_cast<int>(m_swapchain->GetFormat()));
+        return false;
+    }
+
+    DestroyDrawnSemaphores();
+    return m_depth.Create(device, m_swapchain->GetExtent(), depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) &&
+           CreateDrawnSemaphores();
 }
 
 Wotah::FrameStart Wotah::Renderer::BeginFrame()
@@ -285,4 +301,31 @@ bool Wotah::Renderer::EndFrame()
 
     m_swapchain->Present(m_queue, drawn, m_imageIndex);
     return true;
+}
+
+bool Wotah::Renderer::CreateDrawnSemaphores()
+{
+    // One "drawn" semaphore per swapchain image, not per frame: the screen may still wait on an image's semaphore
+    // when the next frame starts, so it is only reused once that same image comes back from the swapchain.
+    const uint32_t imageCount = m_swapchain->GetImageCount();
+    m_renderFinished.reserve(imageCount);
+    for (uint32_t index = 0; index < imageCount; ++index)
+    {
+        const VkSemaphore semaphore = CreateBinarySemaphore(m_device);
+        if (semaphore == VK_NULL_HANDLE)
+        {
+            return false;
+        }
+        m_renderFinished.push_back(semaphore);
+    }
+    return true;
+}
+
+void Wotah::Renderer::DestroyDrawnSemaphores() noexcept
+{
+    for (VkSemaphore semaphore : m_renderFinished)
+    {
+        vkDestroySemaphore(m_device, semaphore, nullptr);
+    }
+    m_renderFinished.clear();
 }
