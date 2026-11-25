@@ -80,7 +80,9 @@ set(SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 wotah_compile_shaders(SHADERS ${SHADER_OUT}
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/mesh.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ball.frag)
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ball.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/sky.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/sky.frag)
 
 # Everything but the entry point, so the program and the tests run the same code.
 add_library(wotah STATIC
@@ -116,6 +118,8 @@ add_library(wotah STATIC
     source/render/pipeline.cpp
     source/render/renderer.hpp
     source/render/renderer.cpp
+    source/render/sky.hpp
+    source/render/sky.cpp
     source/render/swapchain.hpp
     source/render/swapchain.cpp
     source/render/vulkan_handles.hpp

@@ -15,12 +15,14 @@
 #include "render/mesh_data.hpp"
 #include "render/pipeline.hpp"
 #include "render/renderer.hpp"
+#include "render/sky.hpp"
 #include "render/swapchain.hpp"
 #include "test_utils.hpp"
 
 #include <doctest/doctest.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/trigonometric.hpp>
 #include <glm/vec3.hpp>
 #include <vulkan/vulkan.h>
 
@@ -106,10 +108,20 @@ namespace
         mesh.Draw(commands);
     }
 
-    /** The program's scene on the GPU: the lights, both pipelines and both shapes. */
+    /** What an offscreen picture shows: its lights, whether the sky and the shapes are in it, and the draw order. */
+    struct OffscreenScene
+    {
+        Wotah::SceneLights Lights;
+        bool               HasSky      = false;
+        bool               HasShapes   = true;
+        bool               IsBallFirst = false;
+    };
+
+    /** The program's scene on the GPU: the lights, the sky, both pipelines and both shapes. */
     struct Scene
     {
         Wotah::Lighting Lighting;
+        Wotah::Sky      Sky;
         Wotah::Pipeline CubePipeline;
         Wotah::Pipeline BallPipeline;
         Wotah::Mesh     Cube;
@@ -123,7 +135,8 @@ namespace
                 return false;
             }
             const std::array<VkDescriptorSetLayout, 1> setLayouts{Lighting.GetSetLayout()};
-            return CubePipeline.Create(device,
+            return Sky.Create(device, colorFormat, depthFormat) &&
+                   CubePipeline.Create(device,
                                        MakeMeshSettings(CubeFragmentShader, colorFormat, depthFormat, setLayouts)) &&
                    BallPipeline.Create(device,
                                        MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat, setLayouts)) &&
@@ -131,9 +144,21 @@ namespace
                    Ball.Create(device, Wotah::MakeSphere(BallRadius, BallSegments, BallRings));
         }
 
-        /** Records cube and ball as app.cpp does, in either order: the depth test must make the order not matter. */
-        void Record(VkCommandBuffer commands, const glm::mat4& viewProjection, bool isBallFirst) const
+        /**
+         * Records the sky (its sun from the first light) and cube and ball as app.cpp does, the shapes in either order:
+         * the depth test must make the order not matter.
+         */
+        void Record(VkCommandBuffer commands, const glm::mat4& viewProjection, const OffscreenScene& what) const
         {
+            if (what.HasSky && !what.Lights.DirectionalLights.empty())
+            {
+                Sky.Draw(commands, viewProjection, what.Lights.DirectionalLights.front());
+            }
+            if (!what.HasShapes)
+            {
+                return;
+            }
+            const bool        isBallFirst = what.IsBallFirst;
             MeshPushConstants cube;
             cube.ViewProjection = viewProjection;
             MeshPushConstants ball;
@@ -170,8 +195,8 @@ namespace
     Wotah::Camera MakeStartCamera()
     {
         Wotah::Camera camera;
-        camera.SetPosition({2.0f, 1.6f, 2.6f});
-        camera.SetTarget({0.0f, 0.0f, 0.0f});
+        camera.SetPosition({2.2f, 1.0f, 3.0f});
+        camera.SetTarget({-0.2f, 0.25f, 0.0f});
         (void)camera.SetClipDistances(0.1f, 10.0f); // valid values
         return camera;
     }
@@ -197,7 +222,7 @@ namespace
      * image, exactly with the program's settings, and returns its pixels (4 bytes each, rows top to bottom).
      */
     std::vector<uint8_t> DrawSceneOffscreen(const Wotah::Device& device, const Wotah::Camera& camera,
-                                            const Wotah::SceneLights& lights, bool isBallFirst)
+                                            const OffscreenScene& what)
     {
         constexpr VkExtent2D Size{600, 600};
         constexpr VkFormat   ColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
@@ -216,7 +241,7 @@ namespace
         REQUIRE(readback.Create(device, ByteCount, VK_BUFFER_USAGE_TRANSFER_DST_BIT, Wotah::BufferMemory::GpuToCpu));
 
         Scene scene;
-        REQUIRE(scene.Create(device, ColorFormat, *depthFormat, lights));
+        REQUIRE(scene.Create(device, ColorFormat, *depthFormat, what.Lights));
 
         // ---- Record: clear, draw, copy to the buffer ----
         const VkDevice          handle = device.GetHandle();
@@ -263,7 +288,7 @@ namespace
         const VkRect2D   scissor{{0, 0}, Size};
         vkCmdSetViewport(commands, 0, 1, &viewport);
         vkCmdSetScissor(commands, 0, 1, &scissor);
-        scene.Record(commands, camera.GetViewProjection(), isBallFirst);
+        scene.Record(commands, camera.GetViewProjection(), what);
         vkCmdEndRendering(commands);
 
         ChangeLayout(commands, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -306,6 +331,36 @@ namespace
             }
         }
         return count;
+    }
+
+    /** The RGB of the pixel in the middle of a 600 x 600 picture. */
+    std::array<int, 3> GetCenterColor(const std::vector<uint8_t>& pixels)
+    {
+        const std::size_t center = (300 * 600 + 300) * 4;
+        return {pixels[center], pixels[center + 1], pixels[center + 2]};
+    }
+
+    /** A 0..1 color channel as the 0..255 value an RGBA8 image stores. */
+    int ToPixel(float channel)
+    {
+        return static_cast<int>(channel * 255.0f + 0.5f);
+    }
+
+    /** Whether a color is within 3 of an expected 0..1 RGB per channel (rounding may differ by a step or two). */
+    bool IsColorNear(const std::array<int, 3>& color, float red, float green, float blue)
+    {
+        constexpr int Slack = 3;
+        return std::abs(color[0] - ToPixel(red)) <= Slack && std::abs(color[1] - ToPixel(green)) <= Slack &&
+               std::abs(color[2] - ToPixel(blue)) <= Slack;
+    }
+
+    /** A camera at the origin looking towards a direction, for checking what the sky shows there. */
+    Wotah::Camera MakeCameraLookingAt(const glm::vec3& direction)
+    {
+        Wotah::Camera camera;
+        camera.SetPosition({0.0f, 0.0f, 0.0f});
+        camera.SetTarget(direction);
+        return camera;
     }
 
     /** How many pixels are clearly blue: the ball, never the orange cube or the gray background. */
@@ -543,7 +598,11 @@ TEST_SUITE("gpu")
             {
                 continue;
             }
-            scene.Record(renderer.GetCommandBuffer(), camera.GetViewProjection(), frame % 2 == 0);
+            OffscreenScene what;
+            what.Lights      = MakeOldLight();
+            what.HasSky      = true;
+            what.IsBallFirst = frame % 2 == 0;
+            scene.Record(renderer.GetCommandBuffer(), camera.GetViewProjection(), what);
             REQUIRE(renderer.EndFrame());
             ++drawn;
         }
@@ -561,24 +620,27 @@ TEST_SUITE("gpu")
         HiddenGpu gpu;
         REQUIRE(gpu.Create());
 
-        const Wotah::Camera        camera = MakeStartCamera();
-        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, camera, MakeOldLight(), false);
+        const Wotah::Camera camera = MakeStartCamera();
+        OffscreenScene      what;
+        what.Lights                       = MakeOldLight();
+        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, camera, what);
 
         // One white light plus ambient 0.25, as the light was before it came from the light buffer, gives the very same
         // colors as before: orange * (0.25 + 0.75 * light); the top gets the most light, the front the least.
-        CHECK(CountPixels(pixels, 0xED, 0x76, 0x00) > 10000);  // top
+        CHECK(CountPixels(pixels, 0xED, 0x76, 0x00) > 3000);   // top (seen flat from the nearly level start view)
         CHECK(CountPixels(pixels, 0x85, 0x42, 0x00) > 10000);  // right (+x)
         CHECK(CountPixels(pixels, 0x6B, 0x35, 0x00) > 10000);  // front (+z)
         CHECK(CountPixels(pixels, 0x00, 0x00, 0x00) > 500);    // the black edges
         CHECK(CountPixels(pixels, 0x1A, 0x1A, 0x1A) > 200000); // the background around them
-        CHECK(CountBluePixels(pixels) > 2000);                 // the ball, partly behind the cube
+        CHECK(CountBluePixels(pixels) > 1000);                 // the ball, partly behind the cube
 
         // The center of the picture is the cube, not the background.
         const std::size_t center = (300 * 600 + 300) * 4;
         CHECK(pixels[center] > 0x40);
 
         // The depth image decides what is in front: drawing the ball first gives the very same picture.
-        CHECK(DrawSceneOffscreen(gpu.Device, camera, MakeOldLight(), true) == pixels);
+        what.IsBallFirst = true;
+        CHECK(DrawSceneOffscreen(gpu.Device, camera, what) == pixels);
     }
 
     TEST_CASE("colored lights add up per face, and a light at intensity 0 is off")
@@ -600,11 +662,13 @@ TEST_SUITE("gpu")
         lights.AmbientColor      = glm::vec3(0.0f);
         lights.DirectionalLights = {red, green, off};
 
-        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, MakeStartCamera(), lights, false);
+        OffscreenScene what;
+        what.Lights                       = lights;
+        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, MakeStartCamera(), what);
 
         // The orange cube (1, 0.5, 0): red light leaves (1, 0, 0), green light (0, 0.5, 0), no light black.
         CHECK(CountPixels(pixels, 0xFF, 0x00, 0x00) > 10000); // right face
-        CHECK(CountPixels(pixels, 0x00, 0x80, 0x00) > 10000); // top face
+        CHECK(CountPixels(pixels, 0x00, 0x80, 0x00) > 3000);  // top face (seen flat)
         CHECK(CountPixels(pixels, 0x00, 0x00, 0x00) > 25000); // front face and the edges
     }
 
@@ -635,6 +699,61 @@ TEST_SUITE("gpu")
         lighting.Destroy();
         lighting.Destroy(); // twice is safe
         CHECK(lighting.GetSetLayout() == VK_NULL_HANDLE);
+    }
+
+    TEST_CASE("the sky: deep blue overhead, pale at the horizon, haze below, the sun where its light comes from")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        // The program's sun: east, 45 degrees up, warm white.
+        Wotah::DirectionalLight sun;
+        sun.Direction = Wotah::MakeLightDirection(glm::radians(90.0f), glm::radians(45.0f));
+        sun.Color     = {1.0f, 0.95f, 0.85f};
+        OffscreenScene sky;
+        sky.Lights.DirectionalLights = {sun};
+        sky.HasSky                   = true;
+        sky.HasShapes                = false;
+
+        // Straight at the horizon, away from the sun (north): shaders/sky.frag's HorizonColor.
+        const std::array<int, 3> horizon =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt({0.0f, 0.0f, -1.0f}), sky));
+        CHECK(IsColorNear(horizon, 0.62f, 0.78f, 0.94f));
+
+        // High up, away from the sun: deep blue, darker and bluer than at the horizon.
+        const std::array<int, 3> high =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt({-0.2f, 1.0f, 0.0f}), sky));
+        CHECK(high[2] > high[0] + 80);
+        CHECK(high[0] < horizon[0]);
+
+        // Far down: the blue-gray haze, BelowColor.
+        const std::array<int, 3> below =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt({0.05f, -1.0f, 0.0f}), sky));
+        CHECK(IsColorNear(below, 0.30f, 0.36f, 0.42f));
+
+        // Straight at the sun: its disk, exactly the sun's color.
+        const std::array<int, 3> disk =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(-sun.Direction), sky));
+        CHECK(IsColorNear(disk, 1.0f, 0.95f, 0.85f));
+    }
+
+    TEST_CASE("the scene under the sky: the shapes in front, the sky behind, the draw order still free")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        OffscreenScene what;
+        what.Lights                       = MakeOldLight();
+        what.HasSky                       = true;
+        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, MakeStartCamera(), what);
+
+        CHECK(CountPixels(pixels, 0xED, 0x76, 0x00) > 3000); // the cube's top, as without the sky
+        CHECK(CountPixels(pixels, 0x1A, 0x1A, 0x1A) == 0);   // the sky covers all of the background
+
+        // The top-left corner is sky above the horizon: blue.
+        CHECK(pixels[2] > pixels[0] + 40);
+
+        what.IsBallFirst = true;
+        CHECK(DrawSceneOffscreen(gpu.Device, MakeStartCamera(), what) == pixels);
     }
 
     TEST_CASE("depth formats and images")

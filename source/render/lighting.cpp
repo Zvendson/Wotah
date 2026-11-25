@@ -13,6 +13,7 @@
 #include <vulkan/vulkan.h>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -78,6 +79,14 @@ namespace
         return packed;
     }
 } // namespace
+
+glm::vec3 Wotah::MakeLightDirection(float azimuth, float elevation)
+{
+    // Towards the light: north is -z and east +x, so the compass angle turns from -z towards +x; then tilt up.
+    const glm::vec3 towardsLight{std::sin(azimuth) * std::cos(elevation), std::sin(elevation),
+                                 -std::cos(azimuth) * std::cos(elevation)};
+    return -towardsLight;
+}
 
 Wotah::Lighting::~Lighting()
 {

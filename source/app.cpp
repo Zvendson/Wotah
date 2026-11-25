@@ -1,9 +1,9 @@
 /**
  * @file app.cpp
  * The application: a Vulkan 1.3 example scene, an orange cube seen from above one corner so three faces show, and a
- * blue ball behind it, lit by a warm sun and a cool moon. Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with
- * a depth image; the shapes are Meshes on the GPU, camera and object matrices come in as push constants, and the lights
- * through a uniform buffer.
+ * blue ball behind it, under a clear blue sky, lit by a warm sun in the east and a cool moon. Uses dynamic rendering
+ * (no VkRenderPass / VkFramebuffer) with a depth image; the shapes are Meshes on the GPU, camera and object matrices
+ * come in as push constants, and the lights through a uniform buffer.
  */
 #include "app.hpp"
 
@@ -14,6 +14,7 @@
 #include "render/mesh_data.hpp"
 #include "render/pipeline.hpp"
 #include "render/renderer.hpp"
+#include "render/sky.hpp"
 #include "render/swapchain.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -58,14 +59,17 @@ static constexpr Wotah::WindowSize MainWindowSize{600, 600};
 /** The window's title and the application name Vulkan is told. */
 static constexpr const char* AppName = "Vulkan Cube";
 
-/** The background: dark gray. */
+/** What a frame starts with; the sky covers all of it right away, so this only shows if the sky is missing. */
 static constexpr VkClearColorValue BackgroundColor{{0.1f, 0.1f, 0.1f, 1.0f}};
 
-/** Where the first camera stands: above the corner where +x, +y and +z meet, so those three faces show. */
-static constexpr glm::vec3 CornerCameraPosition{2.0f, 1.6f, 2.6f};
+/**
+ * Where the first camera stands: south-east of the cube and a bit above it, so the top, east and south faces show, and
+ * looking almost level, so the sky shows above the horizon.
+ */
+static constexpr glm::vec3 CornerCameraPosition{2.2f, 1.0f, 3.0f};
 
-/** What the first camera looks at: the cube's center. */
-static constexpr glm::vec3 CornerCameraTarget{0.0f, 0.0f, 0.0f};
+/** What the first camera looks at: just above the cube's center, between cube and ball. */
+static constexpr glm::vec3 CornerCameraTarget{-0.2f, 0.25f, 0.0f};
 
 /** The nearest and farthest distance the first camera sees: the cube is about 3.7 units away. */
 static constexpr float CornerCameraNear = 0.1f;
@@ -79,13 +83,17 @@ static constexpr glm::vec3 BallPosition{-1.3f, 0.0f, -0.9f};
 static constexpr uint32_t BallSegments = 48;
 static constexpr uint32_t BallRings    = 24;
 
-/** The ambient light: a dim, slightly blue night sky that keeps surfaces facing away from sun and moon visible. */
-static constexpr glm::vec3 SkyAmbient{0.12f, 0.12f, 0.15f};
+/** The ambient light: the blue sky lighting every surface a little, also those facing away from sun and moon. */
+static constexpr glm::vec3 SkyAmbient{0.2f, 0.24f, 0.32f};
 
-/** The sun: warm white, high above, from the right and a bit from the front, as the light was before. */
-static constexpr glm::vec3 SunDirection{-0.4f, -1.0f, -0.25f};
+/** The sun: warm white, in the east at 45 degrees above the horizon (compass: render/lighting.hpp). */
+static constexpr float     SunAzimuth   = glm::radians(90.0f);
+static constexpr float     SunElevation = glm::radians(45.0f);
 static constexpr glm::vec3 SunColor{1.0f, 0.95f, 0.85f};
 static constexpr float     SunIntensity = 0.9f;
+
+/** Where the sun sits in SceneLights::DirectionalLights; the sky draws its disk from that light. */
+static constexpr std::size_t SunLightIndex = 0;
 
 /** The moon: cool blue and weak, low from the front left, so its light shows on the faces the start view sees. */
 static constexpr glm::vec3 MoonDirection{0.3f, -0.3f, -1.0f};
@@ -157,6 +165,9 @@ struct Wotah::App::State
     /** The scene's lights on the GPU, rewritten every frame. */
     Wotah::Lighting Lighting;
 
+    /** The sky with the sun, drawn first in every frame. */
+    Wotah::Sky Sky;
+
     /** The pipelines: the orange cube with black edges, and the blue ball. */
     Wotah::Pipeline CubePipeline;
     Wotah::Pipeline BallPipeline;
@@ -203,14 +214,15 @@ bool Wotah::App::Create()
     if (!state.CubePipeline.Create(m_device,
                                    MakeMeshSettings(CubeFragmentShader, colorFormat, depthFormat, setLayouts)) ||
         !state.BallPipeline.Create(m_device,
-                                   MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat, setLayouts)))
+                                   MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat, setLayouts)) ||
+        !state.Sky.Create(m_device, colorFormat, depthFormat))
     {
         return false;
     }
 
     // A sun and a moon, both shining at once for now; a day and night cycle will move them and change their light.
     DirectionalLight sun;
-    sun.Direction = SunDirection;
+    sun.Direction = MakeLightDirection(SunAzimuth, SunElevation);
     sun.Color     = SunColor;
     sun.Intensity = SunIntensity;
     DirectionalLight moon;
@@ -218,7 +230,7 @@ bool Wotah::App::Create()
     moon.Color                 = MoonColor;
     moon.Intensity             = MoonIntensity;
     m_lights.AmbientColor      = SkyAmbient;
-    m_lights.DirectionalLights = {sun, moon};
+    m_lights.DirectionalLights = {sun, moon}; // the sun first: SunLightIndex
 
     // The shapes go to GPU-only memory once; Create waits until they are there.
     if (!state.Cube.Create(m_device, MakeCube()) ||
@@ -305,9 +317,16 @@ bool Wotah::App::Run()
         MeshPushConstants pushConstants;
         pushConstants.ViewProjection = camera.GetViewProjection();
 
-        // The depth test sorts out which is in front, so the draw order does not matter.
+        // The sky first: it tests no depth, so everything after it is drawn in front. Without a sun light it is not
+        // drawn.
         const VkCommandBuffer commandBuffer = renderer.GetCommandBuffer();
-        pushConstants.Model                 = cubeModel;
+        if (SunLightIndex < m_lights.DirectionalLights.size())
+        {
+            scene.Sky.Draw(commandBuffer, pushConstants.ViewProjection, m_lights.DirectionalLights[SunLightIndex]);
+        }
+
+        // The depth test sorts out which is in front, so the order of the shapes does not matter.
+        pushConstants.Model = cubeModel;
         DrawMesh(commandBuffer, scene.CubePipeline, scene.Lighting, scene.Cube, pushConstants);
         pushConstants.Model = ballModel;
         DrawMesh(commandBuffer, scene.BallPipeline, scene.Lighting, scene.Ball, pushConstants);

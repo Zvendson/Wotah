@@ -13,6 +13,8 @@
  *
  *     lighting.Update(lights);          // every frame, after Renderer::BeginFrame
  *     lighting.Bind(commands, layout);  // with each pipeline that reads the lights
+ *
+ * The world's compass: y is up, north is -z, east is +x, south is +z, west is -x.
  */
 #pragma once
 
@@ -44,6 +46,13 @@ namespace Wotah
         /** How strong it is; multiplies the color, 0 switches it off. */
         float Intensity = 1.0f;
     };
+
+    /**
+     * The direction a light in the sky shines in, from where it stands: azimuth is the compass angle in radians from
+     * north towards east (0 north, pi/2 east, pi south), elevation the angle above the horizon (0 on the horizon, pi/2
+     * straight overhead). A sun in the east at 45 degrees shines down and towards the west.
+     */
+    [[nodiscard]] glm::vec3 MakeLightDirection(float azimuth, float elevation);
 
     /** Everything that lights the scene. */
     struct SceneLights
