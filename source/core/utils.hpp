@@ -6,6 +6,7 @@
  *     {
  *         const std::filesystem::path logFile = *folder / "wotah.log";
  *     }
+ *     angle = Wotah::TurnAngle(angle, radiansPerSecond, frameSeconds);
  */
 #pragma once
 
@@ -16,4 +17,11 @@ namespace Wotah
 {
     /** The folder that holds the running executable; empty when the operating system does not tell. */
     std::optional<std::filesystem::path> FindExecutableDirectory();
+
+    /**
+     * An angle in radians turned on by radiansPerSecond for seconds (a negative speed turns back), kept within
+     * [0, 2 pi) so it never grows until floats lose precision. A turn that is not a finite number leaves the angle as
+     * it was.
+     */
+    [[nodiscard]] float TurnAngle(float angle, float radiansPerSecond, float seconds) noexcept;
 } // namespace Wotah

@@ -1,6 +1,6 @@
 /**
  * @file app.cpp
- * The application: a Vulkan 1.3 example scene, an orange cube seen from above one corner so three faces show, and a
+ * The application: a Vulkan 1.3 example scene, a slowly turning orange cube seen from above one corner, and a
  * blue ball behind it, both on a grass ground under a clear blue sky, lit by a warm sun in the east and a cool
  * moon. Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the shapes are Meshes on the GPU,
  * camera and object matrices come in as push constants, and the lights through a uniform buffer.
@@ -8,6 +8,7 @@
 #include "app.hpp"
 
 #include "core/logger.hpp"
+#include "core/utils.hpp"
 #include "input/input_event.hpp"
 #include "render/height_field.hpp"
 #include "render/lighting.hpp"
@@ -29,6 +30,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <optional>
 #include <span>
 #include <stop_token>
@@ -95,6 +97,16 @@ static constexpr uint32_t GroundCells = 128;
 /** Where the cube stands on the ground (x, z), and half its size of 1: how far its center is above the ground. */
 static constexpr glm::vec2 CubeSpot{0.0f, 0.0f};
 static constexpr float     CubeHalfSize = 0.5f;
+
+/**
+ * How fast the cube turns around its upright axis: once every 10 seconds, slow enough to watch every face go by.
+ * Positive turns counterclockwise, seen from above.
+ */
+static constexpr float CubeTurnSeconds = 10.0f;
+static constexpr float CubeTurnSpeed   = 2.0f * std::numbers::pi_v<float> / CubeTurnSeconds; // radians per second
+
+/** The axis the cube turns around: straight up through its center, so it keeps standing on the ground. */
+static constexpr glm::vec3 CubeTurnAxis{0.0f, 1.0f, 0.0f};
 
 /** The ball's size and where it lies on the ground (x, z): behind the cube and to its left, as seen at the start. */
 static constexpr float     BallRadius = 0.5f;
@@ -201,8 +213,11 @@ struct Wotah::App::State
     Wotah::Mesh        Ball;
 
     /** Where cube and ball stand: on the ground, worked out in Create. */
-    glm::mat4 CubeModel{1.0f};
+    glm::vec3 CubeCenter{0.0f};
     glm::mat4 BallModel{1.0f};
+
+    /** How far the cube has turned around its upright axis, in radians; every frame turns it on. */
+    float CubeAngle = 0.0f;
 };
 
 Wotah::App::App()
@@ -279,8 +294,8 @@ bool Wotah::App::Create()
         Logger::Error("Cube and ball must stand on the ground's area");
         return false;
     }
-    state.CubeModel = glm::translate(glm::mat4(1.0f), {CubeSpot.x, *cubeGround + CubeHalfSize, CubeSpot.y});
-    state.BallModel = glm::translate(glm::mat4(1.0f), {BallSpot.x, *ballGround + BallRadius, BallSpot.y});
+    state.CubeCenter = {CubeSpot.x, *cubeGround + CubeHalfSize, CubeSpot.y};
+    state.BallModel  = glm::translate(glm::mat4(1.0f), {BallSpot.x, *ballGround + BallRadius, BallSpot.y});
 
     // The first camera looks at the cube from above a corner; Run keeps every active camera's aspect ratio in step
     // with the image.
@@ -375,6 +390,9 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     m_window.RequestCursorCaptured(m_cameraController.IsTurning());
     m_cameraController.Update(GetActiveCamera(), frameSeconds);
 
+    // The cube turns on by the time this frame took, so it turns at the same speed whatever the frame rate.
+    m_state->CubeAngle = TurnAngle(m_state->CubeAngle, CubeTurnSpeed, frameSeconds);
+
     // A new window size, or a swapchain the system no longer finds fitting: make it again before drawing. While the
     // user drags the window's edge this happens every few frames, so the picture follows the edge.
     if (m_window.TakeResize() || m_state->Swapchain.IsOutOfDate())
@@ -414,7 +432,7 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     // The depth test sorts out which is in front, so the order of ground and shapes does not matter.
     pushConstants.Model = glm::mat4(1.0f); // the ground lies where its heights say
     DrawMesh(commandBuffer, scene.TerrainPipeline, scene.Lighting, scene.Terrain, pushConstants);
-    pushConstants.Model = scene.CubeModel;
+    pushConstants.Model = glm::rotate(glm::translate(glm::mat4(1.0f), scene.CubeCenter), scene.CubeAngle, CubeTurnAxis);
     DrawMesh(commandBuffer, scene.CubePipeline, scene.Lighting, scene.Cube, pushConstants);
     pushConstants.Model = scene.BallModel;
     DrawMesh(commandBuffer, scene.BallPipeline, scene.Lighting, scene.Ball, pushConstants);
