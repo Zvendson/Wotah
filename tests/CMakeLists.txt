@@ -20,6 +20,7 @@ add_executable(wotah_tests
     logger_tests.cpp
     mesh_data_tests.cpp
     mesh_tests.cpp
+    physics_tests.cpp
     utils_tests.cpp
     vulkan_utils_tests.cpp
     ${TEST_SHADERS})

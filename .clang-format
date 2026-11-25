@@ -58,13 +58,21 @@ IncludeCategories:
     Priority: 1
   - Regex: '^<wotah/'
     Priority: 2
-  - Regex: '^<(doctest|GLFW|glm|nlohmann|spdlog|vulkan)'
+  # Jolt in its own block, Jolt.h first: every other Jolt header needs it included before (Jolt docs).
+  - Regex: '^<Jolt/Jolt\.h>'
     Priority: 3
+    SortPriority: 3
+  - Regex: '^<Jolt/'
+    Priority: 3
+    SortPriority: 4
+  - Regex: '^<(doctest|GLFW|glm|nlohmann|spdlog|vulkan)'
+    Priority: 5
+    SortPriority: 5
   # windows.h in a block before the other system headers, which need it.
   - Regex: '^<windows\.h>'
-    Priority: 4
-  - Regex: '^<[A-Za-z0-9_]+\.h>'
-    Priority: 5
-  - Regex: '^<'
     Priority: 6
+  - Regex: '^<[A-Za-z0-9_]+\.h>'
+    Priority: 7
+  - Regex: '^<'
+    Priority: 8
 ...

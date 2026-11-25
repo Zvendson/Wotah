@@ -23,6 +23,8 @@
 
 namespace Wotah
 {
+    struct MeshData;
+
     /**
      * The window and everything Vulkan needs to draw into it.
      * The steps run in order: Create, Run (which calls Start and Stop), Destroy. The destructor runs Stop and Destroy,
@@ -75,6 +77,12 @@ namespace Wotah
         [[nodiscard]] SceneLights& GetLights() noexcept { return m_lights; }
 
     private:
+        /**
+         * Starts the physics world: the ground from groundMesh, the turning cube, the ball on the ground and the one in
+         * the air; false (and logged) when that fails.
+         */
+        [[nodiscard]] bool CreatePhysics(const MeshData& groundMesh);
+
         /** Shows the window; the first thing Run does. */
         void Start();
 

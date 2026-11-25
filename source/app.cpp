@@ -1,16 +1,17 @@
 /**
  * @file app.cpp
- * The application: a Vulkan 1.3 example scene, a slowly turning orange cube seen from above one corner, and a
- * blue ball behind it, both on a grass ground under a clear blue sky, lit by a warm sun in the east and a cool
- * moon, each casting its own shadows. Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the
+ * The application: a Vulkan 1.3 example scene, a slowly turning orange cube seen from above one corner, a blue ball
+ * behind it and a second one dropped from the air onto it, all on a grass ground under a clear blue sky, lit by a warm
+ * sun in the east casting the shadows, as on a clear day (the moon is up but too faint to show). Gravity and collisions
+ * come from the physics world (Jolt). Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the
  * shapes are Meshes on the GPU, camera and object matrices come in as push constants, and the lights through a uniform
  * buffer with every light's shadow map beside it.
  */
 #include "app.hpp"
 
 #include "core/logger.hpp"
-#include "core/utils.hpp"
 #include "input/input_event.hpp"
+#include "physics/physics_world.hpp"
 #include "render/height_field.hpp"
 #include "render/lighting.hpp"
 #include "render/mesh.hpp"
@@ -41,8 +42,8 @@
 using Clock = std::chrono::steady_clock;
 
 /**
- * The longest frame time the camera moves by: after a stall (the window minimized, a breakpoint) it continues from
- * where it was instead of jumping far.
+ * The longest frame time the camera and the physics move by: after a stall (the window minimized, a breakpoint) they
+ * continue from where they were instead of jumping far.
  */
 static constexpr float MaxFrameSeconds = 0.1f;
 
@@ -123,17 +124,36 @@ static constexpr float     CubeHalfSize = 0.5f;
 
 /**
  * How fast the cube turns around its upright axis: once every 10 seconds, slow enough to watch every face go by.
- * Positive turns counterclockwise, seen from above.
+ * Positive turns counterclockwise, seen from above; straight up through its middle, so it keeps standing on the ground.
  */
-static constexpr float CubeTurnSeconds = 10.0f;
-static constexpr float CubeTurnSpeed   = 2.0f * std::numbers::pi_v<float> / CubeTurnSeconds; // radians per second
-
-/** The axis the cube turns around: straight up through its center, so it keeps standing on the ground. */
-static constexpr glm::vec3 CubeTurnAxis{0.0f, 1.0f, 0.0f};
+static constexpr float     CubeTurnSeconds = 10.0f;
+static constexpr glm::vec3 CubeSpin{0.0f, 2.0f * std::numbers::pi_v<float> / CubeTurnSeconds, 0.0f}; // radians/second
 
 /** The ball's size and where it lies on the ground (x, z): behind the cube and to its left, as seen at the start. */
 static constexpr float     BallRadius = 0.5f;
 static constexpr glm::vec2 BallSpot{-1.3f, -0.9f};
+
+/**
+ * The second ball, as large as the first: dropped from 2 units above the ground (its lowest point), over the first
+ * ball's side that faces the camera, so it glances off that ball, lands and rolls towards the cube.
+ */
+static constexpr glm::vec2 DroppedBallSpot{-1.0f, -0.6f};
+static constexpr float     DroppedBallHeight = 2.0f;
+
+/**
+ * The surfaces, chosen by eye: grass grips and hardly bounces, the cube is like painted wood, the balls like rubber.
+ * Two bodies in contact bounce like the bouncier one, so the balls bounce on every surface.
+ */
+static constexpr Wotah::BodySurface GrassSurface{0.8f, 0.2f};
+static constexpr Wotah::BodySurface WoodSurface{0.5f, 0.3f};
+static constexpr Wotah::BodySurface RubberSurface{0.7f, 0.6f};
+
+/**
+ * How fast a ball rolling on grass slows down by itself, per second: the grass's rolling resistance, which the physics
+ * has no other way to know. Chosen by testing: a ball knocked aside rolls a metre or two, not off the ground's edge.
+ */
+static constexpr float BallSpinDamping = 1.0f;
+static constexpr float BallMoveDamping = 0.2f;
 
 /** How finely the ball is cut: enough for a smooth outline at this size. */
 static constexpr uint32_t BallSegments = 48;
@@ -151,10 +171,14 @@ static constexpr float     SunIntensity = 0.9f;
 /** Where the sun sits in SceneLights::DirectionalLights; the sky draws its disk from that light. */
 static constexpr std::size_t SunLightIndex = 0;
 
-/** The moon: cool blue and weak, low from the front left, so its light shows on the faces the start view sees. */
+/**
+ * The moon: cool blue, low from the front left. By day its light is a few millionths of the sun's (full moonlight about
+ * 0.3 lux against about 100 000 lux of sunlight), far too little to light anything or cast a shadow, so it is 0 here;
+ * a day and night cycle will give it its light at night.
+ */
 static constexpr glm::vec3 MoonDirection{0.3f, -0.3f, -1.0f};
 static constexpr glm::vec3 MoonColor{0.45f, 0.55f, 1.0f};
-static constexpr float     MoonIntensity = 0.35f;
+static constexpr float     MoonIntensity = 0.0f;
 
 /** What mesh.vert gets per draw; matches its PushConstants block. */
 struct MeshPushConstants
@@ -298,12 +322,11 @@ struct Wotah::App::State
     Wotah::Mesh        Cube;
     Wotah::Mesh        Ball;
 
-    /** Where cube and ball stand: on the ground, worked out in Create. */
-    glm::vec3 CubeCenter{0.0f};
-    glm::mat4 BallModel{1.0f};
-
-    /** How far the cube has turned around its upright axis, in radians; every frame turns it on. */
-    float CubeAngle = 0.0f;
+    /** Gravity and collisions: the ground, the turning cube and both balls. */
+    Wotah::PhysicsWorld Physics;
+    Wotah::BodyId       CubeBody;
+    Wotah::BodyId       BallBody;
+    Wotah::BodyId       DroppedBallBody;
 };
 
 Wotah::App::App()
@@ -352,7 +375,8 @@ bool Wotah::App::Create()
         return false;
     }
 
-    // A sun and a moon, both shining at once for now; a day and night cycle will move them and change their light.
+    // A sun and a moon, as on a clear day: only the sun gives light (the moon's is 0 by day, so it casts no shadow);
+    // a day and night cycle will move them and change their light.
     DirectionalLight sun;
     sun.Direction = MakeLightDirection(SunAzimuth, SunElevation);
     sun.Color     = SunColor;
@@ -366,24 +390,18 @@ bool Wotah::App::Create()
     m_lights.Shadows           = {ShadowAreaCenter, ShadowAreaRadius}; // every light casts shadows on the ground
 
     // The ground and the shapes go to GPU-only memory once; Create waits until they are there.
-    state.GroundShape = MakeFlatHeightField(GroundSize, GroundSize, GroundCells, GroundCells);
-    if (!state.Terrain.Create(m_device, MakeTerrainMesh(state.GroundShape)) ||
-        !state.Cube.Create(m_device, MakeCube()) ||
+    state.GroundShape         = MakeFlatHeightField(GroundSize, GroundSize, GroundCells, GroundCells);
+    const MeshData groundMesh = MakeTerrainMesh(state.GroundShape);
+    if (!state.Terrain.Create(m_device, groundMesh) || !state.Cube.Create(m_device, MakeCube()) ||
         !state.Ball.Create(m_device, MakeSphere(BallRadius, BallSegments, BallRings)))
     {
         return false;
     }
 
-    // Cube and ball stand on the ground wherever it is, so they keep standing on it once there are hills.
-    const std::optional<float> cubeGround = FindHeight(state.GroundShape, CubeSpot.x, CubeSpot.y);
-    const std::optional<float> ballGround = FindHeight(state.GroundShape, BallSpot.x, BallSpot.y);
-    if (!cubeGround || !ballGround)
+    if (!CreatePhysics(groundMesh))
     {
-        Logger::Error("Cube and ball must stand on the ground's area");
         return false;
     }
-    state.CubeCenter = {CubeSpot.x, *cubeGround + CubeHalfSize, CubeSpot.y};
-    state.BallModel  = glm::translate(glm::mat4(1.0f), {BallSpot.x, *ballGround + BallRadius, BallSpot.y});
 
     // The first camera looks at the cube from above a corner; Run keeps every active camera's aspect ratio in step
     // with the image.
@@ -398,6 +416,62 @@ bool Wotah::App::Create()
 
     // The camera controller gets whatever input no handler before it used; a UI will be added in front of it.
     m_input.AddHandler(m_cameraController);
+    return true;
+}
+
+bool Wotah::App::CreatePhysics(const MeshData& groundMesh)
+{
+    State& state = *m_state;
+    if (!state.Physics.Create())
+    {
+        return false;
+    }
+
+    // The ground collides exactly where it is drawn: the same triangles.
+    std::vector<glm::vec3> groundCorners;
+    groundCorners.reserve(groundMesh.Vertices.size());
+    for (const MeshVertex& vertex : groundMesh.Vertices)
+    {
+        groundCorners.push_back(vertex.Position);
+    }
+    if (!state.Physics.AddTriangles(groundCorners, groundMesh.Indices, GrassSurface))
+    {
+        return false;
+    }
+
+    // Cube and balls stand on the ground wherever it is, so they keep standing on it once there are hills.
+    const std::optional<float> cubeGround    = FindHeight(state.GroundShape, CubeSpot.x, CubeSpot.y);
+    const std::optional<float> ballGround    = FindHeight(state.GroundShape, BallSpot.x, BallSpot.y);
+    const std::optional<float> droppedGround = FindHeight(state.GroundShape, DroppedBallSpot.x, DroppedBallSpot.y);
+    if (!cubeGround || !ballGround || !droppedGround)
+    {
+        Logger::Error("Cube and balls must stand on the ground's area");
+        return false;
+    }
+
+    // The cube turns as told and pushes what it touches, but nothing pushes it.
+    BodySettings cube;
+    cube.Motion   = BodyMotion::Kinematic;
+    cube.Position = {CubeSpot.x, *cubeGround + CubeHalfSize, CubeSpot.y};
+    cube.Surface  = WoodSurface;
+    BodySettings ball;
+    ball.Position        = {BallSpot.x, *ballGround + BallRadius, BallSpot.y};
+    ball.Surface         = RubberSurface;
+    ball.SpinDamping     = BallSpinDamping;
+    ball.MoveDamping     = BallMoveDamping;
+    BodySettings dropped = ball;
+    dropped.Position     = {DroppedBallSpot.x, *droppedGround + DroppedBallHeight + BallRadius, DroppedBallSpot.y};
+
+    const std::optional<BodyId> cubeBody    = state.Physics.AddBox(glm::vec3(CubeHalfSize), cube);
+    const std::optional<BodyId> ballBody    = state.Physics.AddSphere(BallRadius, ball);
+    const std::optional<BodyId> droppedBody = state.Physics.AddSphere(BallRadius, dropped);
+    if (!cubeBody || !ballBody || !droppedBody || !state.Physics.SetVelocity(*cubeBody, glm::vec3(0.0f), CubeSpin))
+    {
+        return false;
+    }
+    state.CubeBody        = *cubeBody;
+    state.BallBody        = *ballBody;
+    state.DroppedBallBody = *droppedBody;
     return true;
 }
 
@@ -478,8 +552,8 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     m_window.RequestCursorCaptured(m_cameraController.IsTurning());
     m_cameraController.Update(GetActiveCamera(), frameSeconds);
 
-    // The cube turns on by the time this frame took, so it turns at the same speed whatever the frame rate.
-    m_state->CubeAngle = TurnAngle(m_state->CubeAngle, CubeTurnSpeed, frameSeconds);
+    // The world moves on by the time this frame took: the cube turns, the balls fall, bounce and roll.
+    m_state->Physics.Step(frameSeconds);
 
     // A new window size, or a swapchain the system no longer finds fitting: make it again before drawing. While the
     // user drags the window's edge this happens every few frames, so the picture follows the edge.
@@ -507,12 +581,14 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     // logged by Update and the last good ones stay, so the frame still draws.
     (void)m_state->Lighting.Update(m_lights, camera);
 
-    // What stands in the scene this frame: the ground where its heights say, the turning cube, and the ball.
-    const std::array<SceneObject, 3> objects{{
+    // What stands in the scene this frame: the ground where its heights say, the cube and the balls where the physics
+    // has them (always found: Create added them).
+    const std::array<SceneObject, 4> objects{{
         {&scene.TerrainPipeline, &scene.Terrain, glm::mat4(1.0f)},
-        {&scene.CubePipeline, &scene.Cube,
-         glm::rotate(glm::translate(glm::mat4(1.0f), scene.CubeCenter), scene.CubeAngle, CubeTurnAxis)},
-        {&scene.BallPipeline, &scene.Ball, scene.BallModel},
+        {&scene.CubePipeline, &scene.Cube, scene.Physics.FindTransform(scene.CubeBody).value_or(glm::mat4(1.0f))},
+        {&scene.BallPipeline, &scene.Ball, scene.Physics.FindTransform(scene.BallBody).value_or(glm::mat4(1.0f))},
+        {&scene.BallPipeline, &scene.Ball,
+         scene.Physics.FindTransform(scene.DroppedBallBody).value_or(glm::mat4(1.0f))},
     }};
 
     // Every light's shadow map first, as the scene's shaders read them all; then the scene itself.

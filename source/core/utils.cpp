@@ -10,8 +10,6 @@
 #    include <windows.h>
 #endif
 
-#include <cmath>
-#include <numbers>
 #include <string>
 #include <system_error>
 
@@ -73,24 +71,4 @@ std::optional<std::filesystem::path> Wotah::FindExecutableDirectory()
         return std::nullopt;
     }
     return path.parent_path();
-}
-
-float Wotah::TurnAngle(float angle, float radiansPerSecond, float seconds) noexcept
-{
-    constexpr float FullTurn = 2.0f * std::numbers::pi_v<float>;
-
-    const float turned = angle + radiansPerSecond * seconds;
-    if (!std::isfinite(turned))
-    {
-        return angle;
-    }
-
-    // fmod keeps the sign, so a turn backwards below 0 comes back from the top; a tiny negative rest can round up to a
-    // full turn, which is the same as 0.
-    float wrapped = std::fmod(turned, FullTurn);
-    if (wrapped < 0.0f)
-    {
-        wrapped += FullTurn;
-    }
-    return wrapped < FullTurn ? wrapped : 0.0f;
 }

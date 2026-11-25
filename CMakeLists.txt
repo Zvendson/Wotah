@@ -72,8 +72,26 @@ FetchContent_Declare(VulkanMemoryAllocator
     GIT_TAG        v3.5.0)
 FetchContent_MakeAvailable(VulkanMemoryAllocator)
 
+# Jolt Physics for gravity, collisions and (later) floating in water; only physics/*.cpp include it. Its CMake project
+# lives in Build/. It builds with this project's runtime and flags (not its own /Wall /WX set), without its samples,
+# tests or link-time optimisation.
+set(TARGET_UNIT_TESTS                OFF CACHE BOOL "" FORCE)
+set(TARGET_HELLO_WORLD               OFF CACHE BOOL "" FORCE)
+set(TARGET_PERFORMANCE_TEST          OFF CACHE BOOL "" FORCE)
+set(TARGET_SAMPLES                   OFF CACHE BOOL "" FORCE)
+set(TARGET_VIEWER                    OFF CACHE BOOL "" FORCE)
+set(USE_STATIC_MSVC_RUNTIME_LIBRARY  OFF CACHE BOOL "" FORCE)
+set(OVERRIDE_CXX_FLAGS               OFF CACHE BOOL "" FORCE)
+set(ENABLE_ALL_WARNINGS              OFF CACHE BOOL "" FORCE)
+set(INTERPROCEDURAL_OPTIMIZATION     OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(JoltPhysics
+    GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+    GIT_TAG        v5.6.0
+    SOURCE_SUBDIR  Build)
+FetchContent_MakeAvailable(JoltPhysics)
+
 # Their headers are theirs: no warnings from inside them (Vulkan::Vulkan is imported, so already a system folder).
-foreach(third_party glfw spdlog glm VulkanMemoryAllocator)
+foreach(third_party glfw spdlog glm VulkanMemoryAllocator Jolt)
     wotah_mark_system(${third_party})
 endforeach()
 
@@ -130,6 +148,8 @@ add_library(wotah STATIC
     source/input/input_dispatcher.cpp
     source/input/input_event.hpp
     source/input/input_handler.hpp
+    source/physics/physics_world.hpp
+    source/physics/physics_world.cpp
     source/platform/window.hpp
     source/platform/window.cpp
     source/render/buffer.hpp
@@ -166,6 +186,7 @@ add_library(wotah STATIC
 # Project headers are included by their path from source/, e.g. "core/logger.hpp".
 target_include_directories(wotah PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/source ${SHADER_OUT})
 target_link_libraries(wotah PUBLIC Vulkan::Vulkan glfw spdlog::spdlog glm::glm GPUOpen::VulkanMemoryAllocator)
+target_link_libraries(wotah PRIVATE Jolt) # only physics/*.cpp see it
 # glm's projections produce Vulkan's 0..1 depth range instead of OpenGL's -1..1.
 target_compile_definitions(wotah PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE
     WOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS} WOTAH_SHADOW_CASCADES=${WOTAH_SHADOW_CASCADES})
