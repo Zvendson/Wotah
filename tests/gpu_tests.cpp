@@ -28,6 +28,8 @@
 #include <vulkan/vulkan.h>
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -35,6 +37,8 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <stop_token>
+#include <thread>
 #include <vector>
 
 using Wotah::Testing::HiddenGpu;
@@ -434,8 +438,81 @@ namespace
         return true;
     }
 
-    /** How many pixels are clearly blue: the ball, never the orange cube or the gray background. */ std::size_t
-    CountBluePixels(const std::vector<uint8_t>& pixels)
+    /**
+     * A drawing thread as app.cpp's: waits while the window has no area, makes the swapchain again when the window was
+     * resized or the swapchain is out of date, draws the scene and counts the frames, until stop is requested. failed
+     * tells whether Vulkan failed on the way.
+     */
+    void DrawUntilStopped(const std::stop_token& stop, Wotah::Testing::HiddenGpu& gpu, Wotah::Swapchain& swapchain,
+                          Wotah::Renderer& renderer, const Scene& scene, std::atomic<int>& frames,
+                          std::atomic<bool>& failed)
+    {
+        OffscreenScene what;
+        what.Lights    = MakeOldLight();
+        what.HasSky    = true;
+        what.HasGround = true;
+        while (!stop.stop_requested() && gpu.Window.WaitForDrawableArea(stop))
+        {
+            if ((gpu.Window.TakeResize() || swapchain.IsOutOfDate()) &&
+                !renderer.RecreateSwapchain(gpu.Device, gpu.Window))
+            {
+                failed = true;
+                break;
+            }
+            const Wotah::FrameStart start = renderer.BeginFrame();
+            if (start == Wotah::FrameStart::Skip)
+            {
+                continue;
+            }
+            Wotah::Camera    camera;
+            const VkExtent2D extent = swapchain.GetExtent();
+            (void)camera.SetAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
+            if (start == Wotah::FrameStart::Ready)
+            {
+                scene.Record(renderer.GetCommandBuffer(), camera.GetViewProjection(), what);
+            }
+            if (start == Wotah::FrameStart::Failed || !renderer.EndFrame())
+            {
+                failed = true;
+                break;
+            }
+            ++frames;
+        }
+        gpu.Device.WaitUntilIdle();
+    }
+
+    /**
+     * Handles the window's events, as the main thread does, until the drawing thread has drawn at least target frames;
+     * false when that took longer than a few seconds.
+     */
+    bool HandleEventsUntilDrawn(Wotah::Window& window, const std::atomic<int>& frames, int target)
+    {
+        constexpr std::chrono::seconds TimeLimit{10}; // far more than a few frames take, even with vsync
+        const auto                     deadline = std::chrono::steady_clock::now() + TimeLimit;
+        while (frames < target)
+        {
+            if (std::chrono::steady_clock::now() > deadline)
+            {
+                return false;
+            }
+            window.PollEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return true;
+    }
+
+    /** Wakes the window's WaitEvents again and again until stop is requested. */
+    void WakeUntilStopped(const std::stop_token& stop, Wotah::Window& window)
+    {
+        while (!stop.stop_requested())
+        {
+            window.Wake();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+
+    /** How many pixels are clearly blue: the ball, never the orange cube or the gray background. */
+    std::size_t CountBluePixels(const std::vector<uint8_t>& pixels)
     {
         constexpr int ClearMargin = 40;
         std::size_t   count       = 0;
@@ -461,7 +538,7 @@ TEST_SUITE("gpu")
         CHECK_FALSE(window.GetRequiredInstanceExtensions().empty());
         CHECK(window.GetFramebufferSize().Width == HiddenWindowSize.Width);
         CHECK(window.GetFramebufferSize().Height == HiddenWindowSize.Height);
-        window.PollEvents(); // not minimized: returns right away
+        window.PollEvents(); // nothing waiting: returns right away
         CHECK_FALSE(window.ShouldClose());
 
         window.Destroy();
@@ -923,6 +1000,71 @@ TEST_SUITE("gpu")
         gpu.Window.SetSize({0, 100}); // refused and logged, the window keeps its size
         gpu.Window.PollEvents();
         CHECK_FALSE(gpu.Window.TakeResize());
+    }
+
+    TEST_CASE("drawing on its own thread: frames go on while the main thread resizes the window")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        Wotah::Swapchain swapchain;
+        REQUIRE(swapchain.Create(gpu.Device, gpu.Window));
+        Wotah::Renderer renderer;
+        REQUIRE(renderer.Create(gpu.Device, swapchain));
+        Scene scene;
+        REQUIRE(scene.Create(gpu.Device, swapchain.GetFormat(), renderer.GetDepthFormat(), MakeOldLight()));
+
+        // Sizes like a drag of the window's edge: many small steps, one right after the other.
+        constexpr Wotah::WindowSize DragEnd{900, 520};
+        constexpr uint32_t          DragStep = 20;
+
+        std::atomic<int>  frames = 0;
+        std::atomic<bool> failed = false;
+        {
+            std::jthread drawing(DrawUntilStopped, std::ref(gpu), std::ref(swapchain), std::ref(renderer),
+                                 std::cref(scene), std::ref(frames), std::ref(failed));
+            CHECK(HandleEventsUntilDrawn(gpu.Window, frames, 5));
+
+            // One big jump, and frames keep coming at the new size.
+            gpu.Window.SetSize({800, 300});
+            gpu.Window.PollEvents();
+            CHECK(HandleEventsUntilDrawn(gpu.Window, frames, frames + 5));
+
+            for (uint32_t width = HiddenWindowSize.Width; width <= DragEnd.Width; width += DragStep)
+            {
+                gpu.Window.SetSize({width, DragEnd.Height});
+                gpu.Window.PollEvents();
+            }
+            CHECK(HandleEventsUntilDrawn(gpu.Window, frames, frames + 5));
+        } // stops the drawing thread and waits for it
+        CHECK_FALSE(failed);
+
+        // The drawing thread took the last size change and drew at the last size.
+        CHECK_FALSE(gpu.Window.TakeResize());
+        CHECK(swapchain.GetExtent().width == DragEnd.Width);
+        CHECK(swapchain.GetExtent().height == DragEnd.Height);
+    }
+
+    TEST_CASE("the window between threads: another thread wakes its event wait, a window with an area needs no wait")
+    {
+        Wotah::Window window;
+        REQUIRE(window.Create(HiddenWindowSize, "wotah tests (hidden)"));
+
+        // Hidden but not minimized, with an area: drawing may go on at once, even with a stop that never comes.
+        const std::stop_source neverStopped;
+        CHECK(window.WaitForDrawableArea(neverStopped.get_token()));
+
+        // Without Wake this would sleep forever: a hidden window gets no events of its own.
+        {
+            const std::jthread waker(WakeUntilStopped, std::ref(window));
+            window.WaitEvents();
+        }
+
+        // No input happened; taking it leaves room, so the next frames do not allocate.
+        std::vector<Wotah::InputEvent> events;
+        window.TakeInputEvents(events);
+        CHECK(events.empty());
+        window.TakeInputEvents(events);
+        CHECK(events.capacity() > 0);
     }
 
     TEST_CASE("depth formats and images")

@@ -6,7 +6,8 @@
  *     Wotah::InputDispatcher dispatcher;
  *     dispatcher.AddHandler(ui);               // asked first
  *     dispatcher.AddHandler(cameraController); // gets what the UI did not use
- *     for (const Wotah::InputEvent& event : window.GetInputEvents())
+ *     window.TakeInputEvents(events);
+ *     for (const Wotah::InputEvent& event : events)
  *     {
  *         dispatcher.Dispatch(event);
  *     }

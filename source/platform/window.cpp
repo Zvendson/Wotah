@@ -13,6 +13,9 @@
 #include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
+#include <stop_token>
+#include <vector>
 
 // KeyCode and MouseButton take GLFW's numbers, so a cast is the whole translation; these checks keep it honest.
 static_assert(static_cast<int>(Wotah::KeyCode::Unknown) == GLFW_KEY_UNKNOWN);
@@ -62,11 +65,17 @@ namespace
     {
         return {static_cast<float>(x), static_cast<float>(y)};
     }
+
+    /** Whether a size can be given to GLFW, which takes ints, and is larger than nothing. */
+    bool IsUsableSize(const Wotah::WindowSize& size)
+    {
+        return size.Width > 0 && size.Height > 0 && size.Width <= INT_MAX && size.Height <= INT_MAX;
+    }
 } // namespace
 
 /**
- * GLFW's input callbacks. Each finds its Window through the GLFW window's user pointer (set in Create) and adds one
- * InputEvent; they run inside glfwPollEvents / glfwWaitEvents, on the main thread.
+ * GLFW's callbacks. Each finds its Window through the GLFW window's user pointer (set in Create); they run inside
+ * glfwPollEvents / glfwWaitEvents, on the main thread, and hand what they learn to the drawing thread under the lock.
  */
 struct Wotah::Window::Callbacks
 {
@@ -86,7 +95,7 @@ struct Wotah::Window::Callbacks
         event.Type     = action == GLFW_RELEASE ? InputEventType::KeyReleased : InputEventType::KeyPressed;
         event.Key      = static_cast<KeyCode>(key);
         event.IsRepeat = action == GLFW_REPEAT;
-        From(handle).m_inputEvents.push_back(event);
+        From(handle).AddInputEvent(event);
     }
 
     static void OnCharacter(GLFWwindow* handle, unsigned int codePoint)
@@ -94,7 +103,7 @@ struct Wotah::Window::Callbacks
         InputEvent event;
         event.Type      = InputEventType::TextEntered;
         event.Character = static_cast<char32_t>(codePoint);
-        From(handle).m_inputEvents.push_back(event);
+        From(handle).AddInputEvent(event);
     }
 
     static void OnMouseButton(GLFWwindow* handle, int button, int action, int /*mods*/)
@@ -103,7 +112,7 @@ struct Wotah::Window::Callbacks
         event.Type = action == GLFW_RELEASE ? InputEventType::MouseButtonReleased : InputEventType::MouseButtonPressed;
         event.Button         = static_cast<MouseButton>(button);
         event.CursorPosition = GetCursorPosition(handle);
-        From(handle).m_inputEvents.push_back(event);
+        From(handle).AddInputEvent(event);
     }
 
     static void OnCursorMove(GLFWwindow* handle, double x, double y)
@@ -118,7 +127,7 @@ struct Wotah::Window::Callbacks
         event.Delta = window.m_hasLastCursorPosition ? position - window.m_lastCursorPosition : glm::vec2(0.0f);
         window.m_lastCursorPosition    = position;
         window.m_hasLastCursorPosition = true;
-        window.m_inputEvents.push_back(event);
+        window.AddInputEvent(event);
     }
 
     static void OnScroll(GLFWwindow* handle, double x, double y)
@@ -127,12 +136,29 @@ struct Wotah::Window::Callbacks
         event.Type           = InputEventType::MouseScrolled;
         event.CursorPosition = GetCursorPosition(handle);
         event.Delta          = ToCursorPosition(x, y);
-        From(handle).m_inputEvents.push_back(event);
+        From(handle).AddInputEvent(event);
     }
 
-    static void OnFramebufferResize(GLFWwindow* handle, int /*width*/, int /*height*/)
+    static void OnFramebufferResize(GLFWwindow* handle, int width, int height)
     {
-        From(handle).m_wasResized = true; // the new size is read when the swapchain is made again
+        // Windows reports every step while the user drags the window's edge, so the drawing thread follows live.
+        Window& window = From(handle);
+        {
+            const std::scoped_lock lock(window.m_mutex);
+            window.m_framebufferSize = {ToPixels(width), ToPixels(height)};
+            window.m_wasResized      = true;
+        }
+        window.m_drawableChanged.notify_all();
+    }
+
+    static void OnMinimize(GLFWwindow* handle, int isMinimized)
+    {
+        Window& window = From(handle);
+        {
+            const std::scoped_lock lock(window.m_mutex);
+            window.m_isMinimized = isMinimized == GLFW_TRUE;
+        }
+        window.m_drawableChanged.notify_all();
     }
 
     static void OnFocus(GLFWwindow* handle, int isFocused)
@@ -146,7 +172,7 @@ struct Wotah::Window::Callbacks
         window.m_hasLastCursorPosition = false;
         InputEvent event;
         event.Type = InputEventType::FocusLost;
-        window.m_inputEvents.push_back(event);
+        window.AddInputEvent(event);
     }
 };
 
@@ -157,7 +183,7 @@ Wotah::Window::~Window()
 
 bool Wotah::Window::Create(const WindowSize& size, const std::string& title)
 {
-    if (size.Width == 0 || size.Height == 0 || size.Width > INT_MAX || size.Height > INT_MAX)
+    if (!IsUsableSize(size))
     {
         Logger::Error("The window size {}x{} is not usable", size.Width, size.Height);
         return false;
@@ -182,8 +208,16 @@ bool Wotah::Window::Create(const WindowSize& size, const std::string& title)
         return false;
     }
 
+    int width  = 0;
+    int height = 0;
+    glfwGetFramebufferSize(m_window, &width, &height);
+    {
+        const std::scoped_lock lock(m_mutex);
+        m_framebufferSize = {ToPixels(width), ToPixels(height)};
+        m_inputEvents.reserve(ExpectedEventsPerFrame);
+    }
+
     // The callbacks find this Window through the user pointer; Window can be neither copied nor moved, so it stays.
-    m_inputEvents.reserve(ExpectedEventsPerFrame);
     glfwSetWindowUserPointer(m_window, this);
     glfwSetKeyCallback(m_window, Callbacks::OnKey);
     glfwSetCharCallback(m_window, Callbacks::OnCharacter);
@@ -192,6 +226,7 @@ bool Wotah::Window::Create(const WindowSize& size, const std::string& title)
     glfwSetScrollCallback(m_window, Callbacks::OnScroll);
     glfwSetWindowFocusCallback(m_window, Callbacks::OnFocus);
     glfwSetFramebufferSizeCallback(m_window, Callbacks::OnFramebufferResize);
+    glfwSetWindowIconifyCallback(m_window, Callbacks::OnMinimize);
     return true;
 }
 
@@ -204,10 +239,15 @@ void Wotah::Window::Destroy()
     }
     glfwTerminate(); // allowed even when glfwInit never ran (GLFW docs, glfwTerminate)
 
-    m_inputEvents.clear();
     m_hasLastCursorPosition = false;
     m_isCursorCaptured      = false;
-    m_wasResized            = false;
+    m_wantsCursorCaptured   = false;
+
+    const std::scoped_lock lock(m_mutex);
+    m_inputEvents.clear();
+    m_framebufferSize = {};
+    m_isMinimized     = false;
+    m_wasResized      = false;
 }
 
 void Wotah::Window::Show()
@@ -217,33 +257,57 @@ void Wotah::Window::Show()
 
 bool Wotah::Window::ShouldClose() const
 {
-    return glfwWindowShouldClose(m_window) == GLFW_TRUE;
+    return glfwWindowShouldClose(m_window) == GLFW_TRUE; // any thread (GLFW docs, glfwWindowShouldClose)
 }
 
 void Wotah::Window::PollEvents()
 {
-    m_inputEvents.clear(); // keeps its memory
     glfwPollEvents();
+    ApplyCursorRequest();
+}
 
-    // While the window has nothing to draw into (minimized, or resized down to nothing) no swapchain can be made, so
-    // it sleeps until that changes. Closing a minimized window (from the taskbar) leaves it minimized, so the close
-    // request also ends the wait; without that check the program would sleep here forever.
-    while (!ShouldClose() && (glfwGetWindowAttrib(m_window, GLFW_ICONIFIED) == GLFW_TRUE || !HasDrawableArea()))
+void Wotah::Window::WaitEvents()
+{
+    glfwWaitEvents();
+    ApplyCursorRequest();
+}
+
+void Wotah::Window::Wake()
+{
+    glfwPostEmptyEvent(); // any thread (GLFW docs, glfwPostEmptyEvent)
+}
+
+void Wotah::Window::TakeInputEvents(std::vector<InputEvent>& events)
+{
+    events.clear(); // keeps its memory, which the window collects into next
+    if (events.capacity() < ExpectedEventsPerFrame)
     {
-        glfwWaitEvents();
+        events.reserve(ExpectedEventsPerFrame); // the first call only
+    }
+    const std::scoped_lock lock(m_mutex);
+    events.swap(m_inputEvents);
+}
+
+void Wotah::Window::RequestCursorCaptured(bool isCaptured)
+{
+    // Only a change wakes the main thread; asking the same every frame costs nothing.
+    if (m_wantsCursorCaptured.exchange(isCaptured) != isCaptured)
+    {
+        Wake();
     }
 }
 
-bool Wotah::Window::TakeResize() noexcept
+bool Wotah::Window::TakeResize()
 {
-    const bool wasResized = m_wasResized;
-    m_wasResized          = false;
+    const std::scoped_lock lock(m_mutex);
+    const bool             wasResized = m_wasResized;
+    m_wasResized                      = false;
     return wasResized;
 }
 
 void Wotah::Window::SetSize(const WindowSize& size)
 {
-    if (size.Width == 0 || size.Height == 0 || size.Width > INT_MAX || size.Height > INT_MAX)
+    if (!IsUsableSize(size))
     {
         Logger::Error("The window size {}x{} is not usable", size.Width, size.Height);
         return;
@@ -251,14 +315,27 @@ void Wotah::Window::SetSize(const WindowSize& size)
     glfwSetWindowSize(m_window, static_cast<int>(size.Width), static_cast<int>(size.Height));
 }
 
-bool Wotah::Window::HasDrawableArea() const
+Wotah::WindowSize Wotah::Window::GetFramebufferSize() const
 {
-    const WindowSize size = GetFramebufferSize();
-    return size.Width > 0 && size.Height > 0;
+    const std::scoped_lock lock(m_mutex);
+    return m_framebufferSize;
 }
 
-void Wotah::Window::SetCursorCaptured(bool isCaptured)
+bool Wotah::Window::WaitForDrawableArea(const std::stop_token& stop)
 {
+    std::unique_lock lock(m_mutex);
+    return m_drawableChanged.wait(lock, stop, [this] { return IsDrawable(); });
+}
+
+void Wotah::Window::AddInputEvent(const InputEvent& event)
+{
+    const std::scoped_lock lock(m_mutex);
+    m_inputEvents.push_back(event);
+}
+
+void Wotah::Window::ApplyCursorRequest()
+{
+    const bool isCaptured = m_wantsCursorCaptured.load();
     if (isCaptured == m_isCursorCaptured)
     {
         return;
@@ -277,16 +354,9 @@ void Wotah::Window::SetCursorCaptured(bool isCaptured)
     }
 }
 
-Wotah::WindowSize Wotah::Window::GetFramebufferSize() const
+bool Wotah::Window::IsDrawable() const noexcept
 {
-    int width  = 0;
-    int height = 0;
-    glfwGetFramebufferSize(m_window, &width, &height);
-
-    WindowSize size;
-    size.Width  = ToPixels(width);
-    size.Height = ToPixels(height);
-    return size;
+    return !m_isMinimized && m_framebufferSize.Width > 0 && m_framebufferSize.Height > 0;
 }
 
 std::span<const char* const> Wotah::Window::GetRequiredInstanceExtensions() const

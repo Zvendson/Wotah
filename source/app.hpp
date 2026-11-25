@@ -15,8 +15,10 @@
 #include "render/device.hpp"
 #include "render/lighting.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
+#include <stop_token>
 #include <vector>
 
 namespace Wotah
@@ -25,6 +27,9 @@ namespace Wotah
      * The window and everything Vulkan needs to draw into it.
      * The steps run in order: Create, Run (which calls Start and Stop), Destroy. The destructor runs Stop and Destroy,
      * so nothing leaks when a step fails part way.
+     *
+     * Two threads: Run handles the window's events on the main thread, and a drawing thread takes the input, moves the
+     * camera and draws, so moving or resizing the window never stops the picture.
      */
     class App final
     {
@@ -38,7 +43,10 @@ namespace Wotah
         /** Starts the log, opens the window (still hidden) and creates every Vulkan object; false when one failed. */
         [[nodiscard]] bool Create();
 
-        /** Starts, draws frames until the window is closed, and stops; false (and logged) when Vulkan failed. */
+        /**
+         * Starts, draws frames on a drawing thread until the window is closed, and stops; false (and logged) when
+         * Vulkan failed. Call it from the main thread.
+         */
         [[nodiscard]] bool Run();
 
         /**
@@ -49,25 +57,38 @@ namespace Wotah
 
         /**
          * Adds a camera and returns its index for SelectCamera; the active camera stays the same. The camera as given
-         * becomes its focus view, which FocusActiveCamera (the F key) goes back to.
+         * becomes its focus view, which FocusActiveCamera (the F key) goes back to. Like everything below: before Run,
+         * or on the drawing thread while it runs.
          */
         std::size_t AddCamera(const Camera& camera);
 
         /** Draws through the camera at index from the next frame on; false (and logged) for an unknown index. */
         bool SelectCamera(std::size_t index);
 
-        /** The camera frames are drawn through; change it at any time. There is always one. */
+        /** The camera frames are drawn through; change it at any time on the drawing thread. There is always one. */
         [[nodiscard]] Camera& GetActiveCamera() noexcept { return m_cameras[m_activeCamera]; }
 
         /** Puts the active camera back to its focus view: how it was when it was added. */
         void FocusActiveCamera();
 
-        /** The scene's lights (ambient, sun, moon, ...); change them at any time, the next frame shows them. */
+        /** The scene's lights (ambient, sun, moon, ...); change them on the drawing thread, shown the next frame. */
         [[nodiscard]] SceneLights& GetLights() noexcept { return m_lights; }
 
     private:
         /** Shows the window; the first thing Run does. */
         void Start();
+
+        /**
+         * The drawing thread: draws frames until stop is requested or Vulkan fails, then clears m_isDrawing and wakes
+         * the main thread.
+         */
+        void DrawFrames(const std::stop_token& stop);
+
+        /**
+         * One frame: hands out the input, moves the camera by frameSeconds, makes the swapchain again when needed, and
+         * draws the scene; false (and logged) when Vulkan failed.
+         */
+        [[nodiscard]] bool DrawFrame(float frameSeconds);
 
         /**
          * Waits until the GPU has finished the last frame, so nothing is destroyed while in use; the last thing Run
@@ -105,5 +126,14 @@ namespace Wotah
 
         /** Flies the active camera: W A S D, Space, Shift, the right mouse button to turn, the wheel, and F. */
         CameraController m_cameraController;
+
+        /** The input the drawing thread took from the window this frame; kept, so it does not allocate again. */
+        std::vector<InputEvent> m_frameInput;
+
+        /** Whether the drawing thread still draws; it clears this when it ends, for whatever reason. */
+        std::atomic<bool> m_isDrawing = false;
+
+        /** Whether the drawing thread stopped because Vulkan failed; read by Run once the thread has ended. */
+        bool m_hasDrawingFailed = false;
     };
 } // namespace Wotah

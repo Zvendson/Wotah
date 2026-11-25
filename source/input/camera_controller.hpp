@@ -11,7 +11,7 @@
  *     {
  *         camera = focusView; // whatever the owner keeps as this camera's focus view
  *     }
- *     window.SetCursorCaptured(controller.IsTurning());
+ *     window.RequestCursorCaptured(controller.IsTurning());
  *     controller.Update(camera, frameSeconds);
  */
 #pragma once

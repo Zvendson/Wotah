@@ -1,7 +1,8 @@
 /**
  * @file input_event.hpp
  * What the user did: keys, mouse buttons, mouse movement, scrolling, typed text, and the window losing focus.
- * The window collects these every frame (Window::GetInputEvents); the InputDispatcher hands them to the handlers.
+ * The window collects these; the drawing thread takes them every frame (Window::TakeInputEvents); the InputDispatcher
+ * hands them to the handlers.
  */
 #pragma once
 

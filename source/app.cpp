@@ -31,13 +31,15 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stop_token>
+#include <thread>
 
 /** The clock frame times are measured with: steady, so changing the system time cannot make a frame negative. */
 using Clock = std::chrono::steady_clock;
 
 /**
- * The longest frame time the camera moves by: after a stall (dragging the window, a breakpoint) it continues from where
- * it was instead of jumping far.
+ * The longest frame time the camera moves by: after a stall (the window minimized, a breakpoint) it continues from
+ * where it was instead of jumping far.
  */
 static constexpr float MaxFrameSeconds = 0.1f;
 
@@ -298,102 +300,126 @@ bool Wotah::App::Create()
 
 bool Wotah::App::Run()
 {
-    Renderer&    renderer = m_state->Renderer;
-    const State& scene    = *m_state;
-
-    // The objects stay where they are; only the camera moves.
-
     Start();
 
-    bool              cleanEnd  = true;
-    Clock::time_point lastFrame = Clock::now();
-    while (!m_window.ShouldClose())
+    // Drawing gets its own thread, so the window's events never hold it up: while the user moves or resizes the window,
+    // Windows keeps the main thread inside WaitEvents until the mouse is let go.
+    m_hasDrawingFailed = false;
+    m_isDrawing        = true;
+    std::jthread drawing([this](const std::stop_token& stop) { DrawFrames(stop); });
+
+    // The main thread only handles the window's events, until the window is closed or drawing ended on its own.
+    while (!m_window.ShouldClose() && m_isDrawing)
     {
-        m_window.PollEvents();
-        if (m_window.ShouldClose()) // closed while minimized: no frame for a window that is going away
-        {
-            break;
-        }
-
-        // ---- Input: hand it out, then let the camera fly by the time this frame took ----
-        for (const InputEvent& event : m_window.GetInputEvents())
-        {
-            m_input.Dispatch(event);
-        }
-        if (m_cameraController.TakeFocusRequest())
-        {
-            FocusActiveCamera();
-        }
-        m_window.SetCursorCaptured(m_cameraController.IsTurning());
-
-        const Clock::time_point now = Clock::now();
-        const float frameSeconds    = std::min(std::chrono::duration<float>(now - lastFrame).count(), MaxFrameSeconds);
-        lastFrame                   = now;
-        m_cameraController.Update(GetActiveCamera(), frameSeconds);
-
-        // A new window size, or a swapchain the system no longer finds fitting: make it again before drawing.
-        if (m_window.TakeResize() || m_state->Swapchain.IsOutOfDate())
-        {
-            if (!renderer.RecreateSwapchain(m_device, m_window))
-            {
-                cleanEnd = false;
-                break;
-            }
-        }
-
-        const FrameStart start = renderer.BeginFrame();
-        if (start == FrameStart::Skip)
-        {
-            continue;
-        }
-        if (start == FrameStart::Failed)
-        {
-            cleanEnd = false;
-            break;
-        }
-
-        // Whichever camera is active now, it sees the image's shape, also right after a resize; an unchanged ratio
-        // keeps its matrices. The image is never 0 wide or high (the window waits while it has no area), so the ratio
-        // is always valid.
-        const VkExtent2D extent = m_state->Swapchain.GetExtent();
-        Camera&          camera = GetActiveCamera();
-        (void)camera.SetAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
-        // The GPU is done with the last frame (BeginFrame waited for it), so the lights can be rewritten. Bad lights
-        // are logged by Update and the last good ones stay, so the frame still draws.
-        (void)m_state->Lighting.Update(m_lights);
-
-        MeshPushConstants pushConstants;
-        pushConstants.ViewProjection = camera.GetViewProjection();
-
-        // The sky first: it tests no depth, so everything after it is drawn in front. Without a sun light it is not
-        // drawn.
-        const VkCommandBuffer commandBuffer = renderer.GetCommandBuffer();
-        if (SunLightIndex < m_lights.DirectionalLights.size())
-        {
-            scene.Sky.Draw(commandBuffer, pushConstants.ViewProjection, m_lights.DirectionalLights[SunLightIndex]);
-        }
-
-        // The depth test sorts out which is in front, so the order of ground and shapes does not matter.
-        pushConstants.Model = glm::mat4(1.0f); // the ground lies where its heights say
-        DrawMesh(commandBuffer, scene.TerrainPipeline, scene.Lighting, scene.Terrain, pushConstants);
-        pushConstants.Model = scene.CubeModel;
-        DrawMesh(commandBuffer, scene.CubePipeline, scene.Lighting, scene.Cube, pushConstants);
-        pushConstants.Model = scene.BallModel;
-        DrawMesh(commandBuffer, scene.BallPipeline, scene.Lighting, scene.Ball, pushConstants);
-
-        if (!renderer.EndFrame())
-        {
-            cleanEnd = false;
-            break;
-        }
+        m_window.WaitEvents();
     }
 
-    if (!cleanEnd)
+    // Events are still handled while the drawing thread finishes its frame. Guess: a driver may need the window's
+    // events to finish showing an image, and would wait forever if the main thread only waited for the thread.
+    drawing.request_stop();
+    while (m_isDrawing)
+    {
+        m_window.WaitEvents(); // the drawing thread wakes it when it ends
+    }
+    drawing.join();
+
+    if (m_hasDrawingFailed)
     {
         Logger::Critical("Stopped drawing after a Vulkan error");
     }
     Stop();
-    return cleanEnd;
+    return !m_hasDrawingFailed;
+}
+
+void Wotah::App::DrawFrames(const std::stop_token& stop)
+{
+    Clock::time_point lastFrame = Clock::now();
+    while (!stop.stop_requested())
+    {
+        // Nothing to draw into while the window is minimized or has no area: sleep until it has, or until told to stop.
+        if (!m_window.WaitForDrawableArea(stop))
+        {
+            break;
+        }
+
+        const Clock::time_point now = Clock::now();
+        const float frameSeconds    = std::min(std::chrono::duration<float>(now - lastFrame).count(), MaxFrameSeconds);
+        lastFrame                   = now;
+        if (!DrawFrame(frameSeconds))
+        {
+            m_hasDrawingFailed = true; // Run reads it after join, which makes the write visible
+            break;
+        }
+    }
+
+    // The main thread may be asleep in WaitEvents; it needs to know drawing is over.
+    m_isDrawing = false;
+    m_window.Wake();
+}
+
+bool Wotah::App::DrawFrame(float frameSeconds)
+{
+    Renderer&    renderer = m_state->Renderer;
+    const State& scene    = *m_state;
+
+    // ---- Input: hand it out, then let the camera fly by the time this frame took ----
+    m_window.TakeInputEvents(m_frameInput);
+    for (const InputEvent& event : m_frameInput)
+    {
+        m_input.Dispatch(event);
+    }
+    if (m_cameraController.TakeFocusRequest())
+    {
+        FocusActiveCamera();
+    }
+    m_window.RequestCursorCaptured(m_cameraController.IsTurning());
+    m_cameraController.Update(GetActiveCamera(), frameSeconds);
+
+    // A new window size, or a swapchain the system no longer finds fitting: make it again before drawing. While the
+    // user drags the window's edge this happens every few frames, so the picture follows the edge.
+    if (m_window.TakeResize() || m_state->Swapchain.IsOutOfDate())
+    {
+        if (!renderer.RecreateSwapchain(m_device, m_window))
+        {
+            return false;
+        }
+    }
+
+    const FrameStart start = renderer.BeginFrame();
+    if (start != FrameStart::Ready)
+    {
+        return start == FrameStart::Skip; // a skipped frame is no failure
+    }
+
+    // Whichever camera is active now, it sees the image's shape, also right after a resize; an unchanged ratio keeps
+    // its matrices. The image is never 0 wide or high (drawing waits while the window has no area), so the ratio is
+    // always valid.
+    const VkExtent2D extent = m_state->Swapchain.GetExtent();
+    Camera&          camera = GetActiveCamera();
+    (void)camera.SetAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
+    // The GPU is done with the last frame (BeginFrame waited for it), so the lights can be rewritten. Bad lights are
+    // logged by Update and the last good ones stay, so the frame still draws.
+    (void)m_state->Lighting.Update(m_lights);
+
+    MeshPushConstants pushConstants;
+    pushConstants.ViewProjection = camera.GetViewProjection();
+
+    // The sky first: it tests no depth, so everything after it is drawn in front. Without a sun light it is not drawn.
+    const VkCommandBuffer commandBuffer = renderer.GetCommandBuffer();
+    if (SunLightIndex < m_lights.DirectionalLights.size())
+    {
+        scene.Sky.Draw(commandBuffer, pushConstants.ViewProjection, m_lights.DirectionalLights[SunLightIndex]);
+    }
+
+    // The depth test sorts out which is in front, so the order of ground and shapes does not matter.
+    pushConstants.Model = glm::mat4(1.0f); // the ground lies where its heights say
+    DrawMesh(commandBuffer, scene.TerrainPipeline, scene.Lighting, scene.Terrain, pushConstants);
+    pushConstants.Model = scene.CubeModel;
+    DrawMesh(commandBuffer, scene.CubePipeline, scene.Lighting, scene.Cube, pushConstants);
+    pushConstants.Model = scene.BallModel;
+    DrawMesh(commandBuffer, scene.BallPipeline, scene.Lighting, scene.Ball, pushConstants);
+
+    return renderer.EndFrame();
 }
 
 std::size_t Wotah::App::AddCamera(const Camera& camera)
