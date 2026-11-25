@@ -58,7 +58,7 @@ set(WOTAH_SHADER_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 # The most directional lights at once: one number for the C++ code (render/lighting.hpp) and the shaders
 # (shaders/lighting.glsl), so their light arrays always match.
 set(WOTAH_MAX_DIRECTIONAL_LIGHTS 8)
-set(WOTAH_SHADER_INCLUDES ${WOTAH_SHADER_INCLUDE_DIR}/lighting.glsl)
+set(WOTAH_SHADER_INCLUDES ${WOTAH_SHADER_INCLUDE_DIR}/atmosphere.glsl ${WOTAH_SHADER_INCLUDE_DIR}/lighting.glsl)
 function(wotah_compile_shaders out_var output_dir)
     set(outputs "")
     foreach(source ${ARGN})
@@ -81,8 +81,9 @@ wotah_compile_shaders(SHADERS ${SHADER_OUT}
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/mesh.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ball.frag
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/sky.vert
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/sky.frag)
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/fullscreen.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/sky.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/terrain.frag)
 
 # Everything but the entry point, so the program and the tests run the same code.
 add_library(wotah STATIC
@@ -106,6 +107,8 @@ add_library(wotah STATIC
     source/render/camera.cpp
     source/render/device.hpp
     source/render/device.cpp
+    source/render/height_field.hpp
+    source/render/height_field.cpp
     source/render/image.hpp
     source/render/image.cpp
     source/render/lighting.hpp

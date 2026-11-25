@@ -1,7 +1,7 @@
 #version 450
 
-// The sky: one triangle that covers the whole screen (no vertex buffer). Hands each pixel its screen position, from
-// which sky.frag works out the direction it looks in.
+// One triangle that covers the whole screen (no vertex buffer), for everything computed per pixel: the sky and the
+// ground. Hands each pixel its screen position, from which the fragment shader works out the direction it looks in.
 
 layout(location = 0) out vec2 outScreenPosition; // -1 .. 1 across the screen, as in Vulkan's clip space
 

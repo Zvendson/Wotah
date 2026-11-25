@@ -9,6 +9,7 @@
 #include "render/buffer.hpp"
 #include "render/camera.hpp"
 #include "render/device.hpp"
+#include "render/height_field.hpp"
 #include "render/image.hpp"
 #include "render/lighting.hpp"
 #include "render/mesh.hpp"
@@ -48,6 +49,9 @@ namespace
     constexpr uint32_t CubeFragmentShader[] = {
 #include "cube.frag.inc"
     };
+    constexpr uint32_t TerrainFragmentShader[] = {
+#include "terrain.frag.inc"
+    };
     constexpr uint32_t BallFragmentShader[] = {
 #include "ball.frag.inc"
     };
@@ -60,9 +64,14 @@ namespace
 #include "water_test.frag.inc"
     };
 
-    /** The program's scene (app.cpp): the ball's size and place, and how finely it is cut. */
+    /** The program's ground (app.cpp): 64 x 64 units, flat at height 0, a height point every half unit. */
+    constexpr float    GroundSize  = 64.0f;
+    constexpr uint32_t GroundCells = 128;
+
+    /** The program's scene (app.cpp): cube and ball standing on the ground, and how finely the ball is cut. */
+    constexpr glm::vec3 CubePosition{0.0f, 0.5f, 0.0f};
     constexpr float     BallRadius = 0.5f;
-    constexpr glm::vec3 BallPosition{-1.3f, 0.0f, -0.9f};
+    constexpr glm::vec3 BallPosition{-1.3f, BallRadius, -0.9f};
     constexpr uint32_t  BallSegments = 48;
     constexpr uint32_t  BallRings    = 24;
 
@@ -108,22 +117,27 @@ namespace
         mesh.Draw(commands);
     }
 
-    /** What an offscreen picture shows: its lights, whether the sky and the shapes are in it, and the draw order. */
+    /** What an offscreen picture shows: its lights, which parts are in it, where the ball lies, and the draw order. */
     struct OffscreenScene
     {
         Wotah::SceneLights Lights;
-        bool               HasSky      = false;
-        bool               HasShapes   = true;
-        bool               IsBallFirst = false;
+        bool               HasSky       = false;
+        bool               HasGround    = false;
+        bool               HasShapes    = true;
+        bool               IsBallFirst  = false;
+        bool               IsGroundLast = false;
+        glm::vec3          BallPlace    = BallPosition;
     };
 
-    /** The program's scene on the GPU: the lights, the sky, both pipelines and both shapes. */
+    /** The program's scene on the GPU: the lights, the sky, the ground, both shapes and their pipelines. */
     struct Scene
     {
         Wotah::Lighting Lighting;
         Wotah::Sky      Sky;
+        Wotah::Pipeline TerrainPipeline;
         Wotah::Pipeline CubePipeline;
         Wotah::Pipeline BallPipeline;
+        Wotah::Mesh     Terrain;
         Wotah::Mesh     Cube;
         Wotah::Mesh     Ball;
 
@@ -136,6 +150,10 @@ namespace
             }
             const std::array<VkDescriptorSetLayout, 1> setLayouts{Lighting.GetSetLayout()};
             return Sky.Create(device, colorFormat, depthFormat) &&
+                   TerrainPipeline.Create(
+                       device, MakeMeshSettings(TerrainFragmentShader, colorFormat, depthFormat, setLayouts)) &&
+                   Terrain.Create(device, Wotah::MakeTerrainMesh(Wotah::MakeFlatHeightField(
+                                              GroundSize, GroundSize, GroundCells, GroundCells))) &&
                    CubePipeline.Create(device,
                                        MakeMeshSettings(CubeFragmentShader, colorFormat, depthFormat, setLayouts)) &&
                    BallPipeline.Create(device,
@@ -145,8 +163,8 @@ namespace
         }
 
         /**
-         * Records the sky (its sun from the first light) and cube and ball as app.cpp does, the shapes in either order:
-         * the depth test must make the order not matter.
+         * Records the sky (its sun from the first light), then ground and shapes as app.cpp does, in any order the
+         * options pick: the depth test must make the order not matter.
          */
         void Record(VkCommandBuffer commands, const glm::mat4& viewProjection, const OffscreenScene& what) const
         {
@@ -154,22 +172,43 @@ namespace
             {
                 Sky.Draw(commands, viewProjection, what.Lights.DirectionalLights.front());
             }
-            if (!what.HasShapes)
+            if (what.HasGround && !what.IsGroundLast)
             {
-                return;
+                RecordGround(commands, viewProjection);
             }
-            const bool        isBallFirst = what.IsBallFirst;
+            if (what.HasShapes)
+            {
+                RecordShapes(commands, viewProjection, what);
+            }
+            if (what.HasGround && what.IsGroundLast)
+            {
+                RecordGround(commands, viewProjection);
+            }
+        }
+
+        /** Records the ground, as app.cpp does: the terrain where its heights say, no transform. */
+        void RecordGround(VkCommandBuffer commands, const glm::mat4& viewProjection) const
+        {
+            MeshPushConstants ground;
+            ground.ViewProjection = viewProjection;
+            RecordMeshDraw(commands, TerrainPipeline, Lighting, Terrain, ground);
+        }
+
+        /** Records cube and ball, in the order the options pick. */
+        void RecordShapes(VkCommandBuffer commands, const glm::mat4& viewProjection, const OffscreenScene& what) const
+        {
             MeshPushConstants cube;
             cube.ViewProjection = viewProjection;
+            cube.Model          = glm::translate(glm::mat4(1.0f), CubePosition);
             MeshPushConstants ball;
             ball.ViewProjection = viewProjection;
-            ball.Model          = glm::translate(glm::mat4(1.0f), BallPosition);
-            if (isBallFirst)
+            ball.Model          = glm::translate(glm::mat4(1.0f), what.BallPlace);
+            if (what.IsBallFirst)
             {
                 RecordMeshDraw(commands, BallPipeline, Lighting, Ball, ball);
             }
             RecordMeshDraw(commands, CubePipeline, Lighting, Cube, cube);
-            if (!isBallFirst)
+            if (!what.IsBallFirst)
             {
                 RecordMeshDraw(commands, BallPipeline, Lighting, Ball, ball);
             }
@@ -195,8 +234,8 @@ namespace
     Wotah::Camera MakeStartCamera()
     {
         Wotah::Camera camera;
-        camera.SetPosition({2.2f, 1.0f, 3.0f});
-        camera.SetTarget({-0.2f, 0.25f, 0.0f});
+        camera.SetPosition({2.2f, 1.5f, 3.0f});
+        camera.SetTarget({-0.2f, 0.75f, 0.0f});
         (void)camera.SetClipDistances(0.1f, 10.0f); // valid values
         return camera;
     }
@@ -754,6 +793,64 @@ TEST_SUITE("gpu")
 
         what.IsBallFirst = true;
         CHECK(DrawSceneOffscreen(gpu.Device, MakeStartCamera(), what) == pixels);
+    }
+
+    TEST_CASE("the ground: lit grass at height 0 on its area, nothing past its edge, hiding what lies under it")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        OffscreenScene ground;
+        ground.Lights    = MakeOldLight();
+        ground.HasSky    = true;
+        ground.HasGround = true;
+        ground.HasShapes = false;
+
+        // Looking down from 2 units up onto the middle, and onto a spot just inside the edge (the area ends at 32):
+        // grass, green above all.
+        for (const float x : {0.0f, 31.0f})
+        {
+            CAPTURE(x);
+            Wotah::Camera down;
+            down.SetPosition({x, 2.0f, 0.0f});
+            down.SetTarget({x + 0.05f, 0.0f, -1.0f});
+            const std::array<int, 3> grass = GetCenterColor(DrawSceneOffscreen(gpu.Device, down, ground));
+            CHECK(grass[1] > grass[0]);
+            CHECK(grass[1] > grass[2]);
+        }
+
+        // Past the edge there is no ground: the sky's haze below the horizon, more blue than green.
+        Wotah::Camera beyond;
+        beyond.SetPosition({40.0f, 2.0f, 0.0f});
+        beyond.SetTarget({40.05f, 0.0f, -1.0f});
+        const std::array<int, 3> haze = GetCenterColor(DrawSceneOffscreen(gpu.Device, beyond, ground));
+        CHECK(haze[2] > haze[1]);
+        // A ball sunk into the ground is hidden by it completely: 2 or 20 units deep gives the very same picture, and
+        // both differ from the ball lying on the ground. (The sky is blue too, so counting blue pixels would not tell.)
+        OffscreenScene withShapes           = ground;
+        withShapes.HasShapes                = true;
+        withShapes.BallPlace                = {-1.3f, -2.0f, -0.9f};
+        const std::vector<uint8_t> sunk     = DrawSceneOffscreen(gpu.Device, MakeStartCamera(), withShapes);
+        withShapes.BallPlace                = {-1.3f, -20.0f, -0.9f};
+        const std::vector<uint8_t> deep     = DrawSceneOffscreen(gpu.Device, MakeStartCamera(), withShapes);
+        withShapes.BallPlace                = BallPosition;
+        const std::vector<uint8_t> onGround = DrawSceneOffscreen(gpu.Device, MakeStartCamera(), withShapes);
+        CHECK(sunk == deep);
+        CHECK(sunk != onGround);
+    }
+
+    TEST_CASE("ground and shapes: the same picture whichever is drawn first")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        OffscreenScene what;
+        what.Lights                            = MakeOldLight();
+        what.HasSky                            = true;
+        what.HasGround                         = true;
+        const std::vector<uint8_t> groundFirst = DrawSceneOffscreen(gpu.Device, MakeStartCamera(), what);
+        what.IsGroundLast                      = true;
+        what.IsBallFirst                       = true;
+        CHECK(DrawSceneOffscreen(gpu.Device, MakeStartCamera(), what) == groundFirst);
+        CHECK(CountPixels(groundFirst, 0xED, 0x76, 0x00) > 3000); // the cube's top still shows
     }
 
     TEST_CASE("depth formats and images")

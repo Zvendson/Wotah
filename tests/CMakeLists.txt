@@ -14,6 +14,7 @@ add_executable(wotah_tests
     buffer_tests.cpp
     camera_tests.cpp
     gpu_tests.cpp
+    height_field_tests.cpp
     input_tests.cpp
     lighting_tests.cpp
     logger_tests.cpp

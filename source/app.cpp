@@ -1,14 +1,15 @@
 /**
  * @file app.cpp
  * The application: a Vulkan 1.3 example scene, an orange cube seen from above one corner so three faces show, and a
- * blue ball behind it, under a clear blue sky, lit by a warm sun in the east and a cool moon. Uses dynamic rendering
- * (no VkRenderPass / VkFramebuffer) with a depth image; the shapes are Meshes on the GPU, camera and object matrices
- * come in as push constants, and the lights through a uniform buffer.
+ * blue ball behind it, both on a grass ground under a clear blue sky, lit by a warm sun in the east and a cool
+ * moon. Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the shapes are Meshes on the GPU,
+ * camera and object matrices come in as push constants, and the lights through a uniform buffer.
  */
 #include "app.hpp"
 
 #include "core/logger.hpp"
 #include "input/input_event.hpp"
+#include "render/height_field.hpp"
 #include "render/lighting.hpp"
 #include "render/mesh.hpp"
 #include "render/mesh_data.hpp"
@@ -19,6 +20,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <vulkan/vulkan.h>
 
@@ -27,6 +29,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 /** The clock frame times are measured with: steady, so changing the system time cannot make a frame negative. */
@@ -48,6 +51,11 @@ static constexpr uint32_t CubeFragmentShader[] = {
 #include "cube.frag.inc"
 };
 
+/** The ground's fragment shader (shaders/terrain.frag), compiled to SPIR-V by the build. */
+static constexpr uint32_t TerrainFragmentShader[] = {
+#include "terrain.frag.inc"
+};
+
 /** The ball's fragment shader (shaders/ball.frag), compiled to SPIR-V by the build. */
 static constexpr uint32_t BallFragmentShader[] = {
 #include "ball.frag.inc"
@@ -66,18 +74,29 @@ static constexpr VkClearColorValue BackgroundColor{{0.1f, 0.1f, 0.1f, 1.0f}};
  * Where the first camera stands: south-east of the cube and a bit above it, so the top, east and south faces show, and
  * looking almost level, so the sky shows above the horizon.
  */
-static constexpr glm::vec3 CornerCameraPosition{2.2f, 1.0f, 3.0f};
+static constexpr glm::vec3 CornerCameraPosition{2.2f, 1.5f, 3.0f};
 
 /** What the first camera looks at: just above the cube's center, between cube and ball. */
-static constexpr glm::vec3 CornerCameraTarget{-0.2f, 0.25f, 0.0f};
+static constexpr glm::vec3 CornerCameraTarget{-0.2f, 0.75f, 0.0f};
 
-/** The nearest and farthest distance the first camera sees: the cube is about 3.7 units away. */
+/** The nearest and farthest distance the first camera sees. */
 static constexpr float CornerCameraNear = 0.1f;
-static constexpr float CornerCameraFar  = 10.0f;
+static constexpr float CornerCameraFar  = 100.0f; // sees the whole ground
 
-/** The ball's size and where it lies: behind the cube and to its left, as seen from the start view. */
+/**
+ * The ground: 64 x 64 units around the origin, a height point every half unit, so hills can be shaped finely. Flat
+ * at height 0 for now.
+ */
+static constexpr float    GroundSize  = 64.0f;
+static constexpr uint32_t GroundCells = 128;
+
+/** Where the cube stands on the ground (x, z), and half its size of 1: how far its center is above the ground. */
+static constexpr glm::vec2 CubeSpot{0.0f, 0.0f};
+static constexpr float     CubeHalfSize = 0.5f;
+
+/** The ball's size and where it lies on the ground (x, z): behind the cube and to its left, as seen at the start. */
 static constexpr float     BallRadius = 0.5f;
-static constexpr glm::vec3 BallPosition{-1.3f, 0.0f, -0.9f};
+static constexpr glm::vec2 BallSpot{-1.3f, -0.9f};
 
 /** How finely the ball is cut: enough for a smooth outline at this size. */
 static constexpr uint32_t BallSegments = 48;
@@ -168,13 +187,20 @@ struct Wotah::App::State
     /** The sky with the sun, drawn first in every frame. */
     Wotah::Sky Sky;
 
-    /** The pipelines: the orange cube with black edges, and the blue ball. */
+    /** The pipelines: the grass ground, the orange cube with black edges, and the blue ball. */
+    Wotah::Pipeline TerrainPipeline;
     Wotah::Pipeline CubePipeline;
     Wotah::Pipeline BallPipeline;
 
-    /** The scene's shapes, on the GPU. */
-    Wotah::Mesh Cube;
-    Wotah::Mesh Ball;
+    /** The ground's shape, and the ground and shapes on the GPU. */
+    Wotah::HeightField GroundShape;
+    Wotah::Mesh        Terrain;
+    Wotah::Mesh        Cube;
+    Wotah::Mesh        Ball;
+
+    /** Where cube and ball stand: on the ground, worked out in Create. */
+    glm::mat4 CubeModel{1.0f};
+    glm::mat4 BallModel{1.0f};
 };
 
 Wotah::App::App()
@@ -215,6 +241,8 @@ bool Wotah::App::Create()
                                    MakeMeshSettings(CubeFragmentShader, colorFormat, depthFormat, setLayouts)) ||
         !state.BallPipeline.Create(m_device,
                                    MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat, setLayouts)) ||
+        !state.TerrainPipeline.Create(m_device,
+                                      MakeMeshSettings(TerrainFragmentShader, colorFormat, depthFormat, setLayouts)) ||
         !state.Sky.Create(m_device, colorFormat, depthFormat))
     {
         return false;
@@ -232,12 +260,25 @@ bool Wotah::App::Create()
     m_lights.AmbientColor      = SkyAmbient;
     m_lights.DirectionalLights = {sun, moon}; // the sun first: SunLightIndex
 
-    // The shapes go to GPU-only memory once; Create waits until they are there.
-    if (!state.Cube.Create(m_device, MakeCube()) ||
+    // The ground and the shapes go to GPU-only memory once; Create waits until they are there.
+    state.GroundShape = MakeFlatHeightField(GroundSize, GroundSize, GroundCells, GroundCells);
+    if (!state.Terrain.Create(m_device, MakeTerrainMesh(state.GroundShape)) ||
+        !state.Cube.Create(m_device, MakeCube()) ||
         !state.Ball.Create(m_device, MakeSphere(BallRadius, BallSegments, BallRings)))
     {
         return false;
     }
+
+    // Cube and ball stand on the ground wherever it is, so they keep standing on it once there are hills.
+    const std::optional<float> cubeGround = FindHeight(state.GroundShape, CubeSpot.x, CubeSpot.y);
+    const std::optional<float> ballGround = FindHeight(state.GroundShape, BallSpot.x, BallSpot.y);
+    if (!cubeGround || !ballGround)
+    {
+        Logger::Error("Cube and ball must stand on the ground's area");
+        return false;
+    }
+    state.CubeModel = glm::translate(glm::mat4(1.0f), {CubeSpot.x, *cubeGround + CubeHalfSize, CubeSpot.y});
+    state.BallModel = glm::translate(glm::mat4(1.0f), {BallSpot.x, *ballGround + BallRadius, BallSpot.y});
 
     // The first camera looks at the cube from above a corner; Run keeps every active camera's aspect ratio in step
     // with the image.
@@ -261,8 +302,6 @@ bool Wotah::App::Run()
     const State& scene    = *m_state;
 
     // The objects stay where they are; only the camera moves.
-    const glm::mat4 cubeModel{1.0f}; // at the origin
-    const glm::mat4 ballModel = glm::translate(glm::mat4(1.0f), BallPosition);
 
     // Fixed while the window cannot be resized.
     const VkExtent2D extent      = m_state->Swapchain.GetExtent();
@@ -325,10 +364,12 @@ bool Wotah::App::Run()
             scene.Sky.Draw(commandBuffer, pushConstants.ViewProjection, m_lights.DirectionalLights[SunLightIndex]);
         }
 
-        // The depth test sorts out which is in front, so the order of the shapes does not matter.
-        pushConstants.Model = cubeModel;
+        // The depth test sorts out which is in front, so the order of ground and shapes does not matter.
+        pushConstants.Model = glm::mat4(1.0f); // the ground lies where its heights say
+        DrawMesh(commandBuffer, scene.TerrainPipeline, scene.Lighting, scene.Terrain, pushConstants);
+        pushConstants.Model = scene.CubeModel;
         DrawMesh(commandBuffer, scene.CubePipeline, scene.Lighting, scene.Cube, pushConstants);
-        pushConstants.Model = ballModel;
+        pushConstants.Model = scene.BallModel;
         DrawMesh(commandBuffer, scene.BallPipeline, scene.Lighting, scene.Ball, pushConstants);
 
         if (!renderer.EndFrame())

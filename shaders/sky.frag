@@ -1,7 +1,10 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // A clear daytime sky without clouds: deep blue overhead fading to a pale blue at the horizon, a hazy blue-gray below
 // it, and the sun as a bright disk with a soft glow around it, exactly where the sun light comes from.
+
+#include "atmosphere.glsl"
 
 layout(location = 0) in vec2 inScreenPosition;
 
@@ -15,8 +18,7 @@ layout(push_constant) uniform PushConstants
 layout(location = 0) out vec4 outColor;
 
 const vec3  ZenithColor     = vec3(0.16, 0.38, 0.78); // straight up: deep blue
-const vec3  HorizonColor    = vec3(0.62, 0.78, 0.94); // at the horizon: pale, hazy blue
-const vec3  BelowColor      = vec3(0.30, 0.36, 0.42); // below the horizon: blue-gray haze (there is no ground yet)
+const vec3  BelowColor      = vec3(0.30, 0.36, 0.42); // below the horizon: blue-gray haze, seen only from under the ground
 const float SkyCurve        = 3.0;  // the blue deepens fast just above the horizon, then evens out towards the top
 const float BelowFade       = 0.25; // the haze reaches its full color this far below the horizon (as the ray's y)
 const float SunRadius       = radians(1.0);  // the disk's size; the real sun is 0.27 degrees, too small to see well
@@ -28,10 +30,11 @@ const float GlowFarPower    = 12.0;
 
 void main()
 {
-    // The direction this pixel looks in: from the near plane to the far plane through it.
-    vec4 nearPoint = push.inverseViewProjection * vec4(inScreenPosition, 0.0, 1.0);
-    vec4 farPoint  = push.inverseViewProjection * vec4(inScreenPosition, 1.0, 1.0);
-    vec3 ray       = normalize(farPoint.xyz / farPoint.w - nearPoint.xyz / nearPoint.w);
+    // The direction this pixel looks in.
+    vec3 nearPoint;
+    vec3 farPoint;
+    GetViewRay(push.inverseViewProjection, inScreenPosition, nearPoint, farPoint);
+    vec3 ray = normalize(farPoint - nearPoint);
 
     // Blue gradient above the horizon, eased (1 - (1 - y)^3) so it starts gently at the horizon and deepens upwards;
     // below it, a soft fade into the haze, so the horizon shows as a band, not as a hard line.

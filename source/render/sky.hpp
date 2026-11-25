@@ -1,7 +1,7 @@
 /**
  * @file sky.hpp
- * The sky behind everything: a clear blue gradient and the sun with its glow, computed per pixel (shaders/sky.*), so it
- * needs no picture, is sharp at any size, and the sun always stands where the sun light comes from.
+ * The sky behind everything: a clear blue gradient and the sun with its glow, computed per pixel (shaders/sky.frag), so
+ * it needs no picture, is sharp at any size, and the sun always stands where the sun light comes from.
  *
  *     Wotah::Sky sky;
  *     sky.Create(device, swapchain.GetFormat(), renderer.GetDepthFormat());
