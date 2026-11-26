@@ -168,7 +168,11 @@ namespace
         bool               IsBallFirst  = false;
         bool               IsGroundLast = false;
         glm::vec3          BallPlace    = BallPosition;
+        float              SkySeconds   = 0.0f;
         Wotah::UiRenderer* Ui           = nullptr;
+
+        /** The moon's disk for the sky (Sky::Draw, SkyLights::MoonDisk): none unless a test sets it. */
+        Wotah::DirectionalLight Moon{{0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, 0.0f};
     };
 
     /** The offscreen pictures' size and color format (DrawSceneOffscreen): square, with room for the UI's cards. */
@@ -211,14 +215,14 @@ namespace
         }
 
         /**
-         * Records the sky (its sun from the first light), then ground and shapes as app.cpp does, in any order the
-         * options pick: the depth test must make the order not matter.
+         * Records the sky (its sun from the first light, its moon from what.Moon), then ground and shapes as app.cpp
+         * does, in any order the options pick: the depth test must make the order not matter.
          */
         void Record(VkCommandBuffer commands, const glm::mat4& viewProjection, const OffscreenScene& what) const
         {
             if (what.HasSky && !what.Lights.DirectionalLights.empty())
             {
-                Sky.Draw(commands, viewProjection, what.Lights.DirectionalLights.front());
+                Sky.Draw(commands, viewProjection, what.Lights.DirectionalLights.front(), what.Moon, what.SkySeconds);
             }
             if (what.HasGround && !what.IsGroundLast)
             {
@@ -707,6 +711,30 @@ namespace
         return count;
     }
 
+    /**
+     * The box around every pixel brighter than 250 in all three channels: a sun's disk, but not the glare around it,
+     * which stays below that over a sky. Right and Bottom lie just outside; all 0 when there is none.
+     */
+    PixelArea FindSunDisk(const std::vector<uint8_t>& pixels)
+    {
+        constexpr int DiskLevel = 250;
+        PixelArea     disk{OffscreenSize.width, OffscreenSize.height, 0, 0};
+        for (uint32_t y = 0; y < OffscreenSize.height; ++y)
+        {
+            for (uint32_t x = 0; x < OffscreenSize.width; ++x)
+            {
+                if (std::ranges::min(GetPixel(pixels, x, y)) > DiskLevel)
+                {
+                    disk.Left   = std::min(disk.Left, x);
+                    disk.Top    = std::min(disk.Top, y);
+                    disk.Right  = std::max(disk.Right, x + 1);
+                    disk.Bottom = std::max(disk.Bottom, y + 1);
+                }
+            }
+        }
+        return disk.Right == 0 ? PixelArea{} : disk;
+    }
+
     /** One UI frame of the program: the stats window, the hints and the control bar, laid out and drawn at size. */
     void ShowUiFrame(Wotah::UserInterface& ui, const Wotah::WindowSize& size)
     {
@@ -1141,16 +1169,285 @@ TEST_SUITE("gpu")
             GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt({0.05f, -1.0f, 0.0f}), sky));
         CHECK(IsColorNear(below, 0.30f, 0.36f, 0.42f));
 
-        // Straight at the sun: its disk, exactly the sun's color.
+        // Straight at the sun: its disk, far brighter than its warm white light, so white-hot.
         const std::array<int, 3> disk =
             GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(-sun.Direction), sky));
-        CHECK(IsColorNear(disk, 1.0f, 0.95f, 0.85f));
+        CHECK(IsColorNear(disk, 1.0f, 1.0f, 1.0f));
 
-        // A low sun's dim red light still shows a bright red disk, its color at full strength, never a black one.
+        // The sky glows around the sun: 3 degrees beside it, far brighter than at the same height 60 degrees away.
+        const glm::vec3          besideSun = -Wotah::MakeLightDirection(glm::radians(93.0f), glm::radians(45.0f));
+        const glm::vec3          awaySun   = -Wotah::MakeLightDirection(glm::radians(150.0f), glm::radians(45.0f));
+        const std::array<int, 3> beside =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(besideSun), sky));
+        const std::array<int, 3> away =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(awaySun), sky));
+        CHECK(beside[0] + beside[1] + beside[2] > away[0] + away[1] + away[2] + 60);
+
+        // A low sun's dim, red light shows an orange disk: red at full, green well below it, no blue (the sky behind is
+        // hidden), never a black one.
         sky.Lights.DirectionalLights.front().Color = {0.5f, 0.1f, 0.0f};
         const std::array<int, 3> redDisk =
             GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(-sun.Direction), sky));
-        CHECK(IsColorNear(redDisk, 1.0f, 0.2f, 0.0f));
+        CHECK(redDisk[0] > 230);
+        CHECK(redDisk[1] > 100);
+        CHECK(redDisk[1] < 200);
+        CHECK(redDisk[2] < 10);
+
+        // A switched-off sun shows no disk at all: the blue sky, not a black hole in it.
+        sky.Lights.DirectionalLights.front().Intensity = 0.0f;
+        const std::array<int, 3> noSun =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(-sun.Direction), sky));
+        CHECK(noSun[2] > noSun[0] + 40);
+        CHECK(noSun[2] > 150);
+    }
+
+    TEST_CASE("a low sun: a sunset sky, orange on its side and mauve away from it, the sun round and whole as it sets")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        // A sun in the east, 2 degrees up, switched off: only the sky shows, no disk and no glow.
+        Wotah::DirectionalLight sun;
+        sun.Direction = Wotah::MakeLightDirection(glm::radians(90.0f), glm::radians(2.0f));
+        sun.Intensity = 0.0f;
+        OffscreenScene sky;
+        sky.Lights.DirectionalLights = {sun};
+        sky.HasSky                   = true;
+        sky.HasShapes                = false;
+
+        // On the horizon under the sun (east): orange. Opposite it (west): dusky mauve, red and blue above green.
+        const std::array<int, 3> sunSide =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt({1.0f, 0.0f, 0.0f}), sky));
+        CHECK(sunSide[0] > sunSide[2] + 100);
+        const std::array<int, 3> farSide =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt({-1.0f, 0.0f, 0.0f}), sky));
+        CHECK(farSide[0] > farSide[1]);
+        CHECK(farSide[2] > farSide[1]);
+
+        // Lit, 2 degrees up, the whole disk shows, white-hot.
+        sky.Lights.DirectionalLights.front().Intensity = 1.0f;
+        const std::array<int, 3> up =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(-sun.Direction), sky));
+        CHECK(IsColorNear(up, 1.0f, 1.0f, 1.0f));
+
+        // With its middle on the horizon it is still round: half its radius below the middle (6 of its 12.6 pixels at
+        // the camera's 45 degrees over 600 pixels), under the horizon, the disk is as bright as just as far above.
+        sky.Lights.DirectionalLights.front().Direction = Wotah::MakeLightDirection(glm::radians(90.0f), 0.0f);
+        const std::vector<uint8_t> onHorizon =
+            DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt({1.0f, 0.0f, 0.0f}), sky);
+        constexpr uint32_t       Middle     = OffscreenSize.width / 2;
+        constexpr uint32_t       HalfInDisk = 6;
+        const std::array<int, 3> above      = GetPixel(onHorizon, Middle, Middle - HalfInDisk);
+        const std::array<int, 3> below      = GetPixel(onHorizon, Middle, Middle + HalfInDisk);
+        CHECK(below[0] > 245);
+        CHECK(std::abs(below[1] - above[1]) <= 4);
+
+        // One and a half degrees below the horizon, where the ground's far edge hides it from the start camera, it is
+        // still whole and white-hot: it sinks behind the ground, it does not vanish above it.
+        sky.Lights.DirectionalLights.front().Direction =
+            Wotah::MakeLightDirection(glm::radians(90.0f), glm::radians(-1.5f));
+        const std::array<int, 3> sinking = GetCenterColor(
+            DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(-sky.Lights.DirectionalLights.front().Direction), sky));
+        CHECK(IsColorNear(sinking, 1.0f, 1.0f, 1.0f));
+
+        // Six and a half degrees below it has set, its glow with it: the sky's color, far from white.
+        sky.Lights.DirectionalLights.front().Direction =
+            Wotah::MakeLightDirection(glm::radians(90.0f), glm::radians(-6.5f));
+        const std::array<int, 3> set = GetCenterColor(
+            DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(-sky.Lights.DirectionalLights.front().Direction), sky));
+        CHECK(set[0] + set[1] + set[2] < 600);
+    }
+
+    TEST_CASE("the sun stays round anywhere on the picture, also near its edge where a wide camera stretches things")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        // The sun due east on the horizon, warm white.
+        Wotah::DirectionalLight sun;
+        sun.Direction = Wotah::MakeLightDirection(glm::radians(90.0f), 0.0f);
+        sun.Color     = {1.0f, 0.95f, 0.85f};
+        OffscreenScene sky;
+        sky.Lights.DirectionalLights = {sun};
+        sky.HasSky                   = true;
+        sky.HasShapes                = false;
+
+        // A 90 degree camera looking along the horizon 40 degrees left of it: the sun stands on the middle row, near
+        // the right edge. A disk measured by angle would show 1.3 times wider than high there (cos 40 to cos^2 40).
+        Wotah::Camera camera = MakeCameraLookingAt(-Wotah::MakeLightDirection(glm::radians(50.0f), 0.0f));
+        REQUIRE(camera.SetFieldOfView(glm::radians(90.0f)));
+        const PixelArea disk = FindSunDisk(DrawSceneOffscreen(gpu.Device, camera, sky));
+        CAPTURE(disk.Left);
+        CAPTURE(disk.Top);
+        CAPTURE(disk.Right);
+        CAPTURE(disk.Bottom);
+
+        // Where it belongs: 300 + 300 tan 40 = 552 across, on the middle row; 2 * 300 tan 1 = 10.5 pixels across.
+        CHECK(disk.Left > 530);
+        CHECK(disk.Right < 575);
+        const int width  = static_cast<int>(disk.Right - disk.Left);
+        const int height = static_cast<int>(disk.Bottom - disk.Top);
+        CHECK(height >= 9);
+        CHECK(height <= 13);
+        CHECK(std::abs(width - height) <= 1);
+    }
+
+    TEST_CASE("the sun's rays: faint, they turn slowly while the camera looks at the sun, and are gone looking away")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        Wotah::DirectionalLight sun;
+        sun.Direction = Wotah::MakeLightDirection(glm::radians(90.0f), glm::radians(45.0f));
+        sun.Color     = {1.0f, 0.95f, 0.85f};
+        OffscreenScene sky;
+        sky.Lights.DirectionalLights = {sun};
+        sky.HasSky                   = true;
+        sky.HasShapes                = false;
+
+        // Looking at the sun, half a minute apart: the rays have turned a little (1/20 of a turn), so the glow around
+        // the sun differs, but only faintly. The glow's breath is back where it was, so only the rays can differ.
+        const Wotah::Camera        atSun  = MakeCameraLookingAt(-sun.Direction);
+        const std::vector<uint8_t> before = DrawSceneOffscreen(gpu.Device, atSun, sky);
+        sky.SkySeconds                    = 30.0f;
+        const std::vector<uint8_t> after  = DrawSceneOffscreen(gpu.Device, atSun, sky);
+        CHECK(CountDifferentPixels(before, after, 4) > 1000);
+        CHECK(CountDifferentPixels(before, after, 40) == 0);
+
+        // Looking 40 degrees to the side of it, along the horizon under it (with a wide camera, so the sun is still in
+        // the picture), the rays are gone: nothing moves.
+        Wotah::Camera away = MakeCameraLookingAt(-Wotah::MakeLightDirection(glm::radians(50.0f), 0.0f));
+        REQUIRE(away.SetFieldOfView(glm::radians(90.0f)));
+        sky.Lights.DirectionalLights.front().Direction = Wotah::MakeLightDirection(glm::radians(90.0f), 0.0f);
+        sky.SkySeconds                                 = 0.0f;
+        const std::vector<uint8_t> awayBefore          = DrawSceneOffscreen(gpu.Device, away, sky);
+        sky.SkySeconds                                 = 30.0f;
+        const std::vector<uint8_t> awayAfter           = DrawSceneOffscreen(gpu.Device, away, sky);
+        CHECK(CountDifferentPixels(awayBefore, awayAfter, 1) == 0);
+    }
+
+    TEST_CASE("the night sky: deep blue with a few stars, the full moon a bright disk with darker seas, no sun")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        // The sun 30 degrees below the horizon in the west, giving no light; the full moon 30 degrees up in the east,
+        // white, at its full brightness.
+        Wotah::DirectionalLight sun;
+        sun.Direction = Wotah::MakeLightDirection(glm::radians(270.0f), glm::radians(-30.0f));
+        sun.Intensity = 0.0f;
+        OffscreenScene sky;
+        sky.Lights.DirectionalLights = {sun};
+        sky.Moon.Direction           = Wotah::MakeLightDirection(glm::radians(90.0f), glm::radians(30.0f));
+        sky.Moon.Color               = {1.0f, 0.97f, 0.92f};
+        sky.Moon.Intensity           = 1.0f;
+        sky.HasSky                   = true;
+        sky.HasShapes                = false;
+
+        // Straight at the moon: a bright, nearly white disk, about as red as blue. Just above its middle lies a sea
+        // (Mare Vaporum), darker.
+        const std::vector<uint8_t> atMoon =
+            DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(-sky.Moon.Direction), sky);
+        const std::array<int, 3> face = GetCenterColor(atMoon);
+        CHECK(face[0] > 150);
+        CHECK(std::abs(face[0] - face[2]) < 30);
+        int darkest = 255;
+        for (uint32_t y = OffscreenSize.height / 2 - 10; y <= OffscreenSize.height / 2 + 10; ++y)
+        {
+            darkest = std::min(darkest, GetPixel(atMoon, OffscreenSize.width / 2, y)[0]);
+        }
+        CHECK(darkest < face[0] - 15);
+
+        // Its halo: the sky 2 degrees from its middle is clearly lighter than 20 degrees away.
+        const glm::vec3          nearMoon = -Wotah::MakeLightDirection(glm::radians(90.0f), glm::radians(32.0f));
+        const glm::vec3          farMoon  = -Wotah::MakeLightDirection(glm::radians(90.0f), glm::radians(50.0f));
+        const std::array<int, 3> halo =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(nearMoon), sky));
+        const std::array<int, 3> open =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(farMoon), sky));
+        CHECK(halo[0] + halo[1] + halo[2] > open[0] + open[1] + open[2] + 30);
+
+        // High up in the north, away from the moon: a dark sky, bluer than red under the moon, with a few small light
+        // points, not many.
+        const std::vector<uint8_t> up = DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt({0.0f, 1.0f, -0.6f}), sky);
+        std::size_t                stars = 0;
+        std::size_t                dark  = 0;
+        for (std::size_t index = 0; index + 3 < up.size(); index += 4)
+        {
+            const int least = std::min({up[index], up[index + 1], up[index + 2]});
+            stars += least > 80 ? 1 : 0;
+            dark += up[index] + up[index + 1] + up[index + 2] < 45 ? 1 : 0;
+        }
+        const std::size_t pixelCount = up.size() / 4;
+        CHECK(stars > 20);
+        CHECK(stars < pixelCount / 100);
+        CHECK(dark > pixelCount * 9 / 10);
+        const std::array<int, 3> moonlit = GetCenterColor(up);
+        CHECK(moonlit[2] > moonlit[0]);
+
+        // A moon with no brightness shows no disk: the dark sky where it stood.
+        sky.Moon.Intensity = 0.0f;
+        const std::array<int, 3> noMoon =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(-sky.Moon.Direction), sky));
+        CHECK(noMoon[0] < 60);
+    }
+
+    TEST_CASE("the moon by day: a pale disk over the blue sky, brighter than the sky beside it, without a halo")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        // The sun 45 degrees up in the east, the moon 20 degrees up in the west.
+        Wotah::DirectionalLight sun;
+        sun.Direction = Wotah::MakeLightDirection(glm::radians(90.0f), glm::radians(45.0f));
+        sun.Color     = {1.0f, 0.95f, 0.85f};
+        OffscreenScene sky;
+        sky.Lights.DirectionalLights = {sun};
+        sky.Moon.Direction           = Wotah::MakeLightDirection(glm::radians(270.0f), glm::radians(20.0f));
+        sky.Moon.Intensity           = 1.0f;
+        sky.HasSky                   = true;
+        sky.HasShapes                = false;
+
+        const std::array<int, 3> face =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(-sky.Moon.Direction), sky));
+        const glm::vec3          besideMoon = -Wotah::MakeLightDirection(glm::radians(275.0f), glm::radians(20.0f));
+        const std::array<int, 3> beside =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(besideMoon), sky));
+        CHECK(face[0] > beside[0] + 60);
+        CHECK(face[0] < 250); // pale, not white-hot like the sun
+
+        // No halo by day: the sky 2 degrees beside it is the plain sky's color, as without a moon.
+        const glm::vec3          nearMoon = -Wotah::MakeLightDirection(glm::radians(272.0f), glm::radians(20.0f));
+        const std::array<int, 3> withMoon =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(nearMoon), sky));
+        sky.Moon.Intensity = 0.0f;
+        const std::array<int, 3> withoutMoon =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(nearMoon), sky));
+        CHECK(IsColorNear(withMoon, static_cast<float>(withoutMoon[0]) / 255.0f,
+                          static_cast<float>(withoutMoon[1]) / 255.0f, static_cast<float>(withoutMoon[2]) / 255.0f));
+    }
+
+    TEST_CASE("far ground fades into the haze's color, which the lights set: pale blue by day, near black at night")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        OffscreenScene ground;
+        ground.Lights    = MakeOldLight();
+        ground.HasGround = true;
+        ground.HasShapes = false;
+
+        // From one edge low over the ground towards the far edge, 60 units away: half grass, half haze.
+        Wotah::Camera far;
+        far.SetPosition({-30.0f, 0.5f, 0.0f});
+        far.SetTarget({30.0f, 0.0f, 0.0f});
+        const std::array<int, 3> day = GetCenterColor(DrawSceneOffscreen(gpu.Device, far, ground));
+        CHECK(day[2] > 120);
+
+        // The same grass in a night's haze: far darker, the blue most of all (the day haze is the bluest part).
+        ground.Lights.HazeColor        = {0.02f, 0.028f, 0.055f};
+        const std::array<int, 3> night = GetCenterColor(DrawSceneOffscreen(gpu.Device, far, ground));
+        CHECK(night[2] + 80 < day[2]);
+        CHECK(night[0] + night[1] + night[2] + 150 < day[0] + day[1] + day[2]);
     }
 
     TEST_CASE("the scene under the sky: the shapes in front, the sky behind, the draw order still free")

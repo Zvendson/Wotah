@@ -115,11 +115,20 @@ namespace Wotah
         void ApplyClicks(const ControlBarClicks& clicks);
 
         /**
-         * Puts m_settings into the scene: the sun, the sky's light and shadows into the lights; gravity, the balls'
-         * bounce and the cube's turn into the physics (failures logged). Time speed and field of view need no call:
-         * each frame reads them.
+         * Puts m_settings into the scene: ApplySkySettings, then ApplyPhysicsSettings. Time speed and field of view
+         * need no call: each frame reads them.
          */
         void ApplySettings();
+
+        /**
+         * Puts the sky's settings into the lights (render/sky_lights.hpp): sun and moon where the time of day has
+         * them, with their light, the moon's disk for the sky, the sky's light, the haze and the light the ground
+         * throws back, shadows on or off. Every frame while the day runs.
+         */
+        void ApplySkySettings();
+
+        /** Puts gravity, the balls' bounce and the cube's turn into the physics; a failure is logged. */
+        void ApplyPhysicsSettings();
 
         /**
          * Puts the scene back as it started, at once and without making anything again: the cube at its first turn,
@@ -182,6 +191,19 @@ namespace Wotah
 
         /** Whether the settings window shows; Tab switches it. Hidden at the start. Drawing thread only. */
         bool m_isSettingsOpen = false;
+
+        /**
+         * The sky's clock for its small movements (render/sky.hpp), in real seconds, wrapped at SkyLoopSeconds.
+         * Drawing thread only.
+         */
+        float m_skySeconds = 0.0f;
+
+        /**
+         * Sun and moon as the sky draws them (render/sky_lights.hpp, SkyLights::SunDisk and MoonDisk): set with the
+         * lights; dark until then. Drawing thread only.
+         */
+        DirectionalLight m_skySun{{0.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, 0.0f};
+        DirectionalLight m_skyMoon{{0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, 0.0f};
 
         /** Whether the drawing thread still draws; it clears this when it ends, for whatever reason. */
         std::atomic<bool> m_isDrawing = false;

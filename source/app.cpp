@@ -1,14 +1,15 @@
 /**
  * @file app.cpp
  * The application: a Vulkan 1.3 example scene, a slowly turning orange cube seen from above one corner, a blue ball
- * behind it and a second one dropped from the air onto it, all on a grass ground under a clear blue sky, lit by a warm
- * sun in the east casting the shadows, as on a clear day (the moon is up but too faint to show). Gravity and collisions
- * come from the physics world (Jolt). Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the
- * shapes are Meshes on the GPU, camera and object matrices come in as push constants, and the lights through a uniform
- * buffer with every light's shadow map beside it. Over the scene lie a small stats window, a list of the controls and a
- * control bar (Dear ImGui) that pauses the world and resets the scene or the camera; R resets the scene too. Tab opens
- * a settings window with sliders for the sun, the sky's light, shadows, gravity, time, the balls' bounce, the cube's
- * turn and the field of view.
+ * behind it and a second one dropped from the air onto it, all on a grass ground under a clear sky. The day runs: the
+ * sun rises in the east, crosses the south and sets in the west, lighting the scene and casting the shadows, and at
+ * night the full moon gives a faint blue light under the stars. Gravity and collisions come from the physics world
+ * (Jolt). Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the shapes are Meshes on the
+ * GPU, camera and object matrices come in as push constants, and the lights through a uniform buffer with every
+ * light's shadow map beside it. Over the scene lie a small stats window, a list of the controls and a control bar (Dear
+ * ImGui) that pauses the world and resets the scene or the camera; R resets the scene too. Tab opens a settings window
+ * with sliders for the time of day and the day's run, sun, moon and sky, shadows, gravity, time, the balls' bounce, the
+ * cube's turn and the field of view.
  */
 #include "app.hpp"
 
@@ -22,6 +23,8 @@
 #include "render/pipeline.hpp"
 #include "render/renderer.hpp"
 #include "render/sky.hpp"
+#include "render/sky_clock.hpp"
+#include "render/sky_lights.hpp"
 #include "render/swapchain.hpp"
 #include "render/ui_renderer.hpp"
 #include "ui/control_bar.hpp"
@@ -47,6 +50,7 @@
 #include <span>
 #include <stop_token>
 #include <thread>
+#include <vector>
 
 /** The clock frame times are measured with: steady, so changing the system time cannot make a frame negative. */
 using Clock = std::chrono::steady_clock;
@@ -172,65 +176,40 @@ static constexpr float BallMoveDamping = 0.2f;
 static constexpr uint32_t BallSegments = 48;
 static constexpr uint32_t BallRings    = 24;
 
-/**
- * The ambient light: the blue sky lighting every surface a little, also those facing away from sun and moon; this much
- * with the sun at its start height, less when it stands lower.
- */
-static constexpr glm::vec3 SkyAmbient{0.2f, 0.24f, 0.32f};
+/** How bright the sun is as the scene starts (the Sun brightness setting); chosen by eye. */
+static constexpr float SunIntensity = 0.9f;
 
 /**
- * The sun: warm white, in the east at 45 degrees above the horizon (compass: render/lighting.hpp). Its color is the one
- * at this height; higher it turns whiter and brighter, lower dimmer and redder (App::ApplySettings).
+ * The day as the scene starts: 9 in the morning, the sun in the east-south-east about 38 degrees up, so the shapes'
+ * shadows fall to the left of the start view; a day that reaches 60 degrees at noon (about 30 degrees north, as in
+ * Cairo at an equinox) and lasts 10 minutes, so a sunset shows within a few minutes.
  */
-static constexpr float     SunAzimuth   = glm::radians(90.0f);
-static constexpr float     SunElevation = glm::radians(45.0f);
-static constexpr glm::vec3 SunColor{1.0f, 0.95f, 0.85f};
-static constexpr float     SunIntensity = 0.9f;
+static constexpr float StartHours        = 9.0f;
+static constexpr float NoonHeightDegrees = 60.0f;
+static constexpr float DayLengthMinutes  = 10.0f;
+
+/** Where sun and moon sit in SceneLights::DirectionalLights; the sky draws the sun's disk from its light. */
+static constexpr std::size_t SunLightIndex  = 0;
+static constexpr std::size_t MoonLightIndex = 1;
 
 /**
- * How much of each color the grass throws back up: its color as drawn (shaders/terrain.frag, GrassColor), so the light
- * bounced onto things matches the ground they stand on.
+ * Where the settings start beyond the values above: time runs as fast as the clock, the day runs, sky and moon give all
+ * their light.
  */
-static constexpr glm::vec3 GrassReflectance{0.30f, 0.45f, 0.20f};
-
-/**
- * The least share of its start light the sky gives while the sun is up: around sunset the whole sky stays bright after
- * the sun's own light has faded. A guess, by eye.
- */
-static constexpr float TwilightSkyShare = 0.5f;
-
-/** How much each color counts towards how bright a color looks (luminance weights, ITU-R BT.709): green most. */
-static constexpr glm::vec3 BrightnessWeights{0.2126f, 0.7152f, 0.0722f};
-
-/** How bright a color looks to the eye (its luminance): 1 for white at full strength. */
-static float GetBrightness(const glm::vec3& color)
-{
-    return glm::dot(color, BrightnessWeights);
-}
-
-/** Where the sun sits in SceneLights::DirectionalLights; the sky draws its disk from that light. */
-static constexpr std::size_t SunLightIndex = 0;
-
-/**
- * The moon: cool blue, low from the front left. By day its light is a few millionths of the sun's (full moonlight about
- * 0.3 lux against about 100 000 lux of sunlight), far too little to light anything or cast a shadow, so it is 0 here;
- * a day and night cycle will give it its light at night.
- */
-static constexpr glm::vec3 MoonDirection{0.3f, -0.3f, -1.0f};
-static constexpr glm::vec3 MoonColor{0.45f, 0.55f, 1.0f};
-static constexpr float     MoonIntensity = 0.0f;
-
-/** Where the settings start beyond the values above: time runs as fast as the clock, the sky gives all its light. */
 static constexpr float RealTimeSpeed = 1.0f;
 static constexpr float FullSkyLight  = 1.0f;
+static constexpr float FullMoonLight = 1.0f;
 
 /** The settings as the scene starts: the values above, in the settings window's units. */
 static Wotah::SceneSettings MakeDefaultSettings()
 {
     Wotah::SceneSettings settings;
-    settings.SunAzimuthDegrees        = glm::degrees(SunAzimuth);
-    settings.SunElevationDegrees      = glm::degrees(SunElevation);
+    settings.TimeOfDayHours           = StartHours;
+    settings.IsDayRunning             = true;
+    settings.DayLengthMinutes         = DayLengthMinutes;
+    settings.SunNoonHeightDegrees     = NoonHeightDegrees;
     settings.SunBrightness            = SunIntensity;
+    settings.MoonBrightness           = FullMoonLight;
     settings.SkyLight                 = FullSkyLight;
     settings.HasShadows               = true;
     settings.Gravity                  = Wotah::StandardGravity;
@@ -450,19 +429,9 @@ bool Wotah::App::Create()
         return false;
     }
 
-    // A sun and a moon, as on a clear day: only the sun gives light (the moon's is 0 by day, so it casts no shadow);
-    // a day and night cycle will move them and change their light.
-    DirectionalLight sun;
-    sun.Direction = MakeLightDirection(SunAzimuth, SunElevation);
-    sun.Color     = SunColor;
-    sun.Intensity = SunIntensity;
-    DirectionalLight moon;
-    moon.Direction             = MoonDirection;
-    moon.Color                 = MoonColor;
-    moon.Intensity             = MoonIntensity;
-    m_lights.AmbientColor      = SkyAmbient;
-    m_lights.DirectionalLights = {sun, moon};                          // the sun first: SunLightIndex
-    m_lights.Shadows           = {ShadowAreaCenter, ShadowAreaRadius}; // every light casts shadows on the ground
+    // A sun and a moon; the settings put them where the time of day has them and give them their light
+    // (ApplySettings, below).
+    m_lights.DirectionalLights = {DirectionalLight{}, DirectionalLight{}}; // SunLightIndex, then MoonLightIndex
 
     // The ground and the shapes go to GPU-only memory once; Create waits until they are there.
     state.GroundShape         = MakeFlatHeightField(GroundSize, GroundSize, GroundCells, GroundCells);
@@ -654,11 +623,21 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     m_cameraController.Update(GetActiveCamera(), frameSeconds);
 
     // The world moves on by the time this frame took, as fast as the settings say, unless paused: the cube turns, the
-    // balls fall, bounce and roll.
+    // balls fall, bounce and roll, and the day runs on, moving sun and moon and changing the light.
     if (!m_isPaused)
     {
-        m_state->Physics.Step(frameSeconds * m_settings.TimeSpeed);
+        const float worldSeconds = frameSeconds * m_settings.TimeSpeed;
+        m_state->Physics.Step(worldSeconds);
+        if (m_settings.IsDayRunning)
+        {
+            m_settings.TimeOfDayHours =
+                AdvanceTimeOfDay(m_settings.TimeOfDayHours, worldSeconds, m_settings.DayLengthMinutes);
+            ApplySkySettings();
+        }
     }
+
+    // The sun's rays and glow and the stars move a little in real time, paused or not, like the camera.
+    m_skySeconds = std::fmod(m_skySeconds + frameSeconds, SkyLoopSeconds);
 
     // A new window size, or a swapchain the system no longer finds fitting: make it again before drawing. While the
     // user drags the window's edge this happens every few frames, so the picture follows the edge.
@@ -708,13 +687,11 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     RecordShadows(commandBuffer, scene.Lighting, scene.ShadowPipeline, objects);
     renderer.BeginScene();
 
-    // The sky first: it tests no depth, so everything after it is drawn in front. Without a sun light it is not drawn.
+    // The sky first: it tests no depth, so everything after it is drawn in front. Sun and moon are its own disks
+    // (they sink behind the ground whole), not their light on the scene.
     MeshPushConstants pushConstants;
     pushConstants.ViewProjection = camera.GetViewProjection();
-    if (SunLightIndex < m_lights.DirectionalLights.size())
-    {
-        scene.Sky.Draw(commandBuffer, pushConstants.ViewProjection, m_lights.DirectionalLights[SunLightIndex]);
-    }
+    scene.Sky.Draw(commandBuffer, pushConstants.ViewProjection, m_skySun, m_skyMoon, m_skySeconds);
 
     // The depth test sorts out which is in front, so the order of ground and shapes does not matter.
     for (const SceneObject& object : objects)
@@ -758,45 +735,46 @@ void Wotah::App::ShowUi(float frameSeconds)
 
 void Wotah::App::ApplySettings()
 {
-    const SceneSettings& settings = m_settings;
+    ApplySkySettings();
+    ApplyPhysicsSettings();
+}
 
-    // The light: the sun (always at SunLightIndex) where the settings put it, the sky's light, shadows on or off. The
-    // lower the sun, the more air its light crosses: it dims and reddens (MakeSunlightThroughAir), and the sky, lit by
-    // it, gives less light too, so a low sun darkens the whole scene, the upright faces it shines on included. The
-    // scene's sun color and sky light are their look at the start height, so the share is measured against that.
-    const float     elevation  = glm::radians(settings.SunElevationDegrees);
-    const glm::vec3 throughAir = MakeSunlightThroughAir(elevation) / MakeSunlightThroughAir(SunElevation);
+void Wotah::App::ApplySkySettings()
+{
+    // The sky's lights at this time of day (render/sky_lights.hpp): sun and moon where the clock has them, with their
+    // light, the moon's disk for the sky, the sky's light, the haze and the light the ground throws back.
+    SkyLightSettings sky;
+    sky.TimeOfDayHours        = m_settings.TimeOfDayHours;
+    sky.NoonElevation         = glm::radians(m_settings.SunNoonHeightDegrees);
+    sky.SunBrightness         = m_settings.SunBrightness;
+    sky.MoonBrightness        = m_settings.MoonBrightness;
+    sky.SkyLight              = m_settings.SkyLight;
+    const SkyLights skyLights = MakeSkyLights(sky);
 
-    // The eye gets used to less light and makes up for part of the loss: it sees the light's drop in brightness as its
-    // square root (a guess, by eye). So a sun on the horizon, which keeps about a twentieth of the start's brightness,
-    // looks about a quarter as bright: dim and red, not black. The color keeps the air's reddening in full.
-    const float     dimming  = GetBrightness(throughAir);
-    const float     seen     = std::sqrt(dimming);
-    const glm::vec3 sunColor = dimming > 0.0f ? SunColor * throughAir * (seen / dimming) : glm::vec3(0.0f);
-    if (SunLightIndex < m_lights.DirectionalLights.size())
+    std::vector<DirectionalLight>& lights = m_lights.DirectionalLights;
+    if (SunLightIndex < lights.size())
     {
-        DirectionalLight& sun = m_lights.DirectionalLights[SunLightIndex];
-        sun.Direction         = MakeLightDirection(glm::radians(settings.SunAzimuthDegrees), elevation);
-        sun.Color             = sunColor;
-        sun.Intensity         = settings.SunBrightness;
+        lights[SunLightIndex] = skyLights.Sun;
     }
+    if (MoonLightIndex < lights.size())
+    {
+        lights[MoonLightIndex] = skyLights.Moon;
+    }
+    m_skySun              = skyLights.SunDisk;
+    m_skyMoon             = skyLights.MoonDisk;
+    m_lights.AmbientColor = skyLights.AmbientColor;
+    m_lights.GroundBounce = skyLights.GroundBounce;
+    m_lights.HazeColor    = skyLights.HazeColor;
+    m_lights.Shadows      = m_settings.HasShadows ? ShadowArea{ShadowAreaCenter, ShadowAreaRadius} : ShadowArea{};
+}
 
-    // The sky fades with the sun as the eye sees it, but keeps at least its twilight share: the whole sky stays bright
-    // for a while around sunset, after the sun's own light has gone.
-    const float skyShare  = std::max(seen, TwilightSkyShare);
-    m_lights.AmbientColor = SkyAmbient * settings.SkyLight * skyShare;
-    m_lights.Shadows      = settings.HasShadows ? ShadowArea{ShadowAreaCenter, ShadowAreaRadius} : ShadowArea{};
-
-    // The grass throws part of the light falling on it back up: the sun's (as squarely as it falls on flat ground) and
-    // the sky's. Upright sides get half of it and undersides all, so they are not lit by the sky alone; most of all
-    // with the sun high, as at noon, when it shines past upright sides and they would look nearly black.
-    const glm::vec3 sunOnGround = sunColor * settings.SunBrightness * std::max(std::sin(elevation), 0.0f);
-    m_lights.GroundBounce       = GrassReflectance * (sunOnGround + m_lights.AmbientColor);
-
-    // The physics: gravity, the balls' surface, the cube's turn. Time speed and field of view are read every frame.
-    State&      state       = *m_state;
-    BodySurface ballSurface = RubberSurface;
-    ballSurface.Bounciness  = settings.BallBounciness;
+void Wotah::App::ApplyPhysicsSettings()
+{
+    // Gravity, the balls' surface, the cube's turn. Time speed and field of view are read every frame.
+    const SceneSettings& settings    = m_settings;
+    State&               state       = *m_state;
+    BodySurface          ballSurface = RubberSurface;
+    ballSurface.Bounciness           = settings.BallBounciness;
     const bool isApplied =
         state.Physics.SetGravity(settings.Gravity) && state.Physics.SetSurface(state.BallBody, ballSurface) &&
         state.Physics.SetSurface(state.DroppedBallBody, ballSurface) &&

@@ -83,6 +83,11 @@ namespace Wotah
          * it facing straight down, half on upright sides, none facing up. 0 by default, leaving AmbientColor alone.
          */
         glm::vec3 GroundBounce{0.0f};
+        /**
+         * The color far things fade into, the air's haze: by default the day sky's pale blue at the horizon
+         * (shaders/atmosphere.glsl, HorizonColor), so the ground meets the sky; darker at dusk and at night.
+         */
+        glm::vec3 HazeColor{0.62f, 0.78f, 0.94f};
         /** The directional lights, at most MaxDirectionalLights. */
         std::vector<DirectionalLight> DirectionalLights;
         /**

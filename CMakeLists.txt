@@ -197,6 +197,10 @@ add_library(wotah STATIC
     source/render/shadow_maps.cpp
     source/render/sky.hpp
     source/render/sky.cpp
+    source/render/sky_clock.hpp
+    source/render/sky_clock.cpp
+    source/render/sky_lights.hpp
+    source/render/sky_lights.cpp
     source/render/swapchain.hpp
     source/render/swapchain.cpp
     source/render/ui_renderer.hpp

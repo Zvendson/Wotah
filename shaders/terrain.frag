@@ -2,7 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 // The ground (source/render/height_field.hpp): grass, lit like everything else, with a faint checker of 1-unit tiles
-// so movement shows, fading into the horizon's haze with distance.
+// so movement shows, fading into the air's haze with distance (its color follows the time of day).
 
 #include "atmosphere.glsl"
 #include "lighting.glsl"
@@ -28,5 +28,6 @@ void main()
     float contrast  = TileContrast * clamp(1.0 - footprint * 2.0, 0.0, 1.0);
     vec3  grass     = GrassColor * (1.0 + (parity * 2.0 - 1.0) * contrast);
 
-    outColor = vec4(ApplyHaze(Light(grass, inWorldNormal, inWorldPosition, inViewDepth), inViewDepth), 1.0);
+    vec3 lit = Light(grass, inWorldNormal, inWorldPosition, inViewDepth);
+    outColor = vec4(ApplyHaze(lit, inViewDepth, sceneLights.hazeColor.rgb), 1.0);
 }

@@ -26,6 +26,8 @@ add_executable(wotah_tests
     mesh_data_tests.cpp
     mesh_tests.cpp
     physics_tests.cpp
+    sky_clock_tests.cpp
+    sky_lights_tests.cpp
     ui_tests.cpp
     utils_tests.cpp
     vulkan_utils_tests.cpp

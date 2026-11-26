@@ -74,6 +74,8 @@ namespace
         glm::vec4 Ambient{0.0f};
         /** rgb: the light the ground throws back up (SceneLights::GroundBounce); a unused. */
         glm::vec4 GroundBounce{0.0f};
+        /** rgb: the color far things fade into (SceneLights::HazeColor); a unused. */
+        glm::vec4 HazeColor{0.0f};
         /** x: how many directional lights are used; yzw unused, so the next member starts 16-byte aligned. */
         std::array<uint32_t, 4> Count{};
         /** Where each cascade ends, along the camera's view (MakeCascadeEnds); 0 everywhere without shadows. */
@@ -90,8 +92,8 @@ namespace
     static_assert(Wotah::ShadowCascadeCount == 4, "CascadeEnds and CascadeTexels hold one cascade per vec4 component");
     static_assert(sizeof(GpuDirectionalLight) == 48 + 64 * Wotah::ShadowCascadeCount);
     static_assert(offsetof(GpuDirectionalLight, CascadeViews) == 48);
-    static_assert(offsetof(GpuSceneLights, Directional) == 96);
-    static_assert(sizeof(GpuSceneLights) == 96 + sizeof(GpuDirectionalLight) * Wotah::MaxDirectionalLights);
+    static_assert(offsetof(GpuSceneLights, Directional) == 112);
+    static_assert(sizeof(GpuSceneLights) == 112 + sizeof(GpuDirectionalLight) * Wotah::MaxDirectionalLights);
 
     /**
      * The share of a cascade at its far end where it blends into the next one, so the change of map pixel size shows
@@ -163,6 +165,7 @@ namespace
         const CascadeAreas cascades = MakeCascades(lights, camera, packed);
         packed.Ambient              = glm::vec4(lights.AmbientColor, 0.0f);
         packed.GroundBounce         = glm::vec4(lights.GroundBounce, 0.0f);
+        packed.HazeColor            = glm::vec4(lights.HazeColor, 0.0f);
         packed.Count[0]             = static_cast<uint32_t>(lights.DirectionalLights.size()); // checked above
         for (std::size_t index = 0; index < lights.DirectionalLights.size(); ++index)
         {

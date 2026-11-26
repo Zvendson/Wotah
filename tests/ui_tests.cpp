@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <ostream> // doctest prints a failed string_view check through it, and MSVC needs it whole for that
 #include <string_view>
 
@@ -494,8 +495,8 @@ TEST_SUITE("ui")
         HeadlessUi headless;
         REQUIRE(headless.Create());
         headless.HasSettings                       = true;
-        headless.Defaults.SunAzimuthDegrees        = 90.0f;
-        headless.Defaults.SunElevationDegrees      = 45.0f;
+        headless.Defaults.TimeOfDayHours           = 9.0f;
+        headless.Defaults.SunNoonHeightDegrees     = 60.0f;
         headless.Defaults.Gravity                  = 9.8f;
         headless.Defaults.BallBounciness           = 0.6f;
         headless.Defaults.CubeTurnDegreesPerSecond = 36.0f;
@@ -507,8 +508,8 @@ TEST_SUITE("ui")
         REQUIRE(window != nullptr);
         const ImVec2& padding = ImGui::GetStyle().WindowPadding;
 
-        // Down the sliders' column, just inside its right end: the first click that lands on a slider is the sun's
-        // direction, which jumps to nearly its most. Nothing else changes.
+        // Down the sliders' column, just inside its right end: the first click that lands on a slider is the time of
+        // day (the sky's tab is open first), which jumps to nearly midnight. Nothing else changes.
         const float sliderX = window->Pos.x + window->Size.x - padding.x - ButtonInset;
         const float bottom  = window->Pos.y + window->Size.y;
         for (float y = window->Pos.y + padding.y; y < bottom && !headless.SettingsChanged; y += ScanStep)
@@ -516,18 +517,78 @@ TEST_SUITE("ui")
             headless.Click({sliderX, y});
         }
         REQUIRE(headless.SettingsChanged);
-        CHECK(headless.Settings.SunAzimuthDegrees > 300.0f);
-        CHECK(IsNear(headless.Settings.SunElevationDegrees, headless.Defaults.SunElevationDegrees));
+        CHECK(headless.Settings.TimeOfDayHours > 22.0f);
+        CHECK(IsNear(headless.Settings.SunNoonHeightDegrees, headless.Defaults.SunNoonHeightDegrees));
         CHECK(IsNear(headless.Settings.Gravity, headless.Defaults.Gravity));
 
         // Reset to defaults, the button in the bottom-left corner, puts it back.
         headless.SettingsChanged = false;
         headless.Click({window->Pos.x + padding.x + ButtonInset, bottom - padding.y - ButtonInset});
         CHECK(headless.SettingsChanged);
-        CHECK(IsNear(headless.Settings.SunAzimuthDegrees, headless.Defaults.SunAzimuthDegrees));
+        CHECK(IsNear(headless.Settings.TimeOfDayHours, headless.Defaults.TimeOfDayHours));
 
         // The window keeps the mouse, so dragging a slider never turns the camera.
         CHECK(headless.Ui.OnInput(MakeWheelStep({sliderX, bottom - padding.y - ButtonInset})));
+    }
+
+    TEST_CASE("the settings window's tabs: Physics shows the physics' sliders, the window staying in its corner")
+    {
+        HeadlessUi headless;
+        REQUIRE(headless.Create());
+        headless.HasSettings               = true;
+        headless.Defaults.TimeOfDayHours   = 9.0f;
+        headless.Defaults.Gravity          = 9.8f;
+        headless.Defaults.DayLengthMinutes = 10.0f;
+        headless.Settings                  = headless.Defaults;
+        headless.RunFrames();
+
+        const ImGuiWindow* window = ImGui::FindWindowByName(Wotah::SettingsWindowTitle);
+        REQUIRE(window != nullptr);
+        const ImVec2& padding   = ImGui::GetStyle().WindowPadding;
+        const float   skyHeight = window->Size.y;
+
+        // Row by row from the top, left to right: the header and its line take no clicks, the Sky tab is open already,
+        // so the first click that changes the window is on the Physics tab, which has fewer rows. No setting changes.
+        bool isSwitched = false;
+        for (float y = window->Pos.y + padding.y; y < window->Pos.y + skyHeight && !isSwitched; y += ScanStep)
+        {
+            for (float x = window->Pos.x + padding.x; x < window->Pos.x + window->Size.x && !isSwitched; x += ScanStep)
+            {
+                headless.Click({x, y});
+                isSwitched = window->Size.y != skyHeight || headless.SettingsChanged;
+            }
+        }
+        REQUIRE(isSwitched);
+        CHECK_FALSE(headless.SettingsChanged);
+        CHECK(window->Size.y < skyHeight);
+
+        // Still in the bottom-left corner: it shrank downwards.
+        const float height = static_cast<float>(ScreenSize.Height);
+        CHECK(std::abs(window->Pos.y + window->Size.y - (height - Wotah::CardMargin)) <= PixelSlack);
+
+        // Its first slider is gravity: a click at its right end sets nearly the most; the sky's settings stay.
+        const float sliderX = window->Pos.x + window->Size.x - padding.x - ButtonInset;
+        for (float y = window->Pos.y + padding.y; y < window->Pos.y + window->Size.y && !headless.SettingsChanged;
+             y += ScanStep)
+        {
+            headless.Click({sliderX, y});
+        }
+        REQUIRE(headless.SettingsChanged);
+        CHECK(headless.Settings.Gravity > 20.0f);
+        CHECK(IsNear(headless.Settings.TimeOfDayHours, headless.Defaults.TimeOfDayHours));
+    }
+
+    TEST_CASE("the time of day reads as a 24-hour clock, wrapping past midnight")
+    {
+        CHECK(std::string_view(Wotah::MakeClockText(6.5f).data()) == "06:30");
+        CHECK(std::string_view(Wotah::MakeClockText(0.0f).data()) == "00:00");
+        CHECK(std::string_view(Wotah::MakeClockText(12.0f).data()) == "12:00");
+        CHECK(std::string_view(Wotah::MakeClockText(23.999f).data()) == "23:59");
+        CHECK(std::string_view(Wotah::MakeClockText(24.0f).data()) == "00:00");
+        CHECK(std::string_view(Wotah::MakeClockText(25.25f).data()) == "01:15");
+        CHECK(std::string_view(Wotah::MakeClockText(-1.0f).data()) == "23:00");
+        CHECK(std::string_view(Wotah::MakeClockText(std::numeric_limits<float>::quiet_NaN()).data()) == "00:00");
+        CHECK(std::string_view(Wotah::MakeClockText(std::numeric_limits<float>::infinity()).data()) == "00:00");
     }
 
     TEST_CASE("the pause button reads Resume while paused, keeps its width so the bar does not jump, and still works")

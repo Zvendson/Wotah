@@ -16,6 +16,7 @@ layout(std140, set = 0, binding = 0) uniform SceneLights
 {
     vec4             ambient;       // rgb: the light reaching every surface
     vec4             groundBounce;  // rgb: the light the ground throws back up, reaching surfaces that face down
+    vec4             hazeColor;     // rgb: the color far things fade into (atmosphere.glsl, ApplyHaze)
     uvec4            count;         // x: how many directional lights are used
     vec4             cascadeEnds;   // where each cascade ends, along the camera's view
     vec4             cascadeTexels; // world units per map pixel in each cascade

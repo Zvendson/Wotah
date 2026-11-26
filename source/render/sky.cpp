@@ -1,6 +1,6 @@
 /**
  * @file sky.cpp
- * The sky's pipeline, and what it hands its shaders: the inverse camera and the sun.
+ * The sky's pipeline, and what it hands its shaders: the inverse camera, the sun, the moon and the clock.
  */
 #include "render/sky.hpp"
 
@@ -11,8 +11,8 @@
 #include <glm/vec4.hpp>
 #include <vulkan/vulkan.h>
 
-#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 
 namespace
@@ -33,10 +33,14 @@ namespace
     {
         /** Clip space back to world space: undoes the camera, so each pixel knows its direction. */
         glm::mat4 InverseViewProjection{1.0f};
-        /** xyz: towards the sun, length 1. */
+        /** xyz: towards the sun, length 1; w: the sky's clock in seconds, 0 up to SkyLoopSeconds. */
         glm::vec4 TowardsSun{0.0f, 1.0f, 0.0f, 0.0f};
-        /** rgb: the sun's color. */
-        glm::vec4 SunColor{1.0f};
+        /** rgb: the sun's light as it reaches the scene, color times intensity. */
+        glm::vec4 SunLight{1.0f};
+        /** xyz: towards the moon, length 1. */
+        glm::vec4 TowardsMoon{0.0f, -1.0f, 0.0f, 0.0f};
+        /** rgb: the moon's disk, tint times brightness; without any, the shader draws no moon. */
+        glm::vec4 MoonLight{0.0f};
     };
 
     // Every GPU offers at least 128 bytes of push constants (Vulkan spec, "Required Limits", maxPushConstantsSize).
@@ -48,6 +52,27 @@ namespace
 
     /** Below this squared length a direction counts as zero. */
     constexpr float NearlyZeroSquared = 1.0e-12f;
+
+    /** Towards a light, length 1, or fallback for a light without a direction. */
+    glm::vec4 MakeTowards(const Wotah::DirectionalLight& light, const glm::vec4& fallback)
+    {
+        if (glm::dot(light.Direction, light.Direction) < NearlyZeroSquared)
+        {
+            return fallback;
+        }
+        return glm::vec4(-glm::normalize(light.Direction), 0.0f);
+    }
+
+    /** The sky's clock: seconds wrapped into 0 up to SkyLoopSeconds; 0 for a value that is not a number. */
+    float WrapSkySeconds(float seconds)
+    {
+        if (!std::isfinite(seconds))
+        {
+            return 0.0f;
+        }
+        const float wrapped = std::fmod(seconds, Wotah::SkyLoopSeconds);
+        return wrapped < 0.0f ? wrapped + Wotah::SkyLoopSeconds : wrapped;
+    }
 } // namespace
 
 bool Wotah::Sky::Create(const Device& device, VkFormat colorFormat, VkFormat depthFormat)
@@ -68,19 +93,21 @@ void Wotah::Sky::Destroy()
     m_pipeline.Destroy();
 }
 
-void Wotah::Sky::Draw(VkCommandBuffer commandBuffer, const glm::mat4& viewProjection, const DirectionalLight& sun) const
+void Wotah::Sky::Draw(VkCommandBuffer commandBuffer, const glm::mat4& viewProjection, const DirectionalLight& sun,
+                      const DirectionalLight& moon, float seconds) const
 {
+    // A light without a direction keeps its place: the sun up, the moon down.
     SkyPushConstants pushConstants;
     pushConstants.InverseViewProjection = glm::inverse(viewProjection);
-    if (glm::dot(sun.Direction, sun.Direction) >= NearlyZeroSquared) // a light without a direction keeps the sun up
-    {
-        pushConstants.TowardsSun = glm::vec4(-glm::normalize(sun.Direction), 0.0f);
-    }
-    // The disk and its glow show the light's color at full strength: however little light the sun gives (low over the
-    // horizon, its light is dim and red), the disk itself is far too bright for a screen, so only its tint changes. A
-    // light without any color stays black.
-    const float strongest  = std::max({sun.Color.r, sun.Color.g, sun.Color.b});
-    pushConstants.SunColor = glm::vec4(strongest > 0.0f ? sun.Color / strongest : sun.Color, 1.0f);
+    pushConstants.TowardsSun            = MakeTowards(sun, pushConstants.TowardsSun);
+    pushConstants.TowardsSun.w          = WrapSkySeconds(seconds);
+    pushConstants.TowardsMoon           = MakeTowards(moon, pushConstants.TowardsMoon);
+
+    // The shader makes the disk far brighter than this light and lets it build up towards white, so a day sun shows
+    // white-hot and a low sun's dim, red light an orange-red disk; a switched-off sun shows none. The moon's disk is
+    // drawn from its own tint and brightness.
+    pushConstants.SunLight  = glm::vec4(sun.Color * sun.Intensity, 1.0f);
+    pushConstants.MoonLight = glm::vec4(moon.Color * moon.Intensity, 1.0f);
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline.GetHandle());
     vkCmdPushConstants(commandBuffer, m_pipeline.GetLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants),
