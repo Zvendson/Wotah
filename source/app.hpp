@@ -10,6 +10,7 @@
 
 #include "input/camera_controller.hpp"
 #include "input/input_dispatcher.hpp"
+#include "input/scene_shortcuts.hpp"
 #include "platform/window.hpp"
 #include "render/camera.hpp"
 #include "render/device.hpp"
@@ -104,8 +105,8 @@ namespace Wotah
         [[nodiscard]] bool DrawFrame(float frameSeconds);
 
         /**
-         * Puts this frame's UI together (the stats window and the control bar), for a frame of frameSeconds, at the
-         * swapchain's size, and does what was clicked in it.
+         * Puts this frame's UI together (the stats window, the controls' hints and the control bar), for a frame of
+         * frameSeconds, at the swapchain's size, and does what was clicked in it.
          */
         void ShowUi(float frameSeconds);
 
@@ -113,8 +114,8 @@ namespace Wotah
         void ApplyClicks(const ControlBarClicks& clicks);
 
         /**
-         * Puts the scene back as it started: a new physics world with the ground, the cube at its first turn and both
-         * balls where they began. A failure is logged; the scene then lacks what could not be made.
+         * Puts the scene back as it started, at once and without making anything again: the cube at its first turn,
+         * turning, and both balls where they began, standing still. A failure is logged.
          */
         void ResetScene();
 
@@ -158,6 +159,9 @@ namespace Wotah
 
         /** Flies the active camera: W A S D, Space, Shift, the right mouse button to turn, the wheel, and F. */
         CameraController m_cameraController;
+
+        /** The scene's keys: R resets the scene. */
+        SceneShortcuts m_sceneShortcuts;
 
         /** The input the drawing thread took from the window this frame; kept, so it does not allocate again. */
         std::vector<InputEvent> m_frameInput;

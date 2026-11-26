@@ -2,7 +2,7 @@
  * @file physics_tests.cpp
  * The physics world (physics/physics_world.hpp): gravity, landing and resting on the ground, bouncing, balls pushing
  * each other, a box to land on, the turning kinematic cube, steps that do not depend on the frame rate, smooth blending
- * for drawing, a world made again from the start, and refused input. No GPU needed.
+ * for drawing, a world made again from the start, bodies placed back at once, and refused input. No GPU needed.
  */
 #include "physics/physics_world.hpp"
 
@@ -317,6 +317,52 @@ TEST_SUITE("physics")
         const glm::vec3 rest = GetPosition(world, *again);
         CHECK(std::abs(rest.y - BallRadius) < RestingSlack);
         CHECK(glm::length(glm::vec2(rest.x, rest.z)) < RestingSlack);
+    }
+
+    TEST_CASE("placing a body puts it there at once and stops it, so a ball placed back falls as the first time")
+    {
+        // The program's Reset scene: the balls go back where they started, in the same world.
+        Wotah::PhysicsWorld world;
+        SetUpWorld(world, true);
+        const glm::vec3                    start{0.0f, 5.0f, 0.0f};
+        const std::optional<Wotah::BodyId> ball = world.AddSphere(BallRadius, MakeBall(start));
+        REQUIRE(ball.has_value());
+        Run(world, 0.5f);
+        const glm::vec3 halfwayFirst = GetPosition(world, *ball);
+        Run(world, 2.0f); // it lands and rests on the floor
+
+        // Drawn right at the start, with no slide from the floor, and standing still.
+        world.Step(Wotah::PhysicsStepSeconds * 0.5f); // half a step carried over: drawing blends the last two steps
+        REQUIRE(world.PlaceBody(*ball, start, glm::quat(1.0f, 0.0f, 0.0f, 0.0f)));
+        CHECK(glm::length(GetPosition(world, *ball) - start) < 1.0e-6f);
+        CHECK(glm::length(*world.FindVelocity(*ball)) < 1.0e-6f);
+
+        // It falls as it did the first time; the floor's contact from its rest leaves no trace.
+        world.Step(Wotah::PhysicsStepSeconds * 0.5f); // the carried half step completes the first step
+        Run(world, 0.5f - Wotah::PhysicsStepSeconds);
+        CHECK(glm::length(GetPosition(world, *ball) - halfwayFirst) < 1.0e-3f);
+
+        // A kinematic body loses its velocity too; static and unknown bodies and bad places are refused.
+        Wotah::BodySettings turning;
+        turning.Motion                             = Wotah::BodyMotion::Kinematic;
+        turning.Position                           = {3.0f, 0.5f, 0.0f};
+        const std::optional<Wotah::BodyId> spinner = world.AddBox(glm::vec3(0.5f), turning);
+        REQUIRE(spinner.has_value());
+        REQUIRE(world.SetVelocity(*spinner, glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f)));
+        Run(world, 0.1f);
+        REQUIRE(world.PlaceBody(*spinner, turning.Position, turning.Rotation));
+        Run(world, 0.1f);
+        CHECK(glm::length(GetPosition(world, *spinner) - turning.Position) < 1.0e-6f);
+
+        Wotah::BodySettings fixedBox;
+        fixedBox.Motion                          = Wotah::BodyMotion::Static;
+        const std::optional<Wotah::BodyId> fixed = world.AddBox(glm::vec3(0.5f), fixedBox);
+        REQUIRE(fixed.has_value());
+        const glm::quat noTurn(1.0f, 0.0f, 0.0f, 0.0f);
+        CHECK_FALSE(world.PlaceBody(*fixed, start, noTurn));
+        CHECK_FALSE(world.PlaceBody(Wotah::BodyId{}, start, noTurn));
+        CHECK_FALSE(world.PlaceBody(*ball, glm::vec3(std::numeric_limits<float>::quiet_NaN()), noTurn));
+        CHECK_FALSE(world.PlaceBody(*ball, start, glm::quat(0.0f, 0.0f, 0.0f, 0.0f)));
     }
 
     TEST_CASE("bad bodies, steps and ids are refused, and several worlds live side by side")

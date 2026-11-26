@@ -15,7 +15,7 @@
 namespace Wotah
 {
     /** The control bar's name in ImGui; a card shows no title. */
-    inline constexpr const char* ControlBarName = "Controls";
+    inline constexpr const char* ControlBarName = "Control bar";
 
     /** What was clicked in the control bar this frame. */
     struct ControlBarClicks

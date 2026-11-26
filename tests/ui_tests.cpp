@@ -12,6 +12,7 @@
 #include "test_utils.hpp"
 #include "ui/card.hpp"
 #include "ui/control_bar.hpp"
+#include "ui/hints_window.hpp"
 #include "ui/stats_window.hpp"
 #include "ui/theme.hpp"
 #include "ui/user_interface.hpp"
@@ -34,8 +35,8 @@ using Wotah::Testing::MakeKeyEvent;
 
 namespace
 {
-    /** The window the UI is laid out in, in pixels: the program's size. */
-    constexpr Wotah::WindowSize ScreenSize{600, 600};
+    /** The window the UI is laid out in, in pixels: the program's at the start (app.cpp, MainWindowSize). */
+    constexpr Wotah::WindowSize ScreenSize{1280, 720};
 
     /** One frame at 60 frames a second. */
     constexpr float FrameSeconds = 1.0f / 60.0f;
@@ -174,6 +175,9 @@ namespace
         bool                 HasTextField = false;
         std::array<char, 32> FieldText{};
 
+        /** Whether the frames show the hints window. */
+        bool HasHints = false;
+
         /** Whether the frames show the control bar, whether it shows the world paused, and what was clicked in it. */
         bool                    HasControlBar = false;
         bool                    IsPaused      = false;
@@ -198,7 +202,7 @@ namespace
             return HasRenderer;
         }
 
-        /** Runs UI frames with the stats window and, when wanted, the control bar and the text field window. */
+        /** Runs UI frames: the stats window and, when wanted, the hints, the control bar and the text field window. */
         void RunFrames(int count = SettleFrames)
         {
             const Wotah::FrameStats stats;
@@ -206,6 +210,10 @@ namespace
             {
                 Ui.BeginFrame(ScreenSize, ScreenSize, FrameSeconds);
                 Wotah::ShowStatsWindow(stats);
+                if (HasHints)
+                {
+                    Wotah::ShowHintsWindow();
+                }
                 if (HasControlBar)
                 {
                     NoteClicks(Wotah::ShowControlBar(IsPaused));
@@ -424,6 +432,33 @@ TEST_SUITE("ui")
 
         // The bar keeps the mouse, so clicks on it never reach the camera.
         CHECK(headless.Ui.OnInput(MakeWheelStep(middle)));
+    }
+
+    TEST_CASE(
+        "the program's three cards fit its window: stats top left, hints top right, the bar below, none overlapping")
+    {
+        HeadlessUi headless;
+        REQUIRE(headless.Create());
+        headless.HasHints      = true;
+        headless.HasControlBar = true;
+        headless.RunFrames();
+
+        const ImGuiWindow* stats = ImGui::FindWindowByName(Wotah::StatsWindowTitle);
+        const ImGuiWindow* hints = ImGui::FindWindowByName(Wotah::HintsWindowTitle);
+        const ImGuiWindow* bar   = ImGui::FindWindowByName(Wotah::ControlBarName);
+        REQUIRE(stats != nullptr);
+        REQUIRE(hints != nullptr);
+        REQUIRE(bar != nullptr);
+
+        // The hints sit in the top-right corner, a card's margin in.
+        const float width = static_cast<float>(ScreenSize.Width);
+        CHECK(std::abs(hints->Pos.x + hints->Size.x - (width - Wotah::CardMargin)) <= PixelSlack);
+        CHECK(std::abs(hints->Pos.y - Wotah::CardMargin) <= PixelSlack);
+
+        // Side by side at the top with room between them, and both well above the bar.
+        CHECK(stats->Pos.x + stats->Size.x + Wotah::CardMargin <= hints->Pos.x);
+        CHECK(stats->Pos.y + stats->Size.y + Wotah::CardMargin <= bar->Pos.y);
+        CHECK(hints->Pos.y + hints->Size.y + Wotah::CardMargin <= bar->Pos.y);
     }
 
     TEST_CASE("the pause button reads Resume while paused, keeps its width so the bar does not jump, and still works")

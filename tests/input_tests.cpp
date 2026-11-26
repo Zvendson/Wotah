@@ -1,12 +1,13 @@
 /**
  * @file input_tests.cpp
- * CameraController and InputDispatcher with made-up events: movement per key, turning, zooming, the F key, focus loss,
- * and a pretend UI in front of the camera.
+ * CameraController, SceneShortcuts and InputDispatcher with made-up events: movement per key, turning, zooming, the F
+ * key, the R key, focus loss, and a pretend UI in front of the camera.
  */
 #include "input/camera_controller.hpp"
 #include "input/input_dispatcher.hpp"
 #include "input/input_event.hpp"
 #include "input/input_handler.hpp"
+#include "input/scene_shortcuts.hpp"
 #include "render/camera.hpp"
 #include "test_utils.hpp"
 
@@ -292,5 +293,38 @@ TEST_SUITE("input")
         controller.Update(camera, 1.0f);
         CHECK(ui.Seen.size() == seenAfterRemove);
         CHECK_FALSE(IsNear(camera.GetPosition(), beforeRelease));
+    }
+    TEST_CASE(
+        "R asks once to reset the scene, also when held; behind a UI text field that has the keyboard it never does")
+    {
+        Wotah::SceneShortcuts shortcuts;
+        CHECK_FALSE(shortcuts.TakeResetRequest());
+        CHECK(shortcuts.OnInput(MakeKeyEvent(Wotah::KeyCode::R, true)));
+        CHECK(shortcuts.TakeResetRequest());
+        CHECK_FALSE(shortcuts.TakeResetRequest()); // answered once
+
+        // Held, the system repeats R, but that is no new press.
+        Wotah::InputEvent repeated = MakeKeyEvent(Wotah::KeyCode::R, true);
+        repeated.IsRepeat          = true;
+        CHECK(shortcuts.OnInput(repeated));
+        CHECK_FALSE(shortcuts.TakeResetRequest());
+
+        // Other keys and letting go of R go on to the handlers after it.
+        CHECK_FALSE(shortcuts.OnInput(MakeKeyEvent(Wotah::KeyCode::W, true)));
+        CHECK_FALSE(shortcuts.OnInput(MakeKeyEvent(Wotah::KeyCode::R, false)));
+        CHECK_FALSE(shortcuts.TakeResetRequest());
+
+        // In the program's order, UI, camera, scene keys: the camera lets R through, a typing UI keeps it.
+        FakeUi                  ui;
+        Wotah::CameraController camera;
+        Wotah::InputDispatcher  dispatcher;
+        dispatcher.AddHandler(ui);
+        dispatcher.AddHandler(camera);
+        dispatcher.AddHandler(shortcuts);
+        dispatcher.Dispatch(MakeKeyEvent(Wotah::KeyCode::R, true));
+        CHECK(shortcuts.TakeResetRequest());
+        ui.IsTyping = true;
+        dispatcher.Dispatch(MakeKeyEvent(Wotah::KeyCode::R, true));
+        CHECK_FALSE(shortcuts.TakeResetRequest());
     }
 }

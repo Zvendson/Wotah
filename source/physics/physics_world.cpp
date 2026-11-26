@@ -1,7 +1,7 @@
 /**
  * @file physics_world.cpp
  * The physics world on top of Jolt Physics 5.6: starting Jolt once for every world, the layers that say what collides
- * with what, adding bodies, fixed steps, and blending the last two steps for drawing.
+ * with what, adding and placing bodies, fixed steps, and blending the last two steps for drawing.
  */
 #include "physics/physics_world.hpp"
 
@@ -190,13 +190,17 @@ namespace
         return std::isfinite(vector.x) && std::isfinite(vector.y) && std::isfinite(vector.z);
     }
 
+    /** Whether a place and a rotation are numbers, and the rotation names one (it is not a zero quaternion). */
+    bool IsUsablePlace(const glm::vec3& position, const glm::quat& rotation)
+    {
+        return IsFinite(position) && std::isfinite(rotation.w) && IsFinite({rotation.x, rotation.y, rotation.z}) &&
+               glm::dot(rotation, rotation) >= NearlyZeroSquared;
+    }
+
     /** Whether a body's start fits: a place and a rotation that are numbers, a rotation that names one. */
     bool AreSettingsUsable(const Wotah::BodySettings& settings)
     {
-        const glm::quat& rotation = settings.Rotation;
-        const bool       isUsable = IsFinite(settings.Position) && std::isfinite(rotation.w) &&
-                                    IsFinite({rotation.x, rotation.y, rotation.z}) &&
-                                    glm::dot(rotation, rotation) >= NearlyZeroSquared;
+        const bool isUsable = IsUsablePlace(settings.Position, settings.Rotation);
         if (!isUsable)
         {
             Wotah::Logger::Error("A body needs a position and a rotation made of numbers");
@@ -408,6 +412,27 @@ bool Wotah::PhysicsWorld::SetVelocity(BodyId body, const glm::vec3& moving, cons
     JPH::BodyInterface& bodies = m_state->System.GetBodyInterfaceNoLock();
     bodies.SetLinearAndAngularVelocity(tracked->Id, ToJolt(moving), ToJolt(spinning));
     bodies.ActivateBody(tracked->Id); // a resting body would ignore it until woken
+    return true;
+}
+
+bool Wotah::PhysicsWorld::PlaceBody(BodyId body, const glm::vec3& position, const glm::quat& rotation)
+{
+    State::TrackedBody* tracked = m_state ? m_state->Find(body) : nullptr;
+    if (tracked == nullptr || tracked->Motion == BodyMotion::Static || !IsUsablePlace(position, rotation))
+    {
+        Logger::Error("Only a known moving body can be placed, at a place and a turn made of numbers");
+        return false;
+    }
+    const glm::quat     turn   = glm::normalize(rotation);
+    JPH::BodyInterface& bodies = m_state->System.GetBodyInterfaceNoLock();
+    bodies.SetPositionAndRotation(tracked->Id, JPH::RVec3(ToJolt(position)), ToJolt(turn), JPH::EActivation::Activate);
+    bodies.SetLinearAndAngularVelocity(tracked->Id, JPH::Vec3::sZero(), JPH::Vec3::sZero());
+
+    // Both steps the drawing blends between show the new place, so the body does not slide there from the old one.
+    tracked->PreviousPosition = position;
+    tracked->PreviousRotation = turn;
+    tracked->Position         = position;
+    tracked->Rotation         = turn;
     return true;
 }
 

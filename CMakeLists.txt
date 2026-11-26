@@ -167,6 +167,8 @@ add_library(wotah STATIC
     source/input/input_dispatcher.cpp
     source/input/input_event.hpp
     source/input/input_handler.hpp
+    source/input/scene_shortcuts.hpp
+    source/input/scene_shortcuts.cpp
     source/physics/physics_world.hpp
     source/physics/physics_world.cpp
     source/platform/window.hpp
@@ -207,6 +209,8 @@ add_library(wotah STATIC
     source/ui/card.cpp
     source/ui/control_bar.hpp
     source/ui/control_bar.cpp
+    source/ui/hints_window.hpp
+    source/ui/hints_window.cpp
     source/ui/stats_window.hpp
     source/ui/stats_window.cpp
     source/ui/theme.hpp

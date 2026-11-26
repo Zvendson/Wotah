@@ -5,8 +5,8 @@
  * sun in the east casting the shadows, as on a clear day (the moon is up but too faint to show). Gravity and collisions
  * come from the physics world (Jolt). Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the
  * shapes are Meshes on the GPU, camera and object matrices come in as push constants, and the lights through a uniform
- * buffer with every light's shadow map beside it. Over the scene lie a small stats window and a control bar (Dear
- * ImGui) that pauses the world and resets the scene or the camera.
+ * buffer with every light's shadow map beside it. Over the scene lie a small stats window, a list of the controls and a
+ * control bar (Dear ImGui) that pauses the world and resets the scene or the camera; R resets the scene too.
  */
 #include "app.hpp"
 
@@ -23,6 +23,7 @@
 #include "render/swapchain.hpp"
 #include "render/ui_renderer.hpp"
 #include "ui/control_bar.hpp"
+#include "ui/hints_window.hpp"
 #include "ui/stats_window.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -76,8 +77,11 @@ static constexpr uint32_t ShadowVertexShader[] = {
 #include "shadow.vert.inc"
 };
 
-/** The window's size in pixels. */
-static constexpr Wotah::WindowSize MainWindowSize{600, 600};
+/**
+ * The window's size at the start, in pixels: 1280 x 720 (HD, 16:9). It fits on nearly every screen, small 1366 x 768
+ * laptops too, and leaves the scene room beside the UI's cards.
+ */
+static constexpr Wotah::WindowSize MainWindowSize{1280, 720};
 
 /** The window's title and the application name Vulkan is told. */
 static constexpr const char* AppName = "Vulkan Cube";
@@ -332,6 +336,11 @@ struct Wotah::App::State
     Wotah::BodyId       BallBody;
     Wotah::BodyId       DroppedBallBody;
 
+    /** Where the cube and the balls started, so Reset scene can put them back. */
+    Wotah::BodySettings CubeStart;
+    Wotah::BodySettings BallStart;
+    Wotah::BodySettings DroppedBallStart;
+
     /** Draws the UI over the scene, last in every frame. */
     Wotah::UiRenderer UiRenderer;
 };
@@ -427,9 +436,11 @@ bool Wotah::App::Create()
     }
     m_focusViews.front() = corner;
 
-    // The UI is asked first and keeps what lands on its windows; the camera controller gets the rest.
+    // The UI is asked first and keeps what lands on its windows; the camera controller and the scene's keys get the
+    // rest.
     m_input.AddHandler(m_ui);
     m_input.AddHandler(m_cameraController);
+    m_input.AddHandler(m_sceneShortcuts);
     return true;
 }
 
@@ -486,6 +497,11 @@ bool Wotah::App::CreatePhysics(const MeshData& groundMesh)
     state.CubeBody        = *cubeBody;
     state.BallBody        = *ballBody;
     state.DroppedBallBody = *droppedBody;
+
+    // Kept for Reset scene, which puts them back there.
+    state.CubeStart        = cube;
+    state.BallStart        = ball;
+    state.DroppedBallStart = dropped;
     return true;
 }
 
@@ -562,6 +578,10 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     if (m_cameraController.TakeFocusRequest())
     {
         FocusActiveCamera();
+    }
+    if (m_sceneShortcuts.TakeResetRequest())
+    {
+        ResetScene();
     }
     m_window.RequestCursorCaptured(m_cameraController.IsTurning());
     m_cameraController.Update(GetActiveCamera(), frameSeconds);
@@ -648,6 +668,7 @@ void Wotah::App::ShowUi(float frameSeconds)
 
     m_ui.BeginFrame(m_window.GetSize(), pictureSize, frameSeconds);
     ShowStatsWindow(stats);
+    ShowHintsWindow();
     const ControlBarClicks clicks = ShowControlBar(m_isPaused);
     m_ui.EndFrame();
 
@@ -672,9 +693,15 @@ void Wotah::App::ApplyClicks(const ControlBarClicks& clicks)
 
 void Wotah::App::ResetScene()
 {
-    // A new world is the exact start: Create replaces the old world with an empty one (physics/physics_world.hpp). The
-    // ground's collision shape is made again from its heights, a short hitch once per click.
-    if (!CreatePhysics(MakeTerrainMesh(m_state->GroundShape)))
+    // Only the moving bodies go back, in the world as it is: nothing is made again, so no frame waits for it (making
+    // the world again, ground included, held a frame up). The cube turns on from its first angle.
+    State&     state   = *m_state;
+    const bool isReset = state.Physics.PlaceBody(state.CubeBody, state.CubeStart.Position, state.CubeStart.Rotation) &&
+                         state.Physics.SetVelocity(state.CubeBody, glm::vec3(0.0f), CubeSpin) &&
+                         state.Physics.PlaceBody(state.BallBody, state.BallStart.Position, state.BallStart.Rotation) &&
+                         state.Physics.PlaceBody(state.DroppedBallBody, state.DroppedBallStart.Position,
+                                                 state.DroppedBallStart.Rotation);
+    if (!isReset)
     {
         Logger::Error("Could not reset the scene");
     }

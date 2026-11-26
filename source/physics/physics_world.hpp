@@ -136,6 +136,13 @@ namespace Wotah
         bool SetVelocity(BodyId body, const glm::vec3& moving, const glm::vec3& spinning);
 
         /**
+         * Puts a moving body at a place and turn at once and stops it, as if it had stood there all along: drawing does
+         * not slide it over from where it was. A kinematic body loses its velocity too; give it again with SetVelocity.
+         * False (and logged) for a static or unknown body, or a place or turn that is not made of numbers.
+         */
+        bool PlaceBody(BodyId body, const glm::vec3& position, const glm::quat& rotation);
+
+        /**
          * Lets the world run on by seconds (a frame's time): as many fixed steps as fit, the rest carried over to the
          * next call. At most MaxStepsPerCall steps per call, so a long stall does not freeze the program catching up;
          * the world then runs slower for a moment. Negative or not-a-number times are logged and ignored.

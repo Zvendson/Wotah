@@ -24,6 +24,7 @@
 #include "render/vulkan_utils.hpp"
 #include "test_utils.hpp"
 #include "ui/control_bar.hpp"
+#include "ui/hints_window.hpp"
 #include "ui/stats_window.hpp"
 #include "ui/user_interface.hpp"
 
@@ -33,6 +34,7 @@
 #include <glm/trigonometric.hpp>
 #include <glm/vec3.hpp>
 #include <imgui.h>
+#include <imgui_internal.h> // ImGui::FindWindowByName, to see where a card ended up
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
@@ -169,7 +171,7 @@ namespace
         Wotah::UiRenderer* Ui           = nullptr;
     };
 
-    /** The offscreen pictures' size and color format (DrawSceneOffscreen); the program's window is as large. */
+    /** The offscreen pictures' size and color format (DrawSceneOffscreen): square, with room for the UI's cards. */
     constexpr VkExtent2D OffscreenSize{600, 600};
     constexpr VkFormat   OffscreenColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
 
@@ -705,7 +707,7 @@ namespace
         return count;
     }
 
-    /** One UI frame of the program: the stats window and the control bar, laid out and drawn at size. */
+    /** One UI frame of the program: the stats window, the hints and the control bar, laid out and drawn at size. */
     void ShowUiFrame(Wotah::UserInterface& ui, const Wotah::WindowSize& size)
     {
         constexpr float   FrameSeconds = 1.0f / 60.0f;
@@ -714,6 +716,7 @@ namespace
         stats.PictureHeight = size.Height;
         ui.BeginFrame(size, size, FrameSeconds);
         Wotah::ShowStatsWindow(stats);
+        Wotah::ShowHintsWindow();
         (void)Wotah::ShowControlBar(false); // nothing is clicked in these tests
         ui.EndFrame();
     }
@@ -1622,14 +1625,17 @@ TEST_SUITE("gpu")
         CHECK(IsColorNear(GetPixel(pixels, PanelPixelX, PanelPixelY), panel.x * panel.w + throughPart,
                           panel.y * panel.w + throughPart, panel.z * panel.w + throughPart));
 
-        // Along the panel's row, coming in from the background on the right, the first light pixel is the window's
-        // border: well lighter than the panel inside it (55 against 22 when measured). Just outside it lies the shadow,
-        // darker than the background (18 to 21 against 26).
+        // Along the panel's row, coming in from the background right of the stats window (a card's margin past its
+        // edge, before the hints window), the first light pixel is its border: well lighter than the panel inside it
+        // (55 against 22 when measured). Just outside it lies the shadow, darker than the background (18 to 21 against
+        // 26).
+        const ImGuiWindow* statsWindow = ImGui::FindWindowByName(Wotah::StatsWindowTitle);
+        REQUIRE(statsWindow != nullptr);
         constexpr int BorderLift  = 25;
         constexpr int ShadowDepth = 4;
         const int     panelLevel  = GetPixel(pixels, PanelPixelX, PanelPixelY)[0];
         const int     background  = ToPixel(Background);
-        uint32_t      edge        = OffscreenSize.width - 1;
+        uint32_t      edge        = static_cast<uint32_t>(statsWindow->Pos.x + statsWindow->Size.x + Wotah::CardMargin);
         while (edge > PanelPixelX && GetPixel(pixels, edge, PanelPixelY)[0] < panelLevel + BorderLift)
         {
             --edge;
@@ -1638,10 +1644,12 @@ TEST_SUITE("gpu")
         CHECK(GetPixel(pixels, edge + 2, PanelPixelY)[0] <= background - ShadowDepth);
 
         // The text, drawn from the font pictures the UI renderer sent to the GPU: light pixels in the stats window's
-        // corner, and in the control bar's buttons at the bottom middle.
+        // corner, in the hints' corner, and in the control bar's buttons at the bottom middle.
         constexpr PixelArea StatsCorner{0, 0, 250, 250};
+        constexpr PixelArea HintsCorner{350, 0, 600, 250};
         constexpr PixelArea BottomMiddle{100, 500, 500, 600};
         CHECK(CountLightPixels(pixels, StatsCorner) > 100);
+        CHECK(CountLightPixels(pixels, HintsCorner) > 100);
         CHECK(CountLightPixels(pixels, BottomMiddle) > 100);
 
         // Away from the window the background stays as it was.
