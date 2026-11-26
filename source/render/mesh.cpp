@@ -79,13 +79,27 @@ void Wotah::Mesh::Destroy()
 
 void Wotah::Mesh::Draw(VkCommandBuffer commandBuffer) const
 {
+    MeshRange everything;
+    everything.IndexCount = m_indexCount;
+    Draw(commandBuffer, everything);
+}
+
+void Wotah::Mesh::Draw(VkCommandBuffer commandBuffer, const MeshRange& part) const
+{
     if (m_indexCount == 0)
     {
         return; // nothing uploaded: drawing would bind null buffers
+    }
+    // Inside the mesh and whole triangles, compared without adding up past 32 bits.
+    if (part.FirstIndex > m_indexCount || part.IndexCount > m_indexCount - part.FirstIndex || part.IndexCount % 3 != 0)
+    {
+        Logger::Error("A mesh part of {} indices from {} is not whole triangles inside the mesh's {}", part.IndexCount,
+                      part.FirstIndex, m_indexCount);
+        return;
     }
     const VkBuffer     vertexBuffer = m_vertices.GetHandle();
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(commandBuffer, m_indices.GetHandle(), 0, MeshIndexType);
-    vkCmdDrawIndexed(commandBuffer, m_indexCount, 1, 0, 0, 0);
+    vkCmdDrawIndexed(commandBuffer, part.IndexCount, 1, part.FirstIndex, 0, 0);
 }

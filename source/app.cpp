@@ -1,22 +1,23 @@
 /**
  * @file app.cpp
- * The application: a Vulkan 1.3 example scene, flat clear water over a sandy floor, and a blue ball dropped from the
- * air into it, under a clear sky the water mirrors. The day runs: the sun rises in the east, crosses the south and sets
- * in the west, lighting the scene and casting the shadows, and at night the full moon gives a faint blue light under
- * the stars. Gravity and collisions come from the physics world (Jolt); the water has no physics yet, so the ball
- * falls through it onto the floor. Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the
- * shapes are Meshes on the GPU, camera and object matrices come in as push constants, and the lights through a uniform
- * buffer with every light's shadow map beside it. Over the scene lie a small stats window, a list of the controls and
- * a control bar (Dear ImGui) that pauses the world and resets the scene or the camera; R resets the scene too. Tab
- * opens a settings window with sliders for the time of day and the day's run, sun, moon and sky, shadows, gravity,
- * time, the ball's bounce and the field of view.
+ * The application: a Vulkan 1.3 example scene, a sandy beach along a wandering coast with dunes and green hills
+ * behind it and the sea in front, both reaching the horizon in every direction, and a blue ball dropped from the air
+ * into the shallow water, under a clear sky the sea mirrors. The day runs: the sun rises in the east over the land,
+ * crosses the south and sets in the west over the sea, lighting the scene and casting the shadows, and at night the
+ * full moon gives a faint blue light under the stars. Gravity and collisions come from the physics world (Jolt); the
+ * water has no physics yet, so the ball falls through it onto the sand. Uses dynamic rendering (no VkRenderPass /
+ * VkFramebuffer) with a depth image; the ball is a Mesh on the GPU, land and sea are geometry clipmaps shaped by their
+ * shaders, camera and object matrices come in as push constants, and the lights through a uniform buffer with every
+ * light's shadow map beside it. Over the scene lie a small stats window, a list of the controls and a control bar (Dear
+ * ImGui) that pauses the world and resets the scene or the camera; R resets the scene too. Tab opens a settings window
+ * with sliders for the time of day and the day's run, sun, moon and sky, shadows, gravity, time, the ball's bounce and
+ * the field of view.
  */
 #include "app.hpp"
 
 #include "core/logger.hpp"
 #include "input/input_event.hpp"
 #include "physics/physics_world.hpp"
-#include "render/height_field.hpp"
 #include "render/lighting.hpp"
 #include "render/mesh.hpp"
 #include "render/mesh_data.hpp"
@@ -26,8 +27,11 @@
 #include "render/sky_clock.hpp"
 #include "render/sky_lights.hpp"
 #include "render/swapchain.hpp"
+#include "render/terrain_renderer.hpp"
 #include "render/ui_renderer.hpp"
 #include "render/water.hpp"
+#include "render/water_renderer.hpp"
+#include "terrain/terrain_shape.hpp"
 #include "ui/control_bar.hpp"
 #include "ui/hints_window.hpp"
 #include "ui/settings_window.hpp"
@@ -46,7 +50,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <numbers>
 #include <optional>
 #include <span>
 #include <stop_token>
@@ -65,16 +68,6 @@ static constexpr float MaxFrameSeconds = 0.1f;
 /** The vertex shader of every mesh (shaders/mesh.vert), compiled to SPIR-V by the build. */
 static constexpr uint32_t MeshVertexShader[] = {
 #include "mesh.vert.inc"
-};
-
-/** The water's fragment shader (shaders/water.frag), compiled to SPIR-V by the build. */
-static constexpr uint32_t WaterFragmentShader[] = {
-#include "water.frag.inc"
-};
-
-/** The ground's fragment shader (shaders/terrain.frag), compiled to SPIR-V by the build. */
-static constexpr uint32_t TerrainFragmentShader[] = {
-#include "terrain.frag.inc"
 };
 
 /** The ball's fragment shader (shaders/ball.frag), compiled to SPIR-V by the build. */
@@ -100,47 +93,42 @@ static constexpr const char* AppName = "Vulkan Cube";
 static constexpr VkClearColorValue BackgroundColor{{0.1f, 0.1f, 0.1f, 1.0f}};
 
 /**
- * Where the first camera stands: south-east of where the ball falls and 3.5 units above the water, looking down at the
- * water in front of it at a slant, so the floor shows through near by, the sky mirrors farther off, and the sky shows
- * above the horizon at the top of the picture.
+ * The land: the beach the default TerrainShape makes, its waterline through the origin, the sea to the west (-x),
+ * where the sun sets.
+ * The sea's surface lies at the beach's sea level.
  */
-static constexpr glm::vec3 StartCameraPosition{5.0f, 3.5f, 7.0f};
+static constexpr Wotah::TerrainShape LandShape{};
+static constexpr Wotah::Sea          SeaSurface{LandShape.SeaLevel};
 
-/** What the first camera looks at: a unit above the water where the ball falls in. */
-static constexpr glm::vec3 StartCameraTarget{0.0f, 1.0f, 0.0f};
+/**
+ * Where the first camera stands: over the dry beach, 4 units above the sand (as from a lifeguard's tower), looking
+ * west-south-west across the waterline into the shallow water where the ball falls in, with the coast running across
+ * the picture and the evening sun setting into the sea left of the middle.
+ */
+static constexpr glm::vec2 StartCameraSpot{12.0f, 14.0f};
+static constexpr float     StartCameraHeight = 4.0f;
+static constexpr glm::vec3 StartCameraTarget{-17.0f, 0.0f, 6.0f};
 
-/** The nearest and farthest distance the first camera sees. */
+/**
+ * The nearest and farthest distance the first camera sees: far enough for the land and sea to reach the haze, which
+ * hides everything past a few hundred units.
+ */
 static constexpr float StartCameraNear = 0.1f;
-static constexpr float StartCameraFar  = 200.0f; // sees the water to its far corners, 181 units off
+static constexpr float StartCameraFar  = 2000.0f;
 
 /**
- * The water: its surface at height 0 (shaders/terrain.frag's WaterLevel matches), 256 x 256 units around the origin,
- * so it reaches into the haze at the horizon all around, with a grid point every unit.
- *
- * shortcut: one even grid; waves near the camera will want a finer one there (and a coarser one far off), made when
- * waves come.
+ * The land the physics knows: a square of heights around the origin, 255 units across, one a unit (Jolt works best
+ * with a power of two to a side). shortcut: it covers where the ball can get to; once things travel far, the physics
+ * would take squares around each moving body as it goes.
  */
-static constexpr float            WaterLevel = 0.0f;
-static constexpr float            WaterSize  = 256.0f;
-static constexpr uint32_t         WaterCells = 256;
-static constexpr Wotah::WaterArea Water{{WaterSize, WaterSize}, WaterLevel};
+static constexpr uint32_t PhysicsLandSamples = 256;
+static constexpr float    PhysicsLandSpacing = 1.0f;
 
 /**
- * The floor under the water: 64 x 64 units around the origin, FloorDepth below the surface (shaders/water.frag's
- * FloorDepth and FloorHalfSize must match), a height point every half unit, so it can be shaped finely later. Flat
- * for now; past it the water is deep.
+ * Where shadow casters can stand: a sphere around the camera, wide enough for hills well beyond the shadows' reach
+ * (SceneLights::ShadowReach) to still throw their shadows into it when the sun is low.
  */
-static constexpr float    FloorDepth  = 3.0f;
-static constexpr float    GroundSize  = 64.0f;
-static constexpr uint32_t GroundCells = 128;
-
-/**
- * Where shadow casters can stand: a sphere around the water's middle that holds the whole floor (half its diagonal)
- * and room above and below it, for the ball falling in and lying on the floor.
- */
-static constexpr float     ShadowRoomAbove  = 5.0f;
-static constexpr float     ShadowAreaRadius = std::numbers::sqrt2_v<float> * GroundSize * 0.5f + ShadowRoomAbove;
-static constexpr glm::vec3 ShadowAreaCenter{0.0f};
+static constexpr float ShadowCasterRadius = 150.0f;
 
 /**
  * How far the shadow map's depths are pushed away from the light, so a lit surface does not shadow itself: 2 of the
@@ -152,23 +140,24 @@ static constexpr float ShadowDepthBiasConstant = 2.0f;
 static constexpr float ShadowDepthBiasSlope    = 2.0f;
 
 /**
- * The ball: half a unit across, dropped from 4 units above the water (its lowest point) where the start camera looks,
- * so it falls into the water in front of it. The water has no physics yet: it falls through onto the floor.
+ * The ball: half a unit across, dropped from 4 units above the sea (its lowest point) 16 units out from the waterline,
+ * where the water is about a unit deep, in front of the start camera. The water has no physics yet: it falls through
+ * onto the sand.
  */
 static constexpr float     BallRadius = 0.5f;
-static constexpr glm::vec2 BallSpot{0.0f, 0.0f};
+static constexpr glm::vec2 BallSpot{-16.0f, 0.0f};
 static constexpr float     BallDropHeight = 4.0f;
 
 /**
- * The surfaces, chosen by eye: the sandy floor grips and hardly bounces, the ball is like rubber. Two bodies in contact
- * bounce like the bouncier one, so the ball bounces on the floor.
+ * The surfaces, chosen by eye: sand grips and hardly bounces, the ball is like rubber. Two bodies in contact bounce
+ * like the bouncier one, so the ball bounces on the sand.
  */
 static constexpr Wotah::BodySurface SandSurface{0.8f, 0.1f};
 static constexpr Wotah::BodySurface RubberSurface{0.7f, 0.6f};
 
 /**
- * How fast the ball rolling on the floor slows down by itself, per second: the sand's rolling resistance, which the
- * physics has no other way to know. Chosen by testing: a ball knocked aside rolls a metre or two, not off the edge.
+ * How fast the ball rolling on the sand slows down by itself, per second: the sand's rolling resistance, which the
+ * physics has no other way to know. Chosen by testing: a ball knocked aside rolls a metre or two.
  */
 static constexpr float BallSpinDamping = 1.0f;
 static constexpr float BallMoveDamping = 0.2f;
@@ -181,9 +170,9 @@ static constexpr uint32_t BallRings    = 24;
 static constexpr float SunIntensity = 0.9f;
 
 /**
- * The day as the scene starts: 9 in the morning, the sun in the east-south-east about 38 degrees up, so the shapes'
- * shadows fall to the left of the start view; a day that reaches 60 degrees at noon (about 30 degrees north, as in
- * Cairo at an equinox) and lasts 10 minutes, so a sunset shows within a few minutes.
+ * The day as the scene starts: 9 in the morning, the sun in the east-south-east about 38 degrees up, behind the start
+ * view, so the shapes' shadows fall away from the camera; a day that reaches 60 degrees at noon (about 30 degrees
+ * north, as in Cairo at an equinox) and lasts 10 minutes, so a sunset shows within a few minutes.
  */
 static constexpr float StartHours        = 9.0f;
 static constexpr float NoonHeightDegrees = 60.0f;
@@ -259,21 +248,6 @@ static Wotah::PipelineSettings MakeMeshSettings(std::span<const uint32_t> fragme
     return settings;
 }
 
-/**
- * The water's pipeline: a mesh pipeline whose output lies over what is already drawn (BlendMode::Filtered: the water
- * says, per color, how much of it shows through), seen from both sides, depth tested but not written, so it never
- * hides anything drawn after it.
- */
-static Wotah::PipelineSettings MakeWaterSettings(VkFormat colorFormat, VkFormat depthFormat,
-                                                 std::span<const VkDescriptorSetLayout> setLayouts)
-{
-    Wotah::PipelineSettings settings = MakeMeshSettings(WaterFragmentShader, colorFormat, depthFormat, setLayouts);
-    settings.Blend                   = Wotah::BlendMode::Filtered;
-    settings.CullMode                = VK_CULL_MODE_NONE;
-    settings.DepthWrite              = false;
-    return settings;
-}
-
 /** The depth-only pipeline that draws every shadow caster into a light's shadow map: mesh vertices, no culling. */
 static Wotah::PipelineSettings MakeShadowSettings(VkFormat shadowFormat)
 {
@@ -304,11 +278,12 @@ struct SceneObject
 };
 
 /**
- * Records every shadow map of every light that casts shadows, each cascade: everything in objects drawn as that light
- * sees that cascade. Before the scene, outside its drawing.
+ * Records every shadow map of every light that casts shadows, each cascade: everything in objects, and the land within
+ * landReach of the camera, drawn as that light sees that cascade. Before the scene, outside its drawing.
  */
 static void RecordShadows(VkCommandBuffer commandBuffer, const Wotah::Lighting& lighting,
-                          const Wotah::Pipeline& shadowPipeline, std::span<const SceneObject> objects)
+                          const Wotah::Pipeline& shadowPipeline, std::span<const SceneObject> objects,
+                          const Wotah::TerrainRenderer& land, float landReach)
 {
     const Wotah::ShadowMaps& maps = lighting.GetShadowMaps();
     for (uint32_t layer = 0; layer < Wotah::MaxDirectionalLights * Wotah::ShadowCascadeCount; ++layer)
@@ -330,6 +305,7 @@ static void RecordShadows(VkCommandBuffer commandBuffer, const Wotah::Lighting& 
                                sizeof(pushConstants), &pushConstants);
             object.Mesh->Draw(commandBuffer);
         }
+        land.DrawShadow(commandBuffer, *lightView, landReach);
         maps.EndLayer(commandBuffer, layer);
     }
 }
@@ -363,21 +339,18 @@ struct Wotah::App::State
     /** The sky with the sun, drawn first in every frame. */
     Wotah::Sky Sky;
 
-    /** The pipelines: the floor (the ground's shader, sand under water), the blue ball, and the water over them. */
-    Wotah::Pipeline TerrainPipeline;
-    Wotah::Pipeline BallPipeline;
-    Wotah::Pipeline WaterPipeline;
+    /** The land and the sea, to the horizon around the camera. */
+    Wotah::TerrainRenderer Land;
+    Wotah::WaterRenderer   Sea;
 
-    /** Draws every shadow caster into the lights' shadow maps. */
+    /** The blue ball's pipeline and shape. */
+    Wotah::Pipeline BallPipeline;
+    Wotah::Mesh     Ball;
+
+    /** Draws every shape that casts a shadow into the lights' shadow maps (the land draws itself). */
     Wotah::Pipeline ShadowPipeline;
 
-    /** The floor's shape, and the floor, the ball and the water's surface on the GPU. */
-    Wotah::HeightField GroundShape;
-    Wotah::Mesh        Terrain;
-    Wotah::Mesh        Ball;
-    Wotah::Mesh        WaterSurface;
-
-    /** Gravity and collisions: the floor and the ball. */
+    /** Gravity and collisions: the land and the ball. */
     Wotah::PhysicsWorld Physics;
     Wotah::BodyId       BallBody;
 
@@ -424,11 +397,10 @@ bool Wotah::App::Create()
     const std::array<VkDescriptorSetLayout, 1> setLayouts{state.Lighting.GetSetLayout()};
     if (!state.BallPipeline.Create(m_device,
                                    MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat, setLayouts)) ||
-        !state.TerrainPipeline.Create(m_device,
-                                      MakeMeshSettings(TerrainFragmentShader, colorFormat, depthFormat, setLayouts)) ||
-        !state.WaterPipeline.Create(m_device, MakeWaterSettings(colorFormat, depthFormat, setLayouts)) ||
         !state.Sky.Create(m_device, colorFormat, depthFormat) ||
-        !state.ShadowPipeline.Create(m_device, MakeShadowSettings(state.Lighting.GetShadowMaps().GetFormat())))
+        !state.ShadowPipeline.Create(m_device, MakeShadowSettings(state.Lighting.GetShadowMaps().GetFormat())) ||
+        !state.Land.Create(m_device, colorFormat, depthFormat, state.Lighting) || !state.Land.SetShape(LandShape) ||
+        !state.Sea.Create(m_device, colorFormat, depthFormat, state.Lighting, state.Renderer.GetSceneDepth()))
     {
         return false;
     }
@@ -437,19 +409,8 @@ bool Wotah::App::Create()
     // (ApplySettings, below).
     m_lights.DirectionalLights = {DirectionalLight{}, DirectionalLight{}}; // SunLightIndex, then MoonLightIndex
 
-    // The floor FloorDepth under the water, the ball and the water's surface go to GPU-only memory once; Create waits
-    // until they are there.
-    state.GroundShape = MakeFlatHeightField(GroundSize, GroundSize, GroundCells, GroundCells);
-    std::ranges::fill(state.GroundShape.Heights, WaterLevel - FloorDepth);
-    const MeshData groundMesh = MakeTerrainMesh(state.GroundShape);
-    if (!state.Terrain.Create(m_device, groundMesh) ||
-        !state.Ball.Create(m_device, MakeSphere(BallRadius, BallSegments, BallRings)) ||
-        !state.WaterSurface.Create(m_device, MakeWaterMesh(Water, WaterCells)))
-    {
-        return false;
-    }
-
-    if (!CreatePhysics(groundMesh))
+    // The ball goes to GPU-only memory once; Create waits until it is there.
+    if (!state.Ball.Create(m_device, MakeSphere(BallRadius, BallSegments, BallRings)) || !CreatePhysics())
     {
         return false;
     }
@@ -460,10 +421,11 @@ bool Wotah::App::Create()
         return false;
     }
 
-    // The first camera looks down at the water where the ball falls in; Run keeps every active camera's aspect ratio
-    // in step with the image.
-    Camera& start = m_cameras.front();
-    start.SetPosition(StartCameraPosition);
+    // The first camera stands over the beach, at its height above the sand wherever that is, looking out to where the
+    // ball falls in; Run keeps every active camera's aspect ratio in step with the image.
+    Camera&     start  = m_cameras.front();
+    const float ground = GetTerrainHeight(LandShape, StartCameraSpot);
+    start.SetPosition({StartCameraSpot.x, ground + StartCameraHeight, StartCameraSpot.y});
     start.SetTarget(StartCameraTarget);
     if (!start.SetClipDistances(StartCameraNear, StartCameraFar))
     {
@@ -483,7 +445,7 @@ bool Wotah::App::Create()
     return true;
 }
 
-bool Wotah::App::CreatePhysics(const MeshData& groundMesh)
+bool Wotah::App::CreatePhysics()
 {
     State& state = *m_state;
     if (!state.Physics.Create())
@@ -491,27 +453,23 @@ bool Wotah::App::CreatePhysics(const MeshData& groundMesh)
         return false;
     }
 
-    // The floor collides exactly where it is drawn: the same triangles.
-    std::vector<glm::vec3> groundCorners;
-    groundCorners.reserve(groundMesh.Vertices.size());
-    for (const MeshVertex& vertex : groundMesh.Vertices)
-    {
-        groundCorners.push_back(vertex.Position);
-    }
-    if (!state.Physics.AddTriangles(groundCorners, groundMesh.Indices, SandSurface))
+    // The land collides where it is drawn: its heights from the same formula, around the origin.
+    const TerrainPatch land = SampleTerrainPatch(LandShape, glm::vec2(0.0f), PhysicsLandSpacing, PhysicsLandSamples);
+    const glm::vec3    corner{land.Corner.x, 0.0f, land.Corner.y};
+    if (!state.Physics.AddHeightField(land.Heights, land.SamplesPerSide, land.Spacing, corner, SandSurface))
     {
         return false;
     }
 
-    // The ball starts above the water, and the floor lies below that spot, so it lands on something.
-    const std::optional<float> waterHeight = FindWaterHeight(Water, BallSpot.x, BallSpot.y);
-    if (!waterHeight || !FindHeight(state.GroundShape, BallSpot.x, BallSpot.y))
+    // The ball starts above the sea, over land the physics knows, so it lands on something.
+    const std::optional<float> seaHeight = FindWaterHeight(SeaSurface, BallSpot.x, BallSpot.y);
+    if (!seaHeight)
     {
-        Logger::Error("The ball must start above the water and the floor");
+        Logger::Error("The ball must start above the sea");
         return false;
     }
     BodySettings ball;
-    ball.Position    = {BallSpot.x, *waterHeight + BallDropHeight + BallRadius, BallSpot.y};
+    ball.Position    = {BallSpot.x, *seaHeight + BallDropHeight + BallRadius, BallSpot.y};
     ball.Surface     = RubberSurface;
     ball.SpinDamping = BallSpinDamping;
     ball.MoveDamping = BallMoveDamping;
@@ -657,20 +615,24 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     // And the settings' field of view, also after F put a camera back to its focus view; the slider's range lies well
     // inside the 0 to 180 degrees a camera takes, so it always fits.
     (void)camera.SetFieldOfView(glm::radians(m_settings.FieldOfViewDegrees));
+    // Shadow casters stand around the camera, wherever it goes; land and sea follow it to the horizon.
+    const glm::vec3 viewer = camera.GetPosition();
+    m_lights.Shadows       = m_settings.HasShadows ? ShadowArea{viewer, ShadowCasterRadius} : ShadowArea{};
+    m_state->Land.FollowViewer(viewer);
+    m_state->Sea.FollowViewer(viewer);
+
     // The GPU is done with the last frame (BeginFrame waited for it), so the lights can be rewritten. Bad lights are
     // logged by Update and the last good ones stay, so the frame still draws.
     (void)m_state->Lighting.Update(m_lights, camera);
 
-    // What stands in the scene this frame: the floor where its heights say, the ball where the physics has it (always
-    // found: Create added it). The water is not one of them: it casts no shadow and is drawn last.
-    const std::array<SceneObject, 2> objects{{
-        {&scene.TerrainPipeline, &scene.Terrain, glm::mat4(1.0f)},
+    // The shapes in the scene this frame: the ball where the physics has it (always found: Create added it).
+    const std::array<SceneObject, 1> objects{{
         {&scene.BallPipeline, &scene.Ball, scene.Physics.FindTransform(scene.BallBody).value_or(glm::mat4(1.0f))},
     }};
 
     // Every light's shadow map first, as the scene's shaders read them all; then the scene itself.
     const VkCommandBuffer commandBuffer = renderer.GetCommandBuffer();
-    RecordShadows(commandBuffer, scene.Lighting, scene.ShadowPipeline, objects);
+    RecordShadows(commandBuffer, scene.Lighting, scene.ShadowPipeline, objects, scene.Land, ShadowCasterRadius);
     renderer.BeginScene();
 
     // The sky first: it tests no depth, so everything after it is drawn in front. Sun and moon are its own disks
@@ -679,16 +641,17 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     pushConstants.ViewProjection = camera.GetViewProjection();
     scene.Sky.Draw(commandBuffer, pushConstants.ViewProjection, m_lights.SkySun, m_lights.SkyMoon, m_lights.SkySeconds);
 
-    // The depth test sorts out which is in front, so the order of floor and ball does not matter.
+    // The land and the shapes; the depth test sorts out which is in front, so their order does not matter.
+    scene.Land.Draw(commandBuffer, pushConstants.ViewProjection, scene.Lighting);
     for (const SceneObject& object : objects)
     {
         pushConstants.Model = object.Model;
         DrawMesh(commandBuffer, *object.Pipeline, scene.Lighting, *object.Mesh, pushConstants);
     }
 
-    // The water last of the scene: what lies under it shows through it, so that must be drawn already.
-    pushConstants.Model = glm::mat4(1.0f);
-    DrawMesh(commandBuffer, scene.WaterPipeline, scene.Lighting, scene.WaterSurface, pushConstants);
+    // The sea last of the scene: what lies under it shows through it, as deep as the solid scene's depth says.
+    renderer.BeginSeeThrough();
+    scene.Sea.Draw(commandBuffer, pushConstants.ViewProjection, scene.Lighting, renderer.GetSceneDepth(), SeaSurface);
 
     // The UI last, so it lies over everything.
     return m_state->UiRenderer.Draw(commandBuffer) && renderer.EndFrame();
@@ -755,7 +718,6 @@ void Wotah::App::ApplySkySettings()
     m_lights.AmbientColor = skyLights.AmbientColor;
     m_lights.GroundBounce = skyLights.GroundBounce;
     m_lights.HazeColor    = skyLights.HazeColor;
-    m_lights.Shadows      = m_settings.HasShadows ? ShadowArea{ShadowAreaCenter, ShadowAreaRadius} : ShadowArea{};
 }
 
 void Wotah::App::ApplyPhysicsSettings()

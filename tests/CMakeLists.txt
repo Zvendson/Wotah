@@ -5,6 +5,8 @@
 # Shaders only the tests use: they exercise every pipeline option the example cube does not.
 set(TEST_SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 wotah_compile_shaders(TEST_SHADERS ${TEST_SHADER_OUT}
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ground_test.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/terrain_probe.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/water_test.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/water_test.frag)
 
@@ -18,6 +20,7 @@ add_executable(wotah_tests
     test_utils.hpp
     buffer_tests.cpp
     camera_tests.cpp
+    clipmap_tests.cpp
     gpu_tests.cpp
     height_field_tests.cpp
     input_tests.cpp
@@ -28,6 +31,7 @@ add_executable(wotah_tests
     physics_tests.cpp
     sky_clock_tests.cpp
     sky_lights_tests.cpp
+    terrain_shape_tests.cpp
     ui_tests.cpp
     utils_tests.cpp
     vulkan_utils_tests.cpp

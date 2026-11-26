@@ -30,10 +30,10 @@ namespace
     constexpr glm::vec3 SunColor{1.0f, 0.95f, 0.85f};
 
     /**
-     * How much of each color the grass throws back up: its color as drawn (shaders/terrain.frag, GrassColor), so the
-     * light bounced onto things matches the ground they stand on.
+     * How much of each color the ground throws back up: the beach's sand as drawn, between its dry and wet colors
+     * (shaders/terrain.frag, DrySandColor and WetSandColor), so the light bounced onto things matches the ground.
      */
-    constexpr glm::vec3 GrassReflectance{0.30f, 0.45f, 0.20f};
+    constexpr glm::vec3 GroundReflectance{0.65f, 0.58f, 0.45f};
 
     /**
      * The least share of its start light the sky gives while the sun is up: around sunset the whole sky stays bright
@@ -138,12 +138,12 @@ Wotah::SkyLights Wotah::MakeSkyLights(const SkyLightSettings& settings)
     const glm::vec3 evening = glm::mix(DayHazeColor, DuskHazeColor, GetSunsetShare(sunElevation));
     lights.HazeColor        = glm::mix(evening, NightHazeColor, night);
 
-    // The grass throws part of the light falling on it back up: the sun's and the moon's (as squarely as they fall on
+    // The ground throws part of the light falling on it back up: the sun's and the moon's (as squarely as they fall on
     // flat ground) and the sky's. Upright sides get half of it and undersides all, so they are not lit by the sky
     // alone; most of all with the sun high, as at noon, when it shines past upright sides and they would look nearly
     // black.
     const glm::vec3 sunOnGround  = lights.Sun.Color * settings.SunBrightness * std::max(std::sin(sunElevation), 0.0f);
     const glm::vec3 moonOnGround = MoonColor * lights.Moon.Intensity * std::max(std::sin(moonElevation), 0.0f);
-    lights.GroundBounce          = GrassReflectance * (sunOnGround + moonOnGround + lights.AmbientColor);
+    lights.GroundBounce          = GroundReflectance * (sunOnGround + moonOnGround + lights.AmbientColor);
     return lights;
 }

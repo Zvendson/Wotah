@@ -1,9 +1,9 @@
 /**
  * @file physics_tests.cpp
- * The physics world (physics/physics_world.hpp): gravity, landing and resting on the ground, bouncing, balls pushing
- * each other, a box to land on, the turning kinematic cube, steps that do not depend on the frame rate, smooth blending
- * for drawing, a world made again from the start, bodies placed back at once, gravity and surfaces changed, and
- * refused input. No GPU needed.
+ * The physics world (physics/physics_world.hpp): gravity, landing and resting on the ground (triangles or a grid of
+ * heights), bouncing, balls pushing each other, a box to land on, the turning kinematic cube, steps that do not depend
+ * on the frame rate, smooth blending for drawing, a world made again from the start, bodies placed back at once,
+ * gravity and surfaces changed, and refused input. No GPU needed.
  */
 #include "physics/physics_world.hpp"
 
@@ -14,10 +14,13 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <numbers>
 #include <optional>
+#include <span>
+#include <vector>
 
 namespace
 {
@@ -135,6 +138,54 @@ TEST_SUITE("physics")
         CHECK(lowest >= BallRadius - RestingSlack);
         CHECK(std::abs(GetPosition(world, *ball).y - BallRadius) <= RestingSlack);
         CHECK(glm::length(*world.FindVelocity(*ball)) < 0.05f);
+    }
+
+    TEST_CASE("ground from a grid of heights: a ball lands at the height there and rolls down its slope")
+    {
+        // A slope rising towards +x by 0.2 per unit, 64 x 64 samples a unit apart, its first corner at
+        // (-31.5, 1, -31.5): heights in rows from -z, each from -x, as TerrainPatch keeps them.
+        constexpr uint32_t Samples = 64;
+        constexpr float    Rise    = 0.2f;
+        const glm::vec3    corner{-31.5f, 1.0f, -31.5f};
+        std::vector<float> heights(std::size_t{Samples} * Samples);
+        for (uint32_t row = 0; row < Samples; ++row)
+        {
+            for (uint32_t column = 0; column < Samples; ++column)
+            {
+                heights[std::size_t{row} * Samples + column] = Rise * static_cast<float>(column);
+            }
+        }
+        Wotah::PhysicsWorld world;
+        REQUIRE(world.Create());
+        REQUIRE(world.AddHeightField(heights, Samples, 1.0f, corner, FloorSurface).has_value());
+
+        // Dropped over the middle, it lands on the slope and rolls downhill, towards -x, resting on the surface: its
+        // middle a radius from the slope, which is the radius times sqrt(1 + rise^2) straight above it.
+        const std::optional<Wotah::BodyId> ball = world.AddSphere(BallRadius, MakeBall({0.0f, 12.0f, 0.0f}));
+        REQUIRE(ball.has_value());
+        Run(world, 2.5f);
+        const glm::vec3 position = GetPosition(world, *ball);
+        const float     ground   = corner.y + Rise * (position.x - corner.x);
+        CHECK(position.x < -0.5f);
+        CHECK(position.x > corner.x); // still on the slope
+        CHECK(std::abs(position.y - BallRadius * std::sqrt(1.0f + Rise * Rise) - ground) < RestingSlack + 0.01f);
+    }
+
+    TEST_CASE("a height field needs heights that fit its count, at least 4 to a side, a spacing and numbers only")
+    {
+        Wotah::PhysicsWorld world;
+        REQUIRE(world.Create());
+        const std::array<float, 16> heights{};
+        CHECK(world.AddHeightField(heights, 4, 1.0f, glm::vec3(0.0f), FloorSurface).has_value());
+        CHECK_FALSE(world.AddHeightField(heights, 5, 1.0f, glm::vec3(0.0f), FloorSurface).has_value());
+        CHECK_FALSE(world.AddHeightField(std::span(heights).first(9), 3, 1.0f, glm::vec3(0.0f), FloorSurface));
+        CHECK_FALSE(world.AddHeightField(heights, 4, 0.0f, glm::vec3(0.0f), FloorSurface).has_value());
+        std::array<float, 16> broken{};
+        broken[5] = std::numeric_limits<float>::quiet_NaN();
+        CHECK_FALSE(world.AddHeightField(broken, 4, 1.0f, glm::vec3(0.0f), FloorSurface).has_value());
+
+        Wotah::PhysicsWorld notCreated;
+        CHECK_FALSE(notCreated.AddHeightField(heights, 4, 1.0f, glm::vec3(0.0f), FloorSurface).has_value());
     }
 
     TEST_CASE("a bouncy ball bounces back up, a dead one stays down")

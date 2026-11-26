@@ -1,12 +1,12 @@
 /**
  * @file physics_world.hpp
- * Gravity and collisions, on top of Jolt Physics: bodies (spheres, boxes, a fixed mesh of triangles such as the ground)
- * that fall, bounce, roll and push each other. One world unit is one metre, and y is up.
+ * Gravity and collisions, on top of Jolt Physics: bodies (spheres, boxes, fixed ground as triangles or as a grid of
+ * heights) that fall, bounce, roll and push each other. One world unit is one metre, and y is up.
  *
  *     Wotah::PhysicsWorld physics;
  *     if (physics.Create())
  *     {
- *         physics.AddTriangles(groundCorners, groundIndices, grass);  // fixed in place
+ *         physics.AddHeightField(heights, 256, 1.0f, corner, sand);   // fixed in place
  *         Wotah::BodySettings ball;
  *         ball.Position = {0.0f, 3.0f, 0.0f};                        // starts in the air
  *         const std::optional<Wotah::BodyId> id = physics.AddSphere(0.5f, ball);
@@ -128,6 +128,17 @@ namespace Wotah
          */
         [[nodiscard]] std::optional<BodyId> AddTriangles(std::span<const glm::vec3> corners,
                                                          std::span<const uint32_t> indices, const BodySurface& surface);
+
+        /**
+         * Adds fixed ground from heights on a square grid: samplesPerSide x samplesPerSide of them, spacing apart, the
+         * first at corner (its y is added to every height), row by row from -z to +z, each from -x to +x (as
+         * terrain/terrain_shape.hpp's TerrainPatch). Jolt keeps the heights packed to a few millimetres. Empty (and
+         * logged) for a count that does not fit the heights or is below 4, a spacing not above 0, a height that is not
+         * a number, or a full world.
+         */
+        [[nodiscard]] std::optional<BodyId> AddHeightField(std::span<const float> heights, uint32_t samplesPerSide,
+                                                           float spacing, const glm::vec3& corner,
+                                                           const BodySurface& surface);
 
         /**
          * Sets how fast a moving body moves (world units per second) and spins (radians per second around each axis);

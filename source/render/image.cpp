@@ -17,14 +17,18 @@
 namespace
 {
     /**
-     * The depth formats tried, most precise first. Vulkan requires D16_UNORM and at least one of X8_D24_UNORM_PACK32
-     * and D32_SFLOAT to work as depth attachments (Vulkan spec, "Required Format Support"), so one always fits.
+     * The depth formats tried, most precise first. Vulkan requires D16_UNORM to work as a depth attachment and to be
+     * sampled (Vulkan spec, "Required Format Support"), so one always fits.
      */
     constexpr std::array<VkFormat, 3> DepthFormats{
         VK_FORMAT_D32_SFLOAT,
         VK_FORMAT_X8_D24_UNORM_PACK32,
         VK_FORMAT_D16_UNORM,
     };
+
+    /** What a depth format must allow: being drawn into, and being read by shaders (Renderer::GetSceneDepth). */
+    constexpr VkFormatFeatureFlags DepthFeatures =
+        VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
 
     /** The part of an image a view of this format covers. */
     VkImageAspectFlags GetAspectOf(VkFormat format)
@@ -46,12 +50,12 @@ std::optional<VkFormat> Wotah::FindDepthFormat(const Device& device)
     {
         VkFormatProperties properties;
         vkGetPhysicalDeviceFormatProperties(device.GetGpu(), format, &properties);
-        if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0)
+        if ((properties.optimalTilingFeatures & DepthFeatures) == DepthFeatures)
         {
             return format;
         }
     }
-    Logger::Error("The GPU offers no depth format to draw into");
+    Logger::Error("The GPU offers no depth format to draw into and read");
     return std::nullopt;
 }
 

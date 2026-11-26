@@ -1,7 +1,7 @@
-// The sky, shared by the sky itself (sky.frag) and what mirrors it (water.frag): include atmosphere.glsl first, then
-// this (#include "sky.glsl"). GetSkyBehindSun gives the sky with its stars and the moon, GetSunLook what the sun adds;
-// AddLight puts the sun's light over the sky. Both take the camera's directions, so sun and moon stay round on the
-// picture (for a mirror image, the mirrored camera's directions).
+// The sky, shared by the sky itself (sky.frag) and what mirrors it (water.frag): include atmosphere.glsl and
+// noise.glsl first, then this (#include "sky.glsl"). GetSkyBehindSun gives the sky with its stars and the moon,
+// GetSunLook what the sun adds; AddLight puts the sun's light over the sky. Both take the camera's directions, so sun
+// and moon stay round on the picture (for a mirror image, the mirrored camera's directions).
 
 const float Pi           = 3.14159265;
 const float HourSeconds  = 3600.0; // the sky's clock repeats hourly: every movement turns whole times an hour
@@ -214,27 +214,6 @@ float Lobe(float angle, float sharpness)
     return pow(spread / (spread + 4.0 * sharpness * halfSine * halfSine), 1.5);
 }
 
-// Three well mixed numbers from three whole numbers: the pcg3d hash (Jarzynski and Olano 2020, "Hash Functions for GPU
-// Rendering").
-uvec3 Hash(uvec3 value)
-{
-    value = value * 1664525u + 1013904223u;
-    value.x += value.y * value.z;
-    value.y += value.z * value.x;
-    value.z += value.x * value.y;
-    value ^= value >> 16u;
-    value.x += value.y * value.z;
-    value.y += value.z * value.x;
-    value.z += value.x * value.y;
-    return value;
-}
-
-// Three numbers from 0 to 1 that belong to one cell of a grid, the same every time.
-vec3 GetCellRandom(vec3 cell, uint salt)
-{
-    return vec3(Hash(uvec3(ivec3(cell)) + salt)) / 4294967295.0;
-}
-
 // A value between -0.5 and 0.5 that changes from pixel to pixel without a visible pattern.
 float GetDither(vec2 pixel)
 {
@@ -266,7 +245,7 @@ float GetBrightest(vec3 color)
 }
 
 // Smooth noise from 0 to 1 over a plane, changing about once per unit (value noise: random numbers at whole places,
-// blended smoothly between them), the same every time.
+// blended smoothly between them), the same every time: the moon's face is made of it.
 float GetValueNoise(vec2 place, uint salt)
 {
     vec2  cell   = floor(place);
@@ -280,7 +259,7 @@ float GetValueNoise(vec2 place, uint salt)
 }
 
 // Value noise in three layers, each twice as fine and half as strong: coarse shapes with finer detail on them.
-float GetLayeredNoise(vec2 place, uint salt)
+float GetMoonNoise(vec2 place, uint salt)
 {
     float sum    = 0.0;
     float weight = 0.5;
@@ -353,9 +332,9 @@ vec3 GetStarLight(vec3 ray, float pixel, float seconds, float wash)
 float GetMoonAlbedo(vec2 across)
 {
     // Bend the disk with smooth noise, then lay the seas on it with frayed edges.
-    vec2  bend   = vec2(GetLayeredNoise(across * 2.0, 3u), GetLayeredNoise(across * 2.0 + 31.0, 4u)) - 0.5;
+    vec2  bend   = vec2(GetMoonNoise(across * 2.0, 3u), GetMoonNoise(across * 2.0 + 31.0, 4u)) - 0.5;
     vec2  place  = across + bend * MoonWarp;
-    float ragged = (GetLayeredNoise(across * 5.0, 5u) - 0.5) * MoonRagged;
+    float ragged = (GetMoonNoise(across * 5.0, 5u) - 0.5) * MoonRagged;
     float sea    = 0.0;
     for (int index = 0; index < MariaCount; ++index)
     {
@@ -363,7 +342,7 @@ float GetMoonAlbedo(vec2 across)
         float into = 1.0 - smoothstep(0.5, 1.2, length(place - mare.xy) / (mare.z * MariaSize) + ragged);
         sea        = max(sea, into * mare.w);
     }
-    float speckle = (GetLayeredNoise(across * 9.0, 6u) - 0.5) * MoonSpeckle;
+    float speckle = (GetMoonNoise(across * 9.0, 6u) - 0.5) * MoonSpeckle;
     float tycho   = TychoBright * (1.0 - smoothstep(0.0, Tycho.z, length(across - Tycho.xy)));
     return (1.0 - MariaDarkness * sea) * (1.0 + speckle) + tycho;
 }

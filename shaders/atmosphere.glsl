@@ -2,7 +2,9 @@
 // into the air's haze, and how a pixel finds the direction it looks in.
 
 const vec3  HorizonColor = vec3(0.62, 0.78, 0.94); // the day sky at the horizon: pale, hazy blue (the haze's day color)
-const float HazeDensity  = 0.012; // per world unit: a quarter faded at 24 units, half at 58 (the ground is 64 across)
+// How fast things fade into the haze, per world unit: a tenth at 50 units, half at 350, nearly all by 2 km, where the
+// camera's sight ends; a hazy summer day at the coast (a few kilometres of visibility), by eye.
+const float HazeDensity = 0.002;
 
 // A color seen through distance units of air: it fades into the haze's color (exponential fog). The haze follows the
 // time of day (SceneLights::HazeColor): HorizonColor by day, so the ground meets the sky, darker at dusk and night.

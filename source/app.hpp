@@ -27,7 +27,6 @@
 namespace Wotah
 {
     struct ControlBarClicks;
-    struct MeshData;
 
     /**
      * The window and everything Vulkan needs to draw into it.
@@ -85,10 +84,10 @@ namespace Wotah
 
     private:
         /**
-         * Starts the physics world: the floor from groundMesh and the ball in the air above the water; false (and
+         * Starts the physics world: the land around the origin and the ball in the air above the sea; false (and
          * logged) when that fails.
          */
-        [[nodiscard]] bool CreatePhysics(const MeshData& groundMesh);
+        [[nodiscard]] bool CreatePhysics();
 
         /** Shows the window; the first thing Run does. */
         void Start();
@@ -123,7 +122,7 @@ namespace Wotah
         /**
          * Puts the sky's settings into the lights (render/sky_lights.hpp): sun and moon where the time of day has
          * them, with their light, the moon's disk for the sky, the sky's light, the haze and the light the ground
-         * throws back, shadows on or off. Every frame while the day runs.
+         * throws back. Every frame while the day runs. (Shadows follow the camera; each frame sets them.)
          */
         void ApplySkySettings();
 

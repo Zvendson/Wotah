@@ -21,6 +21,7 @@ namespace Wotah
 {
     class Device;
     struct MeshData;
+    struct MeshRange;
 
     /**
      * A vertex and an index buffer in GPU-only memory. The destructor runs Destroy, so nothing leaks when Create fails
@@ -41,6 +42,12 @@ namespace Wotah
 
         /** Binds the buffers and draws every triangle into the command buffer; nothing before Create. */
         void Draw(VkCommandBuffer commandBuffer) const;
+
+        /**
+         * Binds the buffers and draws the triangles of a part; nothing before Create, and nothing (logged) for a part
+         * that is not whole triangles inside the mesh.
+         */
+        void Draw(VkCommandBuffer commandBuffer, const MeshRange& part) const;
 
         /** How many indices Draw draws: three per triangle; 0 before Create and after Destroy. */
         [[nodiscard]] uint32_t GetIndexCount() const noexcept { return m_indexCount; }

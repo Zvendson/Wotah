@@ -10,6 +10,7 @@
 // whole as they set, sink behind the ground and only then fade. Dithered, so gradients show no stripes.
 
 #include "atmosphere.glsl"
+#include "noise.glsl"
 #include "sky.glsl"
 
 layout(location = 0) in vec2 inScreenPosition;

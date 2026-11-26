@@ -1,8 +1,8 @@
 #version 450
 
-// Everything that casts shadows, drawn into a light's shadow map (source/render/shadow_maps.hpp): only where it is, as
-// the light sees it. Depth only, so there is no fragment shader. The same push constants and vertices as mesh.vert, with
-// the light's view of the shadow area in place of the camera.
+// Every shape that casts shadows, drawn into a light's shadow map (source/render/shadow_maps.hpp): only where it is,
+// as the light sees it. Depth only, so there is no fragment shader. The same push constants and vertices as mesh.vert,
+// with the light's view of the shadow area in place of the camera. The land has its own (terrain_shadow.vert).
 
 layout(location = 0) in vec3 inPosition; // in the mesh's own space
 

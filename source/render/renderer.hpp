@@ -3,7 +3,8 @@
  * Runs a frame: waits for the GPU, takes a swapchain image, records into a command buffer that draws into it (with a
  * depth image, so nearer surfaces hide farther ones) with dynamic rendering, submits the work and shows the image. What
  * is drawn stays with the caller. Between BeginFrame and BeginScene the frame can record its own passes first, such as
- * the shadow maps.
+ * the shadow maps. After the solid scene, BeginSeeThrough lets what lies over it (water) read how far the solid scene
+ * is behind each pixel.
  *
  *     Wotah::Renderer renderer;
  *     if (renderer.Create(device, swapchain))
@@ -15,6 +16,7 @@
  *             renderer.BeginScene();
  *             vkCmdBindPipeline(renderer.GetCommandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
  *             vkCmdDraw(renderer.GetCommandBuffer(), 3, 1, 0, 0);
+ *             renderer.BeginSeeThrough();  // optional: water and the like, reading renderer.GetSceneDepth()
  *             renderer.EndFrame();
  *         }
  *     }
@@ -23,6 +25,7 @@
 #pragma once
 
 #include "render/image.hpp"
+#include "render/scene_depth.hpp"
 
 #include <vulkan/vulkan_core.h>
 
@@ -60,8 +63,9 @@ namespace Wotah
         Renderer& operator=(const Renderer&) = delete;
 
         /**
-         * Creates the depth image, the command pool and buffer, the semaphores and the frame fence for the swapchain;
-         * false (and logged) when one fails. The device and the swapchain must outlive the renderer.
+         * Creates the depth image (which shaders can read, see GetSceneDepth), the command pool and buffer, the
+         * semaphores and the frame fence for the swapchain; false (and logged) when one fails. The device and the
+         * swapchain must outlive the renderer.
          */
         [[nodiscard]] bool Create(const Device& device, Swapchain& swapchain);
 
@@ -93,6 +97,16 @@ namespace Wotah
          */
         void BeginScene();
 
+        /**
+         * Ends the solid part of the scene and starts what lies over it (water, glass): the depth drawn so far stays
+         * the depth test but is no longer written, and fragment shaders can read it through GetSceneDepth. Pipelines
+         * drawn after it must not write depth. At most once per frame, after BeginScene; refused (logged) otherwise.
+         */
+        void BeginSeeThrough();
+
+        /** The solid scene's depth for shaders drawn after BeginSeeThrough; they bind it themselves. */
+        [[nodiscard]] const SceneDepth& GetSceneDepth() const noexcept { return m_sceneDepth; }
+
         /** The command buffer of the frame between BeginFrame and EndFrame. */
         [[nodiscard]] VkCommandBuffer GetCommandBuffer() const noexcept { return m_commandBuffer; }
 
@@ -109,6 +123,12 @@ namespace Wotah
         /** Frees the "drawn" semaphores. */
         void DestroyDrawnSemaphores() noexcept;
 
+        /**
+         * Begins a rendering into the frame's image and the depth image, with viewport and scissor covering all of
+         * it: the scene's first (both cleared, depth written) or the see-through one (both kept, depth only read).
+         */
+        void BeginRendering(bool isSeeThrough);
+
         /** The device and swapchain the renderer draws with; not owned. */
         VkDevice   m_device    = VK_NULL_HANDLE;
         VkQueue    m_queue     = VK_NULL_HANDLE;
@@ -119,6 +139,9 @@ namespace Wotah
         /** The depth of every pixel drawn this frame; one image, as only one frame is in flight. */
         Image m_depth;
 
+        /** The depth image as fragment shaders read it after BeginSeeThrough. */
+        SceneDepth m_sceneDepth;
+
         VkCommandPool            m_commandPool    = VK_NULL_HANDLE;
         VkCommandBuffer          m_commandBuffer  = VK_NULL_HANDLE;
         VkSemaphore              m_imageAvailable = VK_NULL_HANDLE; // signalled when the taken image can be written
@@ -128,7 +151,8 @@ namespace Wotah
         /** The swapchain image of the frame being recorded. */
         uint32_t m_imageIndex = 0;
 
-        /** Whether BeginScene ran in the frame being recorded. */
-        bool m_isSceneBegun = false;
+        /** Whether BeginScene and BeginSeeThrough ran in the frame being recorded. */
+        bool m_isSceneBegun      = false;
+        bool m_isSeeThroughBegun = false;
     };
 } // namespace Wotah

@@ -17,6 +17,7 @@
 #include <Jolt/Physics/Collision/BroadPhase/ObjectVsBroadPhaseLayerFilterTable.h>
 #include <Jolt/Physics/Collision/ObjectLayerPairFilterTable.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/PhysicsSystem.h>
@@ -398,6 +399,38 @@ std::optional<Wotah::BodyId> Wotah::PhysicsWorld::AddTriangles(std::span<const g
 
     // Many triangles added at once: Jolt finds them faster after sorting its broad phase again (Jolt docs).
     m_state->System.OptimizeBroadPhase();
+    return body;
+}
+
+std::optional<Wotah::BodyId> Wotah::PhysicsWorld::AddHeightField(std::span<const float> heights,
+                                                                 uint32_t samplesPerSide, float spacing,
+                                                                 const glm::vec3& corner, const BodySurface& surface)
+{
+    // Jolt groups samples in blocks of 2 (its default) and needs at least two blocks to a side.
+    constexpr uint32_t FewestSamples = 4;
+    const bool fits = samplesPerSide >= FewestSamples && heights.size() == std::size_t{samplesPerSide} * samplesPerSide;
+    const bool areNumbers = std::ranges::all_of(heights, [](float height) { return std::isfinite(height); });
+    if (!m_state || !fits || !areNumbers || !(spacing > 0.0f) || !std::isfinite(spacing) || !IsFinite(corner))
+    {
+        Logger::Error("A height field needs a created world, {} or more samples to a side that match the heights, a "
+                      "spacing above 0 and numbers only",
+                      FewestSamples);
+        return std::nullopt;
+    }
+
+    // Jolt's surface: corner + (x spacing, height, y spacing) for the sample at column x, row y, the same order.
+    JPH::HeightFieldShapeSettings shape(heights.data(), JPH::Vec3(corner.x, corner.y, corner.z),
+                                        JPH::Vec3(spacing, 1.0f, spacing), samplesPerSide);
+
+    // Each sample is packed against its block's lowest and highest; enough bits to stay within a few millimetres.
+    constexpr float PackingError = 0.005f;
+    shape.mBitsPerSample         = shape.CalculateBitsPerSampleForError(PackingError);
+
+    BodySettings settings;
+    settings.Motion                  = BodyMotion::Static;
+    settings.Surface                 = surface;
+    const std::optional<BodyId> body = m_state->AddBody(shape, settings);
+    m_state->System.OptimizeBroadPhase(); // as for triangles: the broad phase finds a large body faster when sorted
     return body;
 }
 

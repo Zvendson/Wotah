@@ -1,7 +1,7 @@
 /**
  * @file sky_lights.hpp
  * The lights the sky gives at a time of day: the sun's and the full moon's light on the scene, their disks as the sky
- * draws them, the sky's own light from all around, the light the grass throws back up, and the haze far ground fades
+ * draws them, the sky's own light from all around, the light the ground throws back up, and the haze far ground fades
  * into. The scene's colors are tuned for the sun 45 degrees up; a lower sun dims and reddens, and the night turns to a
  * faint blue moonlight. The disks the sky draws stay whole while they sink behind the ground, then fade out slowly
  * (render/sky_clock.hpp, GetDiskShowing); their light on the scene fades as they cross the horizon (GetHorizonShare),
@@ -72,7 +72,7 @@ namespace Wotah
         /** The sky's light reaching every surface from all around. */
         glm::vec3 AmbientColor{0.0f};
 
-        /** The light the grass throws back up (SceneLights::GroundBounce). */
+        /** The light the ground throws back up (SceneLights::GroundBounce). */
         glm::vec3 GroundBounce{0.0f};
 
         /** The color far ground fades into (SceneLights::HazeColor): the sky's color at the horizon. */

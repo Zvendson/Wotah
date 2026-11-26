@@ -21,8 +21,9 @@ namespace Wotah
     class Device;
 
     /**
-     * A depth format the GPU can draw depth into: 32-bit float when supported (the most precise), else 24 or 16 bits.
-     * Empty (and logged) when none works. Formats without stencil only, as nothing uses stencil yet.
+     * A depth format the GPU can draw depth into and shaders can read: 32-bit float when supported (the most
+     * precise), else 24 or 16 bits. Empty (and logged) when none works. Formats without stencil only, as nothing uses
+     * stencil yet.
      */
     [[nodiscard]] std::optional<VkFormat> FindDepthFormat(const Device& device);
 

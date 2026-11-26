@@ -38,6 +38,13 @@ namespace Wotah
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, Normal)},
     }};
 
+    /** A part of a mesh's triangles: IndexCount indices from FirstIndex on, three per triangle. */
+    struct MeshRange
+    {
+        uint32_t FirstIndex = 0;
+        uint32_t IndexCount = 0;
+    };
+
     /** A shape: its vertices, and three indices into them per triangle. */
     struct MeshData
     {

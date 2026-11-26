@@ -76,9 +76,12 @@ namespace
         glm::vec4 GroundBounce{0.0f};
         /** rgb: the color far things fade into (SceneLights::HazeColor); a unused. */
         glm::vec4 HazeColor{0.0f};
-        /** xyz: where the camera stands, for what looks different from each side (a mirror); w unused. */
+        /**
+         * xyz: where the camera stands, for what looks different from each side (a mirror); w: its nearest distance,
+         * for turning depth values back into distances.
+         */
         glm::vec4 CameraPosition{0.0f};
-        /** xyz: the way the camera looks, length 1; w unused. */
+        /** xyz: the way the camera looks, length 1; w: its farthest distance. */
         glm::vec4 CameraForward{0.0f, 0.0f, -1.0f, 0.0f};
         /** xyz: towards the sky's sun, length 1; w: the sky's clock in seconds (SceneLights::SkySeconds). */
         glm::vec4 SkySun{0.0f, 1.0f, 0.0f, 0.0f};
@@ -189,19 +192,21 @@ namespace
         packed.GroundBounce         = glm::vec4(lights.GroundBounce, 0.0f);
         packed.HazeColor            = glm::vec4(lights.HazeColor, 0.0f);
 
-        // The camera and the sky's disks, for mirrors. A camera looking at its own place keeps the default forward.
+        // The camera, for mirrors and for reading the depth image, and the sky's disks, for mirrors. A camera looking
+        // at its own place keeps the default forward.
         const glm::vec3 forward = camera.GetTarget() - camera.GetPosition();
-        packed.CameraPosition   = glm::vec4(camera.GetPosition(), 0.0f);
+        packed.CameraPosition   = glm::vec4(camera.GetPosition(), camera.GetNearDistance());
         if (glm::dot(forward, forward) >= NearlyZeroSquared)
         {
             packed.CameraForward = glm::vec4(glm::normalize(forward), 0.0f);
         }
-        const float seconds = std::isfinite(lights.SkySeconds) ? lights.SkySeconds : 0.0f;
-        packed.SkySun       = MakeTowards(lights.SkySun, packed.SkySun, seconds);
-        packed.SkySunLight  = glm::vec4(lights.SkySun.Color * lights.SkySun.Intensity, 0.0f);
-        packed.SkyMoon      = MakeTowards(lights.SkyMoon, packed.SkyMoon, 0.0f);
-        packed.SkyMoonLight = glm::vec4(lights.SkyMoon.Color * lights.SkyMoon.Intensity, 0.0f);
-        packed.Count[0]     = static_cast<uint32_t>(lights.DirectionalLights.size()); // checked above
+        packed.CameraForward.w = camera.GetFarDistance();
+        const float seconds    = std::isfinite(lights.SkySeconds) ? lights.SkySeconds : 0.0f;
+        packed.SkySun          = MakeTowards(lights.SkySun, packed.SkySun, seconds);
+        packed.SkySunLight     = glm::vec4(lights.SkySun.Color * lights.SkySun.Intensity, 0.0f);
+        packed.SkyMoon         = MakeTowards(lights.SkyMoon, packed.SkyMoon, 0.0f);
+        packed.SkyMoonLight    = glm::vec4(lights.SkyMoon.Color * lights.SkyMoon.Intensity, 0.0f);
+        packed.Count[0]        = static_cast<uint32_t>(lights.DirectionalLights.size()); // checked above
         for (std::size_t index = 0; index < lights.DirectionalLights.size(); ++index)
         {
             const Wotah::DirectionalLight& light = lights.DirectionalLights[index];

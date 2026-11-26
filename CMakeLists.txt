@@ -125,7 +125,8 @@ set(WOTAH_MAX_DIRECTIONAL_LIGHTS 8)
 # and the shaders (shaders/lighting.glsl).
 set(WOTAH_SHADOW_CASCADES 4)
 set(WOTAH_SHADER_INCLUDES ${WOTAH_SHADER_INCLUDE_DIR}/atmosphere.glsl ${WOTAH_SHADER_INCLUDE_DIR}/lighting.glsl
-    ${WOTAH_SHADER_INCLUDE_DIR}/sky.glsl)
+    ${WOTAH_SHADER_INCLUDE_DIR}/sky.glsl ${WOTAH_SHADER_INCLUDE_DIR}/noise.glsl
+    ${WOTAH_SHADER_INCLUDE_DIR}/clipmap.glsl ${WOTAH_SHADER_INCLUDE_DIR}/terrain_shape.glsl)
 function(wotah_compile_shaders out_var output_dir)
     set(outputs "")
     foreach(source ${ARGN})
@@ -151,7 +152,10 @@ wotah_compile_shaders(SHADERS ${SHADER_OUT}
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ball.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/fullscreen.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/sky.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/terrain.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/terrain.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/terrain_shadow.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/water.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/water.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow.vert)
 
@@ -179,6 +183,10 @@ add_library(wotah STATIC
     source/render/buffer.cpp
     source/render/camera.hpp
     source/render/camera.cpp
+    source/render/clipmap.hpp
+    source/render/clipmap.cpp
+    source/render/descriptor_set.hpp
+    source/render/descriptor_set.cpp
     source/render/device.hpp
     source/render/device.cpp
     source/render/height_field.hpp
@@ -195,6 +203,8 @@ add_library(wotah STATIC
     source/render/pipeline.cpp
     source/render/renderer.hpp
     source/render/renderer.cpp
+    source/render/scene_depth.hpp
+    source/render/scene_depth.cpp
     source/render/shadow_maps.hpp
     source/render/shadow_maps.cpp
     source/render/sky.hpp
@@ -205,6 +215,8 @@ add_library(wotah STATIC
     source/render/sky_lights.cpp
     source/render/swapchain.hpp
     source/render/swapchain.cpp
+    source/render/terrain_renderer.hpp
+    source/render/terrain_renderer.cpp
     source/render/ui_renderer.hpp
     source/render/ui_renderer.cpp
     source/render/vulkan_handles.hpp
@@ -213,6 +225,10 @@ add_library(wotah STATIC
     source/render/vulkan_utils.cpp
     source/render/water.hpp
     source/render/water.cpp
+    source/render/water_renderer.hpp
+    source/render/water_renderer.cpp
+    source/terrain/terrain_shape.hpp
+    source/terrain/terrain_shape.cpp
     source/ui/card.hpp
     source/ui/card.cpp
     source/ui/control_bar.hpp

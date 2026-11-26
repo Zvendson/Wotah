@@ -58,19 +58,23 @@ namespace
     };
 
     /**
-     * Before drawing, for the depth image: its old content is not needed, but the last frame's depth writes must be
-     * done before this frame's depth tests start (one depth image serves every frame). DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-     * also fits depth-only formats and needs no extra GPU feature, unlike DEPTH_ATTACHMENT_OPTIMAL.
+     * Before drawing, for the depth image: its old content is not needed, but the last frame's depth writes and
+     * shader reads must be done before this frame's depth tests start (one depth image serves every frame).
+     * DEPTH_STENCIL_ATTACHMENT_OPTIMAL also fits depth-only formats and needs no extra GPU feature, unlike
+     * DEPTH_ATTACHMENT_OPTIMAL.
      */
     constexpr LayoutChange ToDepthTarget{
         VK_IMAGE_LAYOUT_UNDEFINED,
         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         VK_IMAGE_ASPECT_DEPTH_BIT,
     };
+
+    /** The depth image's uses: drawn into, and read by shaders after BeginSeeThrough. */
+    constexpr VkImageUsageFlags DepthUsage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
     /** Depth cleared to the far plane (1.0 in Vulkan's 0..1 range), so every first fragment passes the LESS test. */
     constexpr float FarDepth = 1.0f;
@@ -119,11 +123,12 @@ bool Wotah::Renderer::Create(const Device& device, Swapchain& swapchain)
 
     // One depth image serves every frame (one frame in flight), as large as the swapchain's images.
     const std::optional<VkFormat> depthFormat = FindDepthFormat(device);
-    if (!depthFormat ||
-        !m_depth.Create(device, swapchain.GetExtent(), *depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))
+    if (!depthFormat || !m_depth.Create(device, swapchain.GetExtent(), *depthFormat, DepthUsage) ||
+        !m_sceneDepth.Create(device))
     {
         return false;
     }
+    m_sceneDepth.Point(m_depth);
 
     // The command buffer is reset and recorded again every frame.
     VkCommandPoolCreateInfo poolInfo =
@@ -173,6 +178,7 @@ void Wotah::Renderer::Destroy()
         vkDestroySemaphore(m_device, m_imageAvailable, nullptr);
         vkDestroyCommandPool(m_device, m_commandPool, nullptr); // frees the command buffer too
     }
+    m_sceneDepth.Destroy();
     m_depth.Destroy();
 
     m_device         = VK_NULL_HANDLE;
@@ -182,9 +188,10 @@ void Wotah::Renderer::Destroy()
     m_commandBuffer  = VK_NULL_HANDLE;
     m_imageAvailable = VK_NULL_HANDLE;
     m_renderFinished.clear();
-    m_frameFence   = VK_NULL_HANDLE;
-    m_imageIndex   = 0;
-    m_isSceneBegun = false;
+    m_frameFence        = VK_NULL_HANDLE;
+    m_imageIndex        = 0;
+    m_isSceneBegun      = false;
+    m_isSeeThroughBegun = false;
 }
 
 bool Wotah::Renderer::RecreateSwapchain(const Device& device, const Window& window)
@@ -209,8 +216,12 @@ bool Wotah::Renderer::RecreateSwapchain(const Device& device, const Window& wind
     }
 
     DestroyDrawnSemaphores();
-    return m_depth.Create(device, m_swapchain->GetExtent(), depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) &&
-           CreateDrawnSemaphores();
+    if (!m_depth.Create(device, m_swapchain->GetExtent(), depthFormat, DepthUsage))
+    {
+        return false;
+    }
+    m_sceneDepth.Point(m_depth); // the new image; the GPU is idle (waited above)
+    return CreateDrawnSemaphores();
 }
 
 Wotah::FrameStart Wotah::Renderer::BeginFrame()
@@ -242,7 +253,8 @@ Wotah::FrameStart Wotah::Renderer::BeginFrame()
     {
         return FrameStart::Failed;
     }
-    m_isSceneBegun = false;
+    m_isSceneBegun      = false;
+    m_isSeeThroughBegun = false;
     return FrameStart::Ready;
 }
 
@@ -251,24 +263,43 @@ void Wotah::Renderer::BeginScene()
     m_isSceneBegun = true;
     ChangeLayout(m_commandBuffer, m_swapchain->GetImage(m_imageIndex), ToDrawTarget);
     ChangeLayout(m_commandBuffer, m_depth.GetHandle(), ToDepthTarget);
+    BeginRendering(false);
+}
 
+void Wotah::Renderer::BeginSeeThrough()
+{
+    if (!m_isSceneBegun || m_isSeeThroughBegun)
+    {
+        Logger::Error("The see-through part of a frame comes once, after BeginScene");
+        return;
+    }
+    m_isSeeThroughBegun = true;
+    vkCmdEndRendering(m_commandBuffer);
+    RecordDepthReadable(m_commandBuffer, m_depth.GetHandle());
+    BeginRendering(true);
+}
+
+void Wotah::Renderer::BeginRendering(bool isSeeThrough)
+{
     const VkExtent2D extent = m_swapchain->GetExtent();
 
+    // The scene starts from the clear color; the see-through part draws over what the scene drew.
     VkRenderingAttachmentInfo color =
         Wotah::MakeVulkanInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
     color.imageView        = m_swapchain->GetView(m_imageIndex);
     color.imageLayout      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    color.loadOp           = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color.loadOp           = isSeeThrough ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp          = VK_ATTACHMENT_STORE_OP_STORE;
     color.clearValue.color = m_clearColor;
 
-    // The depth only matters while drawing, so it is not kept after the frame.
+    // The scene clears the depth and keeps what it drew, for the see-through part, which only reads it (storing
+    // nothing, as nothing changed; a store would count as a write).
     VkRenderingAttachmentInfo depth =
         Wotah::MakeVulkanInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
-    depth.imageView                     = m_depth.GetView();
-    depth.imageLayout                   = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depth.loadOp                        = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth.storeOp                       = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.imageView   = m_depth.GetView();
+    depth.imageLayout = isSeeThrough ? ReadableDepthLayout : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth.loadOp      = isSeeThrough ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp     = isSeeThrough ? VK_ATTACHMENT_STORE_OP_NONE : VK_ATTACHMENT_STORE_OP_STORE;
     depth.clearValue.depthStencil.depth = FarDepth;
 
     VkRenderingInfo renderingInfo      = Wotah::MakeVulkanInfo<VkRenderingInfo>(VK_STRUCTURE_TYPE_RENDERING_INFO);
