@@ -85,8 +85,8 @@ namespace Wotah
 
     private:
         /**
-         * Starts the physics world: the ground from groundMesh, the turning cube, the ball on the ground and the one in
-         * the air; false (and logged) when that fails.
+         * Starts the physics world: the floor from groundMesh and the ball in the air above the water; false (and
+         * logged) when that fails.
          */
         [[nodiscard]] bool CreatePhysics(const MeshData& groundMesh);
 
@@ -127,12 +127,12 @@ namespace Wotah
          */
         void ApplySkySettings();
 
-        /** Puts gravity, the balls' bounce and the cube's turn into the physics; a failure is logged. */
+        /** Puts gravity and the ball's bounce into the physics; a failure is logged. */
         void ApplyPhysicsSettings();
 
         /**
-         * Puts the scene back as it started, at once and without making anything again: the cube at its first turn,
-         * turning, and both balls where they began, standing still. A failure is logged.
+         * Puts the scene back as it started, at once and without making anything again: the ball where it began, in
+         * the air, standing still. A failure is logged.
          */
         void ResetScene();
 
@@ -168,7 +168,10 @@ namespace Wotah
         /** The index of the camera frames are drawn through; always inside m_cameras. */
         std::size_t m_activeCamera = 0;
 
-        /** What lights the scene; Create puts a sun and a moon in. */
+        /**
+         * What lights the scene; Create puts a sun and a moon in. It also holds the sky's sun and moon disks and its
+         * clock (real seconds, wrapped at SkyLoopSeconds), which the sky draws and the water mirrors.
+         */
         SceneLights m_lights;
 
         /** Hands the window's input to the handlers: the UI first, then the camera controller. */
@@ -191,19 +194,6 @@ namespace Wotah
 
         /** Whether the settings window shows; Tab switches it. Hidden at the start. Drawing thread only. */
         bool m_isSettingsOpen = false;
-
-        /**
-         * The sky's clock for its small movements (render/sky.hpp), in real seconds, wrapped at SkyLoopSeconds.
-         * Drawing thread only.
-         */
-        float m_skySeconds = 0.0f;
-
-        /**
-         * Sun and moon as the sky draws them (render/sky_lights.hpp, SkyLights::SunDisk and MoonDisk): set with the
-         * lights; dark until then. Drawing thread only.
-         */
-        DirectionalLight m_skySun{{0.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, 0.0f};
-        DirectionalLight m_skyMoon{{0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, 0.0f};
 
         /** Whether the drawing thread still draws; it clears this when it ends, for whatever reason. */
         std::atomic<bool> m_isDrawing = false;

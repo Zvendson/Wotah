@@ -76,6 +76,18 @@ namespace
         glm::vec4 GroundBounce{0.0f};
         /** rgb: the color far things fade into (SceneLights::HazeColor); a unused. */
         glm::vec4 HazeColor{0.0f};
+        /** xyz: where the camera stands, for what looks different from each side (a mirror); w unused. */
+        glm::vec4 CameraPosition{0.0f};
+        /** xyz: the way the camera looks, length 1; w unused. */
+        glm::vec4 CameraForward{0.0f, 0.0f, -1.0f, 0.0f};
+        /** xyz: towards the sky's sun, length 1; w: the sky's clock in seconds (SceneLights::SkySeconds). */
+        glm::vec4 SkySun{0.0f, 1.0f, 0.0f, 0.0f};
+        /** rgb: the sky's sun disk, color times intensity; a unused. */
+        glm::vec4 SkySunLight{0.0f};
+        /** xyz: towards the sky's moon, length 1; w unused. */
+        glm::vec4 SkyMoon{0.0f, -1.0f, 0.0f, 0.0f};
+        /** rgb: the sky's moon disk, tint times brightness; a unused. */
+        glm::vec4 SkyMoonLight{0.0f};
         /** x: how many directional lights are used; yzw unused, so the next member starts 16-byte aligned. */
         std::array<uint32_t, 4> Count{};
         /** Where each cascade ends, along the camera's view (MakeCascadeEnds); 0 everywhere without shadows. */
@@ -92,8 +104,8 @@ namespace
     static_assert(Wotah::ShadowCascadeCount == 4, "CascadeEnds and CascadeTexels hold one cascade per vec4 component");
     static_assert(sizeof(GpuDirectionalLight) == 48 + 64 * Wotah::ShadowCascadeCount);
     static_assert(offsetof(GpuDirectionalLight, CascadeViews) == 48);
-    static_assert(offsetof(GpuSceneLights, Directional) == 112);
-    static_assert(sizeof(GpuSceneLights) == 112 + sizeof(GpuDirectionalLight) * Wotah::MaxDirectionalLights);
+    static_assert(offsetof(GpuSceneLights, Directional) == 208);
+    static_assert(sizeof(GpuSceneLights) == 208 + sizeof(GpuDirectionalLight) * Wotah::MaxDirectionalLights);
 
     /**
      * The share of a cascade at its far end where it blends into the next one, so the change of map pixel size shows
@@ -152,6 +164,16 @@ namespace
     }
 
     /** The lights packed for the GPU; empty (and logged) when they do not fit or a direction is missing. */
+    /** Towards a light, length 1, with the sky's clock in w; fallback for a light without a usable direction. */
+    glm::vec4 MakeTowards(const Wotah::DirectionalLight& light, const glm::vec4& fallback, float seconds)
+    {
+        if (!(glm::dot(light.Direction, light.Direction) >= NearlyZeroSquared)) // also refuses NaN
+        {
+            return {glm::vec3(fallback), seconds};
+        }
+        return {-glm::normalize(light.Direction), seconds};
+    }
+
     std::optional<GpuSceneLights> Pack(const Wotah::SceneLights& lights, const Wotah::Camera& camera)
     {
         if (lights.DirectionalLights.size() > Wotah::MaxDirectionalLights)
@@ -166,7 +188,20 @@ namespace
         packed.Ambient              = glm::vec4(lights.AmbientColor, 0.0f);
         packed.GroundBounce         = glm::vec4(lights.GroundBounce, 0.0f);
         packed.HazeColor            = glm::vec4(lights.HazeColor, 0.0f);
-        packed.Count[0]             = static_cast<uint32_t>(lights.DirectionalLights.size()); // checked above
+
+        // The camera and the sky's disks, for mirrors. A camera looking at its own place keeps the default forward.
+        const glm::vec3 forward = camera.GetTarget() - camera.GetPosition();
+        packed.CameraPosition   = glm::vec4(camera.GetPosition(), 0.0f);
+        if (glm::dot(forward, forward) >= NearlyZeroSquared)
+        {
+            packed.CameraForward = glm::vec4(glm::normalize(forward), 0.0f);
+        }
+        const float seconds = std::isfinite(lights.SkySeconds) ? lights.SkySeconds : 0.0f;
+        packed.SkySun       = MakeTowards(lights.SkySun, packed.SkySun, seconds);
+        packed.SkySunLight  = glm::vec4(lights.SkySun.Color * lights.SkySun.Intensity, 0.0f);
+        packed.SkyMoon      = MakeTowards(lights.SkyMoon, packed.SkyMoon, 0.0f);
+        packed.SkyMoonLight = glm::vec4(lights.SkyMoon.Color * lights.SkyMoon.Intensity, 0.0f);
+        packed.Count[0]     = static_cast<uint32_t>(lights.DirectionalLights.size()); // checked above
         for (std::size_t index = 0; index < lights.DirectionalLights.size(); ++index)
         {
             const Wotah::DirectionalLight& light = lights.DirectionalLights[index];

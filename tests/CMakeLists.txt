@@ -31,6 +31,7 @@ add_executable(wotah_tests
     ui_tests.cpp
     utils_tests.cpp
     vulkan_utils_tests.cpp
+    water_tests.cpp
     ${TEST_SHADERS})
 target_include_directories(wotah_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${TEST_SHADER_OUT})
 target_link_libraries(wotah_tests PRIVATE wotah doctest imgui_null)

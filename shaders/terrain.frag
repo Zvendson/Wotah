@@ -1,8 +1,9 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-// The ground (source/render/height_field.hpp): grass, lit like everything else, with a faint checker of 1-unit tiles
-// so movement shows, fading into the air's haze with distance (its color follows the time of day).
+// The ground (source/render/height_field.hpp): grass, and sand where it lies under the water (below WaterLevel), lit
+// like everything else, with a faint checker of 1-unit tiles so movement shows, fading into the air's haze with
+// distance (its color follows the time of day).
 
 #include "atmosphere.glsl"
 #include "lighting.glsl"
@@ -14,7 +15,10 @@ layout(location = 4) in vec3  inWorldPosition;
 
 layout(location = 0) out vec4 outColor;
 
-const vec3  GrassColor   = vec3(0.30, 0.45, 0.20); // muted green; source/app.cpp's GrassReflectance matches it
+const vec3  GrassColor   = vec3(0.30, 0.45, 0.20); // muted green; render/sky_lights.cpp's GrassReflectance matches it
+const vec3  SandColor    = vec3(0.62, 0.55, 0.40); // pale, a little warm, wet: by eye
+const float WaterLevel   = 0.0;  // the water's surface (source/app.cpp, WaterLevel); below it the ground is sand
+const float ShoreBlend   = 0.1;  // grass turns to sand over this much height below the water's level
 const float TileSize     = 1.0;  // the checker's squares, in world units
 const float TileContrast = 0.06; // how much lighter and darker the squares are
 
@@ -26,8 +30,9 @@ void main()
     float parity    = mod(floor(tile.x) + floor(tile.y), 2.0);
     float footprint = max(fwidth(tile.x), fwidth(tile.y));
     float contrast  = TileContrast * clamp(1.0 - footprint * 2.0, 0.0, 1.0);
-    vec3  grass     = GrassColor * (1.0 + (parity * 2.0 - 1.0) * contrast);
+    float wet       = smoothstep(WaterLevel, WaterLevel - ShoreBlend, inWorldPosition.y);
+    vec3  ground    = mix(GrassColor, SandColor, wet) * (1.0 + (parity * 2.0 - 1.0) * contrast);
 
-    vec3 lit = Light(grass, inWorldNormal, inWorldPosition, inViewDepth);
+    vec3 lit = Light(ground, inWorldNormal, inWorldPosition, inViewDepth);
     outColor = vec4(ApplyHaze(lit, inViewDepth, sceneLights.hazeColor.rgb), 1.0);
 }

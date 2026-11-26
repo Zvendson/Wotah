@@ -124,7 +124,8 @@ set(WOTAH_MAX_DIRECTIONAL_LIGHTS 8)
 # How many shadow maps (cascades) each light has, nearest stretch of the view first: for C++ (render/shadow_maps.hpp)
 # and the shaders (shaders/lighting.glsl).
 set(WOTAH_SHADOW_CASCADES 4)
-set(WOTAH_SHADER_INCLUDES ${WOTAH_SHADER_INCLUDE_DIR}/atmosphere.glsl ${WOTAH_SHADER_INCLUDE_DIR}/lighting.glsl)
+set(WOTAH_SHADER_INCLUDES ${WOTAH_SHADER_INCLUDE_DIR}/atmosphere.glsl ${WOTAH_SHADER_INCLUDE_DIR}/lighting.glsl
+    ${WOTAH_SHADER_INCLUDE_DIR}/sky.glsl)
 function(wotah_compile_shaders out_var output_dir)
     set(outputs "")
     foreach(source ${ARGN})
@@ -151,6 +152,7 @@ wotah_compile_shaders(SHADERS ${SHADER_OUT}
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/fullscreen.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/sky.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/terrain.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/water.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow.vert)
 
 # Everything but the entry point, so the program and the tests run the same code.
@@ -209,6 +211,8 @@ add_library(wotah STATIC
     source/render/vulkan_memory_allocator.cpp
     source/render/vulkan_utils.hpp
     source/render/vulkan_utils.cpp
+    source/render/water.hpp
+    source/render/water.cpp
     source/ui/card.hpp
     source/ui/card.cpp
     source/ui/control_bar.hpp

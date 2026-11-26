@@ -22,6 +22,7 @@
 #include "render/swapchain.hpp"
 #include "render/ui_renderer.hpp"
 #include "render/vulkan_utils.hpp"
+#include "render/water.hpp"
 #include "test_utils.hpp"
 #include "ui/control_bar.hpp"
 #include "ui/hints_window.hpp"
@@ -57,7 +58,7 @@ using Wotah::Testing::HiddenWindowSize;
 
 namespace
 {
-    /** The program's shaders (shaders/mesh.vert, cube.frag, ball.frag), as the program builds them. */
+    /** The program's shaders (shaders/mesh.vert, cube.frag, ball.frag, ...), as the program builds them. */
     constexpr uint32_t MeshVertexShader[] = {
 #include "mesh.vert.inc"
     };
@@ -73,6 +74,9 @@ namespace
     constexpr uint32_t ShadowVertexShader[] = {
 #include "shadow.vert.inc"
     };
+    constexpr uint32_t WaterFragmentShader[] = {
+#include "water.frag.inc"
+    };
 
     /** The test shaders (tests/shaders/water_test.*): vertex input, push constants and a uniform buffer. */
     constexpr uint32_t WaterTestVertexShader[] = {
@@ -86,7 +90,17 @@ namespace
     constexpr float    GroundSize  = 64.0f;
     constexpr uint32_t GroundCells = 128;
 
-    /** The program's scene (app.cpp): cube and ball standing on the ground, and how finely the ball is cut. */
+    /**
+     * Water over that ground, 3 units above it, as deep as the program's (shaders/water.frag, FloorDepth): what the
+     * water shader expects to see through.
+     */
+    constexpr Wotah::WaterArea TestWater{{GroundSize, GroundSize}, 3.0f};
+    constexpr uint32_t         TestWaterCells = 64;
+
+    /**
+     * A scene of shapes to test drawing with, as the program had it before its water: a cube and a ball standing on the
+     * ground, and how finely the ball is cut.
+     */
     constexpr glm::vec3 CubePosition{0.0f, 0.5f, 0.0f};
     constexpr float     BallRadius = 0.5f;
     constexpr glm::vec3 BallPosition{-1.3f, BallRadius, -0.9f};
@@ -121,6 +135,17 @@ namespace
         settings.DepthWrite           = true;
         settings.PushConstants        = MeshRanges;
         settings.DescriptorSetLayouts = setLayouts;
+        return settings;
+    }
+
+    /** The water's pipeline settings, as app.cpp builds them: blended over the scene, both sides, depth not written. */
+    Wotah::PipelineSettings MakeWaterSettings(VkFormat colorFormat, VkFormat depthFormat,
+                                              std::span<const VkDescriptorSetLayout> setLayouts)
+    {
+        Wotah::PipelineSettings settings = MakeMeshSettings(WaterFragmentShader, colorFormat, depthFormat, setLayouts);
+        settings.Blend                   = Wotah::BlendMode::Filtered;
+        settings.CullMode                = VK_CULL_MODE_NONE;
+        settings.DepthWrite              = false;
         return settings;
     }
 
@@ -165,6 +190,7 @@ namespace
         bool               HasSky       = false;
         bool               HasGround    = false;
         bool               HasShapes    = true;
+        bool               HasWater     = false;
         bool               IsBallFirst  = false;
         bool               IsGroundLast = false;
         glm::vec3          BallPlace    = BallPosition;
@@ -188,9 +214,11 @@ namespace
         Wotah::Pipeline CubePipeline;
         Wotah::Pipeline BallPipeline;
         Wotah::Pipeline ShadowPipeline;
+        Wotah::Pipeline WaterPipeline;
         Wotah::Mesh     Terrain;
         Wotah::Mesh     Cube;
         Wotah::Mesh     Ball;
+        Wotah::Mesh     Water;
 
         [[nodiscard]] bool Create(const Wotah::Device& device, VkFormat colorFormat, VkFormat depthFormat,
                                   const Wotah::SceneLights& lights)
@@ -211,12 +239,14 @@ namespace
                    BallPipeline.Create(device,
                                        MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat, setLayouts)) &&
                    Cube.Create(device, Wotah::MakeCube()) &&
-                   Ball.Create(device, Wotah::MakeSphere(BallRadius, BallSegments, BallRings));
+                   Ball.Create(device, Wotah::MakeSphere(BallRadius, BallSegments, BallRings)) &&
+                   WaterPipeline.Create(device, MakeWaterSettings(colorFormat, depthFormat, setLayouts)) &&
+                   Water.Create(device, Wotah::MakeWaterMesh(TestWater, TestWaterCells));
         }
 
         /**
          * Records the sky (its sun from the first light, its moon from what.Moon), then ground and shapes as app.cpp
-         * does, in any order the options pick: the depth test must make the order not matter.
+         * does, in any order the options pick (the depth test must make the order not matter), then the water.
          */
         void Record(VkCommandBuffer commands, const glm::mat4& viewProjection, const OffscreenScene& what) const
         {
@@ -235,6 +265,12 @@ namespace
             if (what.HasGround && what.IsGroundLast)
             {
                 RecordGround(commands, viewProjection);
+            }
+            if (what.HasWater)
+            {
+                MeshPushConstants pushConstants;
+                pushConstants.ViewProjection = viewProjection;
+                RecordMeshDraw(commands, WaterPipeline, Lighting, Water, pushConstants);
             }
         }
 
@@ -323,7 +359,7 @@ namespace
         return lights;
     }
 
-    /** The program's start view (app.cpp). */
+    /** The view the drawing tests look at the shapes from: the program's start view before its water. */
     Wotah::Camera MakeStartCamera()
     {
         Wotah::Camera camera;
@@ -931,6 +967,11 @@ TEST_SUITE("gpu")
             Wotah::Pipeline pipeline;
             CHECK(pipeline.Create(gpu.Device, additive));
         }
+        SUBCASE("blending through a filter the shader writes, both sides drawn: the water's pipeline")
+        {
+            Wotah::Pipeline pipeline;
+            CHECK(pipeline.Create(gpu.Device, MakeWaterSettings(colorFormat, *depthFormat, lightLayouts)));
+        }
         SUBCASE("depth only, with a depth bias: the shadow pipeline")
         {
             Wotah::PipelineSettings depthOnly = water;
@@ -1448,6 +1489,85 @@ TEST_SUITE("gpu")
         const std::array<int, 3> night = GetCenterColor(DrawSceneOffscreen(gpu.Device, far, ground));
         CHECK(night[2] + 80 < day[2]);
         CHECK(night[0] + night[1] + night[2] + 150 < day[0] + day[1] + day[2]);
+    }
+
+    TEST_CASE("the water: see-through looking down, a mirror of the sky at a flat angle, the sun's reflection bright")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        // A sun in the east, 30 degrees up, lighting the scene and shining in the sky; grass 3 units under the water.
+        Wotah::DirectionalLight sun;
+        sun.Direction = Wotah::MakeLightDirection(glm::radians(90.0f), glm::radians(30.0f));
+        sun.Color     = {1.0f, 0.95f, 0.85f};
+        OffscreenScene scene;
+        scene.Lights.DirectionalLights = {sun};
+        scene.Lights.SkySun            = sun;
+        scene.HasSky                   = true;
+        scene.HasGround                = true;
+        scene.HasShapes                = false;
+        scene.HasWater                 = true;
+        OffscreenScene dry             = scene;
+        dry.HasWater                   = false;
+
+        // Straight down from 3 units above the water: the floor shows through, keeping a good part of its green, and
+        // tinted: the water takes red far more than blue, as real water does.
+        Wotah::Camera down;
+        down.SetPosition({0.0f, 6.0f, 0.0f});
+        down.SetTarget({0.05f, 0.0f, 0.0f});
+        const std::array<int, 3> throughWater = GetCenterColor(DrawSceneOffscreen(gpu.Device, down, scene));
+        const std::array<int, 3> floorOnly    = GetCenterColor(DrawSceneOffscreen(gpu.Device, down, dry));
+        CAPTURE(throughWater);
+        CAPTURE(floorOnly);
+        CHECK(throughWater[1] * 3 > floorOnly[1]);
+        CHECK(throughWater[0] * floorOnly[2] * 2 < throughWater[2] * floorOnly[0]);
+
+        // Low over the water looking north, 3 degrees down: mostly the sky mirrored, as seen 3 degrees up.
+        Wotah::Camera flat;
+        flat.SetPosition({0.0f, 3.3f, 0.0f});
+        flat.SetTarget({0.0f, 3.3f - 0.0524f, -1.0f});
+        Wotah::Camera skyward;
+        skyward.SetPosition({0.0f, 3.3f, 0.0f});
+        skyward.SetTarget({0.0f, 3.3f + 0.0524f, -1.0f});
+        const std::array<int, 3> mirrored = GetCenterColor(DrawSceneOffscreen(gpu.Device, flat, scene));
+        const std::array<int, 3> sky      = GetCenterColor(DrawSceneOffscreen(gpu.Device, skyward, scene));
+        CAPTURE(mirrored);
+        CAPTURE(sky);
+        for (std::size_t channel = 0; channel < 3; ++channel)
+        {
+            CHECK(mirrored[channel] * 10 >= sky[channel] * 7);
+        }
+        CHECK(mirrored[2] > mirrored[0] + 40);
+
+        // Looking at the sun's mirror image in the water, 30 degrees down towards the east: a bright spot, far brighter
+        // than the water 6 degrees beside it, though the water mirrors only a twentieth there.
+        Wotah::Camera atReflection;
+        atReflection.SetPosition({0.0f, 6.0f, 0.0f});
+        atReflection.SetTarget(glm::vec3(0.0f, 6.0f, 0.0f) +
+                               -Wotah::MakeLightDirection(glm::radians(90.0f), glm::radians(-30.0f)));
+        Wotah::Camera besideReflection;
+        besideReflection.SetPosition({0.0f, 6.0f, 0.0f});
+        besideReflection.SetTarget(glm::vec3(0.0f, 6.0f, 0.0f) +
+                                   -Wotah::MakeLightDirection(glm::radians(96.0f), glm::radians(-30.0f)));
+        const std::array<int, 3> glint  = GetCenterColor(DrawSceneOffscreen(gpu.Device, atReflection, scene));
+        const std::array<int, 3> beside = GetCenterColor(DrawSceneOffscreen(gpu.Device, besideReflection, scene));
+        CAPTURE(glint);
+        CAPTURE(beside);
+        CHECK(glint[0] + glint[1] + glint[2] > beside[0] + beside[1] + beside[2] + 150);
+
+        // Half a unit over the water looking north 1 degree down: the view meets the water 29 units off, over the
+        // floor, but would meet the floor's depth far past its edge. Nothing lies under the water there, so nothing may
+        // show through: the picture is the same whether the sky is drawn behind the water or not.
+        Wotah::Camera pastFloor;
+        pastFloor.SetPosition({0.0f, 3.5f, 0.0f});
+        pastFloor.SetTarget({0.0f, 3.5f - 0.0175f, -1.0f});
+        OffscreenScene noSky                = scene;
+        noSky.HasSky                        = false;
+        const std::array<int, 3> withSky    = GetCenterColor(DrawSceneOffscreen(gpu.Device, pastFloor, scene));
+        const std::array<int, 3> withoutSky = GetCenterColor(DrawSceneOffscreen(gpu.Device, pastFloor, noSky));
+        CAPTURE(withSky);
+        CAPTURE(withoutSky);
+        CHECK(withSky == withoutSky);
     }
 
     TEST_CASE("the scene under the sky: the shapes in front, the sky behind, the draw order still free")

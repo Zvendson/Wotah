@@ -1,7 +1,8 @@
 // The scene's lights, shared by every fragment shader (#include "lighting.glsl"): an ambient color that reaches every
-// surface, light bounced up from the ground, and up to WOTAH_MAX_DIRECTIONAL_LIGHTS directional lights (the sun, the
-// moon), each with its own color and its own shadows. Written every frame by source/render/lighting.cpp;
-// WOTAH_MAX_DIRECTIONAL_LIGHTS and WOTAH_SHADOW_CASCADES come from CMakeLists.txt, the same numbers the C++ side uses.
+// surface, light bounced up from the ground, the haze's color, the camera and the sky's sun and moon (for mirrors), and
+// up to WOTAH_MAX_DIRECTIONAL_LIGHTS directional lights (the sun, the moon), each with its own color and shadows.
+// Written every frame by source/render/lighting.cpp; WOTAH_MAX_DIRECTIONAL_LIGHTS and WOTAH_SHADOW_CASCADES come from
+// CMakeLists.txt, the same numbers the C++ side uses.
 
 // One directional light; matches GpuDirectionalLight in source/render/lighting.cpp (std140: vec4s and mat4s).
 struct DirectionalLight
@@ -14,13 +15,19 @@ struct DirectionalLight
 
 layout(std140, set = 0, binding = 0) uniform SceneLights
 {
-    vec4             ambient;       // rgb: the light reaching every surface
-    vec4             groundBounce;  // rgb: the light the ground throws back up, reaching surfaces that face down
-    vec4             hazeColor;     // rgb: the color far things fade into (atmosphere.glsl, ApplyHaze)
-    uvec4            count;         // x: how many directional lights are used
-    vec4             cascadeEnds;   // where each cascade ends, along the camera's view
-    vec4             cascadeTexels; // world units per map pixel in each cascade
-    vec4             cascadeBlend;  // x: the share of a cascade at its far end where it blends into the next
+    vec4             ambient;        // rgb: the light reaching every surface
+    vec4             groundBounce;   // rgb: the light the ground throws back up, reaching surfaces that face down
+    vec4             hazeColor;      // rgb: the color far things fade into (atmosphere.glsl, ApplyHaze)
+    vec4             cameraPosition; // xyz: where the camera stands
+    vec4             cameraForward;  // xyz: the way the camera looks, length 1
+    vec4             skySun;         // xyz: towards the sky's sun disk, length 1; w: the sky's clock in seconds
+    vec4             skySunLight;    // rgb: the sun's disk, color times intensity (sky.glsl, GetSunLook)
+    vec4             skyMoon;        // xyz: towards the sky's moon disk, length 1
+    vec4             skyMoonLight;   // rgb: the moon's disk, tint times brightness (sky.glsl, GetSkyBehindSun)
+    uvec4            count;          // x: how many directional lights are used
+    vec4             cascadeEnds;    // where each cascade ends, along the camera's view
+    vec4             cascadeTexels;  // world units per map pixel in each cascade
+    vec4             cascadeBlend;   // x: the share of a cascade at its far end where it blends into the next
     DirectionalLight directional[WOTAH_MAX_DIRECTIONAL_LIGHTS];
 } sceneLights;
 
@@ -71,9 +78,9 @@ float LookUpShadow(uint lightIndex, uint cascade, vec3 position, vec3 surface, f
 }
 
 // How much of a light reaches a point viewDepth in front of the camera, facing along surface (length 1), where facing
-// is how squarely the light falls on it (above 0): from the nearest cascade that covers the point, blended into the next
-// one near its far end, so the change of sharpness shows no line. Past the last cascade there are no shadows; they fade
-// out over its far end.
+// is how squarely the light falls on it (above 0): from the nearest cascade that covers the point, blended into the
+// next one near its far end, so the change of sharpness shows no line. Past the last cascade there are no shadows;
+// they fade out over its far end.
 float GetLightReaching(uint lightIndex, vec3 position, vec3 surface, float facing, float viewDepth)
 {
     if (sceneLights.directional[lightIndex].shadow.x < 0.5)

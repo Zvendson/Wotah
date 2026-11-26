@@ -121,11 +121,20 @@ namespace
             return state;
         }
 
-        // Color: output * alpha + color * (1 - alpha) for Alpha, output * alpha + color for Additive.
+        // Color: output * alpha + color * (1 - alpha) for Alpha, output * alpha + color for Additive, output + color *
+        // the second output for Filtered.
         state.blendEnable         = VK_TRUE;
         state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        state.dstColorBlendFactor =
-            mode == Wotah::BlendMode::Alpha ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE;
+        state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        if (mode == Wotah::BlendMode::Additive)
+        {
+            state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        }
+        if (mode == Wotah::BlendMode::Filtered)
+        {
+            state.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            state.dstColorBlendFactor = VK_BLEND_FACTOR_SRC1_COLOR;
+        }
         state.colorBlendOp = VK_BLEND_OP_ADD;
 
         // Alpha: coverage adds up like layered glass, alpha + image alpha * (1 - alpha) (Porter-Duff "over").

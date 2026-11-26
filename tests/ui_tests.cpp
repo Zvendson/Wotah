@@ -494,13 +494,12 @@ TEST_SUITE("ui")
     {
         HeadlessUi headless;
         REQUIRE(headless.Create());
-        headless.HasSettings                       = true;
-        headless.Defaults.TimeOfDayHours           = 9.0f;
-        headless.Defaults.SunNoonHeightDegrees     = 60.0f;
-        headless.Defaults.Gravity                  = 9.8f;
-        headless.Defaults.BallBounciness           = 0.6f;
-        headless.Defaults.CubeTurnDegreesPerSecond = 36.0f;
-        headless.Settings                          = headless.Defaults;
+        headless.HasSettings                   = true;
+        headless.Defaults.TimeOfDayHours       = 9.0f;
+        headless.Defaults.SunNoonHeightDegrees = 60.0f;
+        headless.Defaults.Gravity              = 9.8f;
+        headless.Defaults.BallBounciness       = 0.6f;
+        headless.Settings                      = headless.Defaults;
         headless.RunFrames();
         CHECK_FALSE(headless.SettingsChanged); // only shown, nothing touched
 

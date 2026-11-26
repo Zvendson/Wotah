@@ -24,15 +24,14 @@ namespace
 
     // The ranges cover what is worth trying, chosen by eye. The unit signs are UTF-8 (degree "\xC2\xB0", squared
     // "\xC2\xB2", times "\xC3\x97"), from the Latin-1 Supplement, which the theme's font draws.
-    constexpr SliderRange DayLengthRange{1.0f, 60.0f, "%.0f min"};           // a quick look to a slow hour
-    constexpr SliderRange NoonHeightRange{10.0f, 90.0f, "%.0f\xC2\xB0"};     // a winter's day far north to the tropics
-    constexpr SliderRange BrightnessRange{0.0f, 2.0f, "%.2f"};               // dark to twice the scene's sun
-    constexpr SliderRange ShareRange{0.0f, 3.0f, "%.2f\xC3\x97"};            // none to three times the scene's
-    constexpr SliderRange GravityRange{0.0f, 25.0f, "%.2f m/s\xC2\xB2"};     // floating to Jupiter's 24.8
-    constexpr SliderRange TimeSpeedRange{0.1f, 2.0f, "%.2f\xC3\x97"};        // slow motion to twice as fast
-    constexpr SliderRange BouncinessRange{0.0f, 1.0f, "%.2f"};               // dead to bouncing back as high
-    constexpr SliderRange TurnSpeedRange{-180.0f, 180.0f, "%.0f\xC2\xB0/s"}; // half a turn a second, either way
-    constexpr SliderRange FieldOfViewRange{20.0f, 110.0f, "%.0f\xC2\xB0"};   // a telephoto lens to a wide angle
+    constexpr SliderRange DayLengthRange{1.0f, 60.0f, "%.0f min"};         // a quick look to a slow hour
+    constexpr SliderRange NoonHeightRange{10.0f, 90.0f, "%.0f\xC2\xB0"};   // a winter's day far north to the tropics
+    constexpr SliderRange BrightnessRange{0.0f, 2.0f, "%.2f"};             // dark to twice the scene's sun
+    constexpr SliderRange ShareRange{0.0f, 3.0f, "%.2f\xC3\x97"};          // none to three times the scene's
+    constexpr SliderRange GravityRange{0.0f, 25.0f, "%.2f m/s\xC2\xB2"};   // floating to Jupiter's 24.8
+    constexpr SliderRange TimeSpeedRange{0.1f, 2.0f, "%.2f\xC3\x97"};      // slow motion to twice as fast
+    constexpr SliderRange BouncinessRange{0.0f, 1.0f, "%.2f"};             // dead to bouncing back as high
+    constexpr SliderRange FieldOfViewRange{20.0f, 110.0f, "%.0f\xC2\xB0"}; // a telephoto lens to a wide angle
 
     /** The time of day's slider: midnight to midnight; its text comes from MakeClockText. */
     constexpr float FirstHour = 0.0f;
@@ -115,13 +114,12 @@ namespace
         return isChanged;
     }
 
-    /** The physics: gravity, how fast time runs, the balls' bounce, the cube's turn. True when one changed. */
+    /** The physics: gravity, how fast time runs, the ball's bounce. True when one changed. */
     bool ShowPhysicsRows(Wotah::SceneSettings& settings)
     {
         bool isChanged = ShowSlider("Gravity", settings.Gravity, GravityRange);
         isChanged      = ShowSlider("Time speed", settings.TimeSpeed, TimeSpeedRange) || isChanged;
         isChanged      = ShowSlider("Ball bounce", settings.BallBounciness, BouncinessRange) || isChanged;
-        isChanged      = ShowSlider("Cube turn", settings.CubeTurnDegreesPerSecond, TurnSpeedRange) || isChanged;
         return isChanged;
     }
 

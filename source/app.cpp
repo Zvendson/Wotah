@@ -1,15 +1,15 @@
 /**
  * @file app.cpp
- * The application: a Vulkan 1.3 example scene, a slowly turning orange cube seen from above one corner, a blue ball
- * behind it and a second one dropped from the air onto it, all on a grass ground under a clear sky. The day runs: the
- * sun rises in the east, crosses the south and sets in the west, lighting the scene and casting the shadows, and at
- * night the full moon gives a faint blue light under the stars. Gravity and collisions come from the physics world
- * (Jolt). Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the shapes are Meshes on the
- * GPU, camera and object matrices come in as push constants, and the lights through a uniform buffer with every
- * light's shadow map beside it. Over the scene lie a small stats window, a list of the controls and a control bar (Dear
- * ImGui) that pauses the world and resets the scene or the camera; R resets the scene too. Tab opens a settings window
- * with sliders for the time of day and the day's run, sun, moon and sky, shadows, gravity, time, the balls' bounce, the
- * cube's turn and the field of view.
+ * The application: a Vulkan 1.3 example scene, flat clear water over a sandy floor, and a blue ball dropped from the
+ * air into it, under a clear sky the water mirrors. The day runs: the sun rises in the east, crosses the south and sets
+ * in the west, lighting the scene and casting the shadows, and at night the full moon gives a faint blue light under
+ * the stars. Gravity and collisions come from the physics world (Jolt); the water has no physics yet, so the ball
+ * falls through it onto the floor. Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the
+ * shapes are Meshes on the GPU, camera and object matrices come in as push constants, and the lights through a uniform
+ * buffer with every light's shadow map beside it. Over the scene lie a small stats window, a list of the controls and
+ * a control bar (Dear ImGui) that pauses the world and resets the scene or the camera; R resets the scene too. Tab
+ * opens a settings window with sliders for the time of day and the day's run, sun, moon and sky, shadows, gravity,
+ * time, the ball's bounce and the field of view.
  */
 #include "app.hpp"
 
@@ -27,6 +27,7 @@
 #include "render/sky_lights.hpp"
 #include "render/swapchain.hpp"
 #include "render/ui_renderer.hpp"
+#include "render/water.hpp"
 #include "ui/control_bar.hpp"
 #include "ui/hints_window.hpp"
 #include "ui/settings_window.hpp"
@@ -66,9 +67,9 @@ static constexpr uint32_t MeshVertexShader[] = {
 #include "mesh.vert.inc"
 };
 
-/** The cube's fragment shader (shaders/cube.frag), compiled to SPIR-V by the build. */
-static constexpr uint32_t CubeFragmentShader[] = {
-#include "cube.frag.inc"
+/** The water's fragment shader (shaders/water.frag), compiled to SPIR-V by the build. */
+static constexpr uint32_t WaterFragmentShader[] = {
+#include "water.frag.inc"
 };
 
 /** The ground's fragment shader (shaders/terrain.frag), compiled to SPIR-V by the build. */
@@ -99,30 +100,45 @@ static constexpr const char* AppName = "Vulkan Cube";
 static constexpr VkClearColorValue BackgroundColor{{0.1f, 0.1f, 0.1f, 1.0f}};
 
 /**
- * Where the first camera stands: south-east of the cube and a bit above it, so the top, east and south faces show, and
- * looking almost level, so the sky shows above the horizon.
+ * Where the first camera stands: south-east of where the ball falls and 3.5 units above the water, looking down at the
+ * water in front of it at a slant, so the floor shows through near by, the sky mirrors farther off, and the sky shows
+ * above the horizon at the top of the picture.
  */
-static constexpr glm::vec3 CornerCameraPosition{2.2f, 1.5f, 3.0f};
+static constexpr glm::vec3 StartCameraPosition{5.0f, 3.5f, 7.0f};
 
-/** What the first camera looks at: just above the cube's center, between cube and ball. */
-static constexpr glm::vec3 CornerCameraTarget{-0.2f, 0.75f, 0.0f};
+/** What the first camera looks at: a unit above the water where the ball falls in. */
+static constexpr glm::vec3 StartCameraTarget{0.0f, 1.0f, 0.0f};
 
 /** The nearest and farthest distance the first camera sees. */
-static constexpr float CornerCameraNear = 0.1f;
-static constexpr float CornerCameraFar  = 100.0f; // sees the whole ground
+static constexpr float StartCameraNear = 0.1f;
+static constexpr float StartCameraFar  = 200.0f; // sees the water to its far corners, 181 units off
 
 /**
- * The ground: 64 x 64 units around the origin, a height point every half unit, so hills can be shaped finely. Flat
- * at height 0 for now.
+ * The water: its surface at height 0 (shaders/terrain.frag's WaterLevel matches), 256 x 256 units around the origin,
+ * so it reaches into the haze at the horizon all around, with a grid point every unit.
+ *
+ * shortcut: one even grid; waves near the camera will want a finer one there (and a coarser one far off), made when
+ * waves come.
  */
+static constexpr float            WaterLevel = 0.0f;
+static constexpr float            WaterSize  = 256.0f;
+static constexpr uint32_t         WaterCells = 256;
+static constexpr Wotah::WaterArea Water{{WaterSize, WaterSize}, WaterLevel};
+
+/**
+ * The floor under the water: 64 x 64 units around the origin, FloorDepth below the surface (shaders/water.frag's
+ * FloorDepth and FloorHalfSize must match), a height point every half unit, so it can be shaped finely later. Flat
+ * for now; past it the water is deep.
+ */
+static constexpr float    FloorDepth  = 3.0f;
 static constexpr float    GroundSize  = 64.0f;
 static constexpr uint32_t GroundCells = 128;
 
 /**
- * Where shadow casters can stand: a sphere around the ground's middle that holds the whole ground (half its diagonal)
- * and room above it for what stands on it.
+ * Where shadow casters can stand: a sphere around the water's middle that holds the whole floor (half its diagonal)
+ * and room above and below it, for the ball falling in and lying on the floor.
  */
-static constexpr float     ShadowRoomAbove  = 2.0f;
+static constexpr float     ShadowRoomAbove  = 5.0f;
 static constexpr float     ShadowAreaRadius = std::numbers::sqrt2_v<float> * GroundSize * 0.5f + ShadowRoomAbove;
 static constexpr glm::vec3 ShadowAreaCenter{0.0f};
 
@@ -135,39 +151,24 @@ static constexpr glm::vec3 ShadowAreaCenter{0.0f};
 static constexpr float ShadowDepthBiasConstant = 2.0f;
 static constexpr float ShadowDepthBiasSlope    = 2.0f;
 
-/** Where the cube stands on the ground (x, z), and half its size of 1: how far its center is above the ground. */
-static constexpr glm::vec2 CubeSpot{0.0f, 0.0f};
-static constexpr float     CubeHalfSize = 0.5f;
-
 /**
- * How fast the cube turns around its upright axis: once every 10 seconds, slow enough to watch every face go by.
- * Positive turns counterclockwise, seen from above; straight up through its middle, so it keeps standing on the ground.
+ * The ball: half a unit across, dropped from 4 units above the water (its lowest point) where the start camera looks,
+ * so it falls into the water in front of it. The water has no physics yet: it falls through onto the floor.
  */
-static constexpr float     CubeTurnSeconds = 10.0f;
-static constexpr glm::vec3 CubeSpin{0.0f, 2.0f * std::numbers::pi_v<float> / CubeTurnSeconds, 0.0f}; // radians/second
-
-/** The ball's size and where it lies on the ground (x, z): behind the cube and to its left, as seen at the start. */
 static constexpr float     BallRadius = 0.5f;
-static constexpr glm::vec2 BallSpot{-1.3f, -0.9f};
+static constexpr glm::vec2 BallSpot{0.0f, 0.0f};
+static constexpr float     BallDropHeight = 4.0f;
 
 /**
- * The second ball, as large as the first: dropped from 2 units above the ground (its lowest point), over the first
- * ball's side that faces the camera, so it glances off that ball, lands and rolls towards the cube.
+ * The surfaces, chosen by eye: the sandy floor grips and hardly bounces, the ball is like rubber. Two bodies in contact
+ * bounce like the bouncier one, so the ball bounces on the floor.
  */
-static constexpr glm::vec2 DroppedBallSpot{-1.0f, -0.6f};
-static constexpr float     DroppedBallHeight = 2.0f;
-
-/**
- * The surfaces, chosen by eye: grass grips and hardly bounces, the cube is like painted wood, the balls like rubber.
- * Two bodies in contact bounce like the bouncier one, so the balls bounce on every surface.
- */
-static constexpr Wotah::BodySurface GrassSurface{0.8f, 0.2f};
-static constexpr Wotah::BodySurface WoodSurface{0.5f, 0.3f};
+static constexpr Wotah::BodySurface SandSurface{0.8f, 0.1f};
 static constexpr Wotah::BodySurface RubberSurface{0.7f, 0.6f};
 
 /**
- * How fast a ball rolling on grass slows down by itself, per second: the grass's rolling resistance, which the physics
- * has no other way to know. Chosen by testing: a ball knocked aside rolls a metre or two, not off the ground's edge.
+ * How fast the ball rolling on the floor slows down by itself, per second: the sand's rolling resistance, which the
+ * physics has no other way to know. Chosen by testing: a ball knocked aside rolls a metre or two, not off the edge.
  */
 static constexpr float BallSpinDamping = 1.0f;
 static constexpr float BallMoveDamping = 0.2f;
@@ -204,26 +205,19 @@ static constexpr float FullMoonLight = 1.0f;
 static Wotah::SceneSettings MakeDefaultSettings()
 {
     Wotah::SceneSettings settings;
-    settings.TimeOfDayHours           = StartHours;
-    settings.IsDayRunning             = true;
-    settings.DayLengthMinutes         = DayLengthMinutes;
-    settings.SunNoonHeightDegrees     = NoonHeightDegrees;
-    settings.SunBrightness            = SunIntensity;
-    settings.MoonBrightness           = FullMoonLight;
-    settings.SkyLight                 = FullSkyLight;
-    settings.HasShadows               = true;
-    settings.Gravity                  = Wotah::StandardGravity;
-    settings.TimeSpeed                = RealTimeSpeed;
-    settings.BallBounciness           = RubberSurface.Bounciness;
-    settings.CubeTurnDegreesPerSecond = glm::degrees(CubeSpin.y);
-    settings.FieldOfViewDegrees       = glm::degrees(Wotah::Camera{}.GetFieldOfView()); // every camera's default
+    settings.TimeOfDayHours       = StartHours;
+    settings.IsDayRunning         = true;
+    settings.DayLengthMinutes     = DayLengthMinutes;
+    settings.SunNoonHeightDegrees = NoonHeightDegrees;
+    settings.SunBrightness        = SunIntensity;
+    settings.MoonBrightness       = FullMoonLight;
+    settings.SkyLight             = FullSkyLight;
+    settings.HasShadows           = true;
+    settings.Gravity              = Wotah::StandardGravity;
+    settings.TimeSpeed            = RealTimeSpeed;
+    settings.BallBounciness       = RubberSurface.Bounciness;
+    settings.FieldOfViewDegrees   = glm::degrees(Wotah::Camera{}.GetFieldOfView()); // every camera's default
     return settings;
-}
-
-/** The cube's spin for a turn speed in degrees per second: around its upright axis. */
-static glm::vec3 MakeCubeSpin(float degreesPerSecond)
-{
-    return {0.0f, glm::radians(degreesPerSecond), 0.0f};
 }
 
 /** What mesh.vert gets per draw; matches its PushConstants block. */
@@ -262,6 +256,21 @@ static Wotah::PipelineSettings MakeMeshSettings(std::span<const uint32_t> fragme
     settings.DepthWrite           = true;
     settings.PushConstants        = MeshPushConstantRanges;
     settings.DescriptorSetLayouts = setLayouts;
+    return settings;
+}
+
+/**
+ * The water's pipeline: a mesh pipeline whose output lies over what is already drawn (BlendMode::Filtered: the water
+ * says, per color, how much of it shows through), seen from both sides, depth tested but not written, so it never
+ * hides anything drawn after it.
+ */
+static Wotah::PipelineSettings MakeWaterSettings(VkFormat colorFormat, VkFormat depthFormat,
+                                                 std::span<const VkDescriptorSetLayout> setLayouts)
+{
+    Wotah::PipelineSettings settings = MakeMeshSettings(WaterFragmentShader, colorFormat, depthFormat, setLayouts);
+    settings.Blend                   = Wotah::BlendMode::Filtered;
+    settings.CullMode                = VK_CULL_MODE_NONE;
+    settings.DepthWrite              = false;
     return settings;
 }
 
@@ -354,30 +363,26 @@ struct Wotah::App::State
     /** The sky with the sun, drawn first in every frame. */
     Wotah::Sky Sky;
 
-    /** The pipelines: the grass ground, the orange cube with black edges, and the blue ball. */
+    /** The pipelines: the floor (the ground's shader, sand under water), the blue ball, and the water over them. */
     Wotah::Pipeline TerrainPipeline;
-    Wotah::Pipeline CubePipeline;
     Wotah::Pipeline BallPipeline;
+    Wotah::Pipeline WaterPipeline;
 
     /** Draws every shadow caster into the lights' shadow maps. */
     Wotah::Pipeline ShadowPipeline;
 
-    /** The ground's shape, and the ground and shapes on the GPU. */
+    /** The floor's shape, and the floor, the ball and the water's surface on the GPU. */
     Wotah::HeightField GroundShape;
     Wotah::Mesh        Terrain;
-    Wotah::Mesh        Cube;
     Wotah::Mesh        Ball;
+    Wotah::Mesh        WaterSurface;
 
-    /** Gravity and collisions: the ground, the turning cube and both balls. */
+    /** Gravity and collisions: the floor and the ball. */
     Wotah::PhysicsWorld Physics;
-    Wotah::BodyId       CubeBody;
     Wotah::BodyId       BallBody;
-    Wotah::BodyId       DroppedBallBody;
 
-    /** Where the cube and the balls started, so Reset scene can put them back. */
-    Wotah::BodySettings CubeStart;
+    /** Where the ball started, so Reset scene can put it back. */
     Wotah::BodySettings BallStart;
-    Wotah::BodySettings DroppedBallStart;
 
     /** Draws the UI over the scene, last in every frame. */
     Wotah::UiRenderer UiRenderer;
@@ -417,12 +422,11 @@ bool Wotah::App::Create()
     const VkFormat                             colorFormat = state.Swapchain.GetFormat();
     const VkFormat                             depthFormat = state.Renderer.GetDepthFormat();
     const std::array<VkDescriptorSetLayout, 1> setLayouts{state.Lighting.GetSetLayout()};
-    if (!state.CubePipeline.Create(m_device,
-                                   MakeMeshSettings(CubeFragmentShader, colorFormat, depthFormat, setLayouts)) ||
-        !state.BallPipeline.Create(m_device,
+    if (!state.BallPipeline.Create(m_device,
                                    MakeMeshSettings(BallFragmentShader, colorFormat, depthFormat, setLayouts)) ||
         !state.TerrainPipeline.Create(m_device,
                                       MakeMeshSettings(TerrainFragmentShader, colorFormat, depthFormat, setLayouts)) ||
+        !state.WaterPipeline.Create(m_device, MakeWaterSettings(colorFormat, depthFormat, setLayouts)) ||
         !state.Sky.Create(m_device, colorFormat, depthFormat) ||
         !state.ShadowPipeline.Create(m_device, MakeShadowSettings(state.Lighting.GetShadowMaps().GetFormat())))
     {
@@ -433,11 +437,14 @@ bool Wotah::App::Create()
     // (ApplySettings, below).
     m_lights.DirectionalLights = {DirectionalLight{}, DirectionalLight{}}; // SunLightIndex, then MoonLightIndex
 
-    // The ground and the shapes go to GPU-only memory once; Create waits until they are there.
-    state.GroundShape         = MakeFlatHeightField(GroundSize, GroundSize, GroundCells, GroundCells);
+    // The floor FloorDepth under the water, the ball and the water's surface go to GPU-only memory once; Create waits
+    // until they are there.
+    state.GroundShape = MakeFlatHeightField(GroundSize, GroundSize, GroundCells, GroundCells);
+    std::ranges::fill(state.GroundShape.Heights, WaterLevel - FloorDepth);
     const MeshData groundMesh = MakeTerrainMesh(state.GroundShape);
-    if (!state.Terrain.Create(m_device, groundMesh) || !state.Cube.Create(m_device, MakeCube()) ||
-        !state.Ball.Create(m_device, MakeSphere(BallRadius, BallSegments, BallRings)))
+    if (!state.Terrain.Create(m_device, groundMesh) ||
+        !state.Ball.Create(m_device, MakeSphere(BallRadius, BallSegments, BallRings)) ||
+        !state.WaterSurface.Create(m_device, MakeWaterMesh(Water, WaterCells)))
     {
         return false;
     }
@@ -453,16 +460,16 @@ bool Wotah::App::Create()
         return false;
     }
 
-    // The first camera looks at the cube from above a corner; Run keeps every active camera's aspect ratio in step
-    // with the image.
-    Camera& corner = m_cameras.front();
-    corner.SetPosition(CornerCameraPosition);
-    corner.SetTarget(CornerCameraTarget);
-    if (!corner.SetClipDistances(CornerCameraNear, CornerCameraFar))
+    // The first camera looks down at the water where the ball falls in; Run keeps every active camera's aspect ratio
+    // in step with the image.
+    Camera& start = m_cameras.front();
+    start.SetPosition(StartCameraPosition);
+    start.SetTarget(StartCameraTarget);
+    if (!start.SetClipDistances(StartCameraNear, StartCameraFar))
     {
         return false;
     }
-    m_focusViews.front() = corner;
+    m_focusViews.front() = start;
 
     // The settings start as the scene was just set up; putting them in once makes them the one source from now on.
     m_settings = MakeDefaultSettings();
@@ -484,56 +491,38 @@ bool Wotah::App::CreatePhysics(const MeshData& groundMesh)
         return false;
     }
 
-    // The ground collides exactly where it is drawn: the same triangles.
+    // The floor collides exactly where it is drawn: the same triangles.
     std::vector<glm::vec3> groundCorners;
     groundCorners.reserve(groundMesh.Vertices.size());
     for (const MeshVertex& vertex : groundMesh.Vertices)
     {
         groundCorners.push_back(vertex.Position);
     }
-    if (!state.Physics.AddTriangles(groundCorners, groundMesh.Indices, GrassSurface))
+    if (!state.Physics.AddTriangles(groundCorners, groundMesh.Indices, SandSurface))
     {
         return false;
     }
 
-    // Cube and balls stand on the ground wherever it is, so they keep standing on it once there are hills.
-    const std::optional<float> cubeGround    = FindHeight(state.GroundShape, CubeSpot.x, CubeSpot.y);
-    const std::optional<float> ballGround    = FindHeight(state.GroundShape, BallSpot.x, BallSpot.y);
-    const std::optional<float> droppedGround = FindHeight(state.GroundShape, DroppedBallSpot.x, DroppedBallSpot.y);
-    if (!cubeGround || !ballGround || !droppedGround)
+    // The ball starts above the water, and the floor lies below that spot, so it lands on something.
+    const std::optional<float> waterHeight = FindWaterHeight(Water, BallSpot.x, BallSpot.y);
+    if (!waterHeight || !FindHeight(state.GroundShape, BallSpot.x, BallSpot.y))
     {
-        Logger::Error("Cube and balls must stand on the ground's area");
+        Logger::Error("The ball must start above the water and the floor");
         return false;
     }
-
-    // The cube turns as told and pushes what it touches, but nothing pushes it.
-    BodySettings cube;
-    cube.Motion   = BodyMotion::Kinematic;
-    cube.Position = {CubeSpot.x, *cubeGround + CubeHalfSize, CubeSpot.y};
-    cube.Surface  = WoodSurface;
     BodySettings ball;
-    ball.Position        = {BallSpot.x, *ballGround + BallRadius, BallSpot.y};
-    ball.Surface         = RubberSurface;
-    ball.SpinDamping     = BallSpinDamping;
-    ball.MoveDamping     = BallMoveDamping;
-    BodySettings dropped = ball;
-    dropped.Position     = {DroppedBallSpot.x, *droppedGround + DroppedBallHeight + BallRadius, DroppedBallSpot.y};
+    ball.Position    = {BallSpot.x, *waterHeight + BallDropHeight + BallRadius, BallSpot.y};
+    ball.Surface     = RubberSurface;
+    ball.SpinDamping = BallSpinDamping;
+    ball.MoveDamping = BallMoveDamping;
 
-    const std::optional<BodyId> cubeBody    = state.Physics.AddBox(glm::vec3(CubeHalfSize), cube);
-    const std::optional<BodyId> ballBody    = state.Physics.AddSphere(BallRadius, ball);
-    const std::optional<BodyId> droppedBody = state.Physics.AddSphere(BallRadius, dropped);
-    if (!cubeBody || !ballBody || !droppedBody || !state.Physics.SetVelocity(*cubeBody, glm::vec3(0.0f), CubeSpin))
+    const std::optional<BodyId> ballBody = state.Physics.AddSphere(BallRadius, ball);
+    if (!ballBody)
     {
         return false;
     }
-    state.CubeBody        = *cubeBody;
-    state.BallBody        = *ballBody;
-    state.DroppedBallBody = *droppedBody;
-
-    // Kept for Reset scene, which puts them back there.
-    state.CubeStart        = cube;
-    state.BallStart        = ball;
-    state.DroppedBallStart = dropped;
+    state.BallBody  = *ballBody;
+    state.BallStart = ball; // kept for Reset scene, which puts it back there
     return true;
 }
 
@@ -622,8 +611,8 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     m_window.RequestCursorCaptured(m_cameraController.IsTurning());
     m_cameraController.Update(GetActiveCamera(), frameSeconds);
 
-    // The world moves on by the time this frame took, as fast as the settings say, unless paused: the cube turns, the
-    // balls fall, bounce and roll, and the day runs on, moving sun and moon and changing the light.
+    // The world moves on by the time this frame took, as fast as the settings say, unless paused: the ball falls,
+    // bounces and rolls, and the day runs on, moving sun and moon and changing the light.
     if (!m_isPaused)
     {
         const float worldSeconds = frameSeconds * m_settings.TimeSpeed;
@@ -637,7 +626,7 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     }
 
     // The sun's rays and glow and the stars move a little in real time, paused or not, like the camera.
-    m_skySeconds = std::fmod(m_skySeconds + frameSeconds, SkyLoopSeconds);
+    m_lights.SkySeconds = std::fmod(m_lights.SkySeconds + frameSeconds, SkyLoopSeconds);
 
     // A new window size, or a swapchain the system no longer finds fitting: make it again before drawing. While the
     // user drags the window's edge this happens every few frames, so the picture follows the edge.
@@ -672,14 +661,11 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     // logged by Update and the last good ones stay, so the frame still draws.
     (void)m_state->Lighting.Update(m_lights, camera);
 
-    // What stands in the scene this frame: the ground where its heights say, the cube and the balls where the physics
-    // has them (always found: Create added them).
-    const std::array<SceneObject, 4> objects{{
+    // What stands in the scene this frame: the floor where its heights say, the ball where the physics has it (always
+    // found: Create added it). The water is not one of them: it casts no shadow and is drawn last.
+    const std::array<SceneObject, 2> objects{{
         {&scene.TerrainPipeline, &scene.Terrain, glm::mat4(1.0f)},
-        {&scene.CubePipeline, &scene.Cube, scene.Physics.FindTransform(scene.CubeBody).value_or(glm::mat4(1.0f))},
         {&scene.BallPipeline, &scene.Ball, scene.Physics.FindTransform(scene.BallBody).value_or(glm::mat4(1.0f))},
-        {&scene.BallPipeline, &scene.Ball,
-         scene.Physics.FindTransform(scene.DroppedBallBody).value_or(glm::mat4(1.0f))},
     }};
 
     // Every light's shadow map first, as the scene's shaders read them all; then the scene itself.
@@ -691,14 +677,18 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     // (they sink behind the ground whole), not their light on the scene.
     MeshPushConstants pushConstants;
     pushConstants.ViewProjection = camera.GetViewProjection();
-    scene.Sky.Draw(commandBuffer, pushConstants.ViewProjection, m_skySun, m_skyMoon, m_skySeconds);
+    scene.Sky.Draw(commandBuffer, pushConstants.ViewProjection, m_lights.SkySun, m_lights.SkyMoon, m_lights.SkySeconds);
 
-    // The depth test sorts out which is in front, so the order of ground and shapes does not matter.
+    // The depth test sorts out which is in front, so the order of floor and ball does not matter.
     for (const SceneObject& object : objects)
     {
         pushConstants.Model = object.Model;
         DrawMesh(commandBuffer, *object.Pipeline, scene.Lighting, *object.Mesh, pushConstants);
     }
+
+    // The water last of the scene: what lies under it shows through it, so that must be drawn already.
+    pushConstants.Model = glm::mat4(1.0f);
+    DrawMesh(commandBuffer, scene.WaterPipeline, scene.Lighting, scene.WaterSurface, pushConstants);
 
     // The UI last, so it lies over everything.
     return m_state->UiRenderer.Draw(commandBuffer) && renderer.EndFrame();
@@ -760,8 +750,8 @@ void Wotah::App::ApplySkySettings()
     {
         lights[MoonLightIndex] = skyLights.Moon;
     }
-    m_skySun              = skyLights.SunDisk;
-    m_skyMoon             = skyLights.MoonDisk;
+    m_lights.SkySun       = skyLights.SunDisk;
+    m_lights.SkyMoon      = skyLights.MoonDisk;
     m_lights.AmbientColor = skyLights.AmbientColor;
     m_lights.GroundBounce = skyLights.GroundBounce;
     m_lights.HazeColor    = skyLights.HazeColor;
@@ -770,15 +760,12 @@ void Wotah::App::ApplySkySettings()
 
 void Wotah::App::ApplyPhysicsSettings()
 {
-    // Gravity, the balls' surface, the cube's turn. Time speed and field of view are read every frame.
-    const SceneSettings& settings    = m_settings;
-    State&               state       = *m_state;
-    BodySurface          ballSurface = RubberSurface;
-    ballSurface.Bounciness           = settings.BallBounciness;
+    // Gravity and the ball's surface. Time speed and field of view are read every frame.
+    State&      state       = *m_state;
+    BodySurface ballSurface = RubberSurface;
+    ballSurface.Bounciness  = m_settings.BallBounciness;
     const bool isApplied =
-        state.Physics.SetGravity(settings.Gravity) && state.Physics.SetSurface(state.BallBody, ballSurface) &&
-        state.Physics.SetSurface(state.DroppedBallBody, ballSurface) &&
-        state.Physics.SetVelocity(state.CubeBody, glm::vec3(0.0f), MakeCubeSpin(settings.CubeTurnDegreesPerSecond));
+        state.Physics.SetGravity(m_settings.Gravity) && state.Physics.SetSurface(state.BallBody, ballSurface);
     if (!isApplied)
     {
         Logger::Error("Could not put the settings into the physics");
@@ -803,16 +790,11 @@ void Wotah::App::ApplyClicks(const ControlBarClicks& clicks)
 
 void Wotah::App::ResetScene()
 {
-    // Only the moving bodies go back, in the world as it is: nothing is made again, so no frame waits for it (making
-    // the world again, ground included, held a frame up). The cube turns on from its first angle, as fast as the
-    // settings say; gravity and the balls' bounce stay as set.
-    State&     state = *m_state;
-    const bool isReset =
-        state.Physics.PlaceBody(state.CubeBody, state.CubeStart.Position, state.CubeStart.Rotation) &&
-        state.Physics.SetVelocity(state.CubeBody, glm::vec3(0.0f), MakeCubeSpin(m_settings.CubeTurnDegreesPerSecond)) &&
-        state.Physics.PlaceBody(state.BallBody, state.BallStart.Position, state.BallStart.Rotation) &&
-        state.Physics.PlaceBody(state.DroppedBallBody, state.DroppedBallStart.Position,
-                                state.DroppedBallStart.Rotation);
+    // Only the ball goes back, in the world as it is: nothing is made again, so no frame waits for it (making the
+    // world again, floor included, held a frame up). Gravity and the ball's bounce stay as set; so does the time of
+    // day.
+    State&     state   = *m_state;
+    const bool isReset = state.Physics.PlaceBody(state.BallBody, state.BallStart.Position, state.BallStart.Rotation);
     if (!isReset)
     {
         Logger::Error("Could not reset the scene");

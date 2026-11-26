@@ -2,8 +2,8 @@
  * @file settings_window.hpp
  * A window of sliders to change the scene while it runs, in three tabs: the sky (the time of day, whether and how fast
  * the day runs, how high the sun gets, how bright sun, moon and sky are, shadows), the physics (gravity, how fast time
- * runs, how bouncy the balls are, how fast the cube turns) and the camera (its field of view). Hidden at the start; Tab
- * shows or hides it (input/scene_shortcuts.hpp).
+ * runs, how bouncy the ball is) and the camera (its field of view). Hidden at the start; Tab shows or hides it
+ * (input/scene_shortcuts.hpp).
  *
  *     if (isSettingsOpen && Wotah::ShowSettingsWindow(settings, defaults))
  *     {
@@ -52,11 +52,8 @@ namespace Wotah
         /** How fast the world runs, the day included: 1 is real time, 0.5 half as fast. */
         float TimeSpeed = 1.0f;
 
-        /** How much the balls bounce back: 0 not at all, 1 as high as they fell. */
+        /** How much the ball bounces back: 0 not at all, 1 as high as it fell. */
         float BallBounciness = 0.0f;
-
-        /** How fast the cube turns, in degrees per second; positive turns counterclockwise, seen from above. */
-        float CubeTurnDegreesPerSecond = 0.0f;
 
         /** The camera's vertical field of view, in degrees. */
         float FieldOfViewDegrees = 45.0f;

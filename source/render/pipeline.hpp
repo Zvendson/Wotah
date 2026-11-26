@@ -39,6 +39,12 @@ namespace Wotah
         Alpha,
         /** Light that adds up: output * alpha + color. */
         Additive,
+        /**
+         * Output added to the color seen through a filter the fragment shader writes as its second output (location 0,
+         * index 1), per color: output + color * filter. Water: its mirrored sky and own glow added, the floor showing
+         * through it tinted. Needs the dualSrcBlend GPU feature, which Device turns on.
+         */
+        Filtered,
     };
 
     /**

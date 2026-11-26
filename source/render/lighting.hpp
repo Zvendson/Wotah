@@ -91,6 +91,15 @@ namespace Wotah
         /** The directional lights, at most MaxDirectionalLights. */
         std::vector<DirectionalLight> DirectionalLights;
         /**
+         * The sky's sun and moon as shiny surfaces mirror them (shaders/water.frag): the disks Sky::Draw draws
+         * (render/sky_lights.hpp, SkyLights::SunDisk and MoonDisk), where they stand and their color times intensity
+         * (0: none). Not lights: nothing is lit by them.
+         */
+        DirectionalLight SkySun{{0.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, 0.0f};
+        DirectionalLight SkyMoon{{0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, 0.0f};
+        /** The sky's clock for its small movements, as Sky::Draw gets it (render/sky.hpp, SkyLoopSeconds). */
+        float SkySeconds = 0.0f;
+        /**
          * Where shadow casters can stand, so every one of them reaches the shadow maps; the default radius of 0 means
          * no shadows at all.
          */

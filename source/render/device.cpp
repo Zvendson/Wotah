@@ -134,7 +134,10 @@ namespace
         return std::nullopt;
     }
 
-    /** The first Vulkan 1.3 GPU with a queue family that can draw and present to the surface. */
+    /**
+     * The first Vulkan 1.3 GPU that can blend with a second output from the shader (dualSrcBlend: water filters what
+     * lies under it per color; every desktop GPU can) and has a queue family that can draw and present to the surface.
+     */
     std::optional<GpuChoice> FindGpu(VkInstance instance, VkSurfaceKHR surface)
     {
         uint32_t count = 0;
@@ -159,6 +162,13 @@ namespace
             {
                 continue;
             }
+            VkPhysicalDeviceFeatures features;
+            vkGetPhysicalDeviceFeatures(gpu, &features);
+            if (features.dualSrcBlend != VK_TRUE)
+            {
+                Wotah::Logger::Info("Skipping GPU {}: it cannot blend with two shader outputs", properties.deviceName);
+                continue;
+            }
 
             if (const std::optional<uint32_t> family = FindQueueFamily(gpu, surface))
             {
@@ -172,7 +182,10 @@ namespace
         return std::nullopt;
     }
 
-    /** The logical device with one queue from the chosen family, the swapchain extension and dynamic rendering. */
+    /**
+     * The logical device with one queue from the chosen family, the swapchain extension, dynamic rendering and blending
+     * with two shader outputs.
+     */
     VkDevice CreateLogicalDevice(const GpuChoice& choice)
     {
         VkDeviceQueueCreateInfo queueInfo =
@@ -186,9 +199,14 @@ namespace
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
         features13.dynamicRendering = VK_TRUE;
 
+        // A second shader output as a blend factor (VK_BLEND_FACTOR_SRC1_COLOR): FindGpu chose a GPU that has it.
+        VkPhysicalDeviceFeatures features{};
+        features.dualSrcBlend = VK_TRUE;
+
         const char* const  swapchainExtension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         VkDeviceCreateInfo createInfo = Wotah::MakeVulkanInfo<VkDeviceCreateInfo>(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
         createInfo.pNext              = &features13;
+        createInfo.pEnabledFeatures   = &features;
         createInfo.queueCreateInfoCount    = 1;
         createInfo.pQueueCreateInfos       = &queueInfo;
         createInfo.enabledExtensionCount   = 1;
