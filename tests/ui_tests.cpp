@@ -2,8 +2,8 @@
  * @file ui_tests.cpp
  * The UI without a GPU: ImGui runs with its null renderer (backends/imgui_impl_null), which takes the font pictures
  * without drawing them, while made-up input events go through the UserInterface. Covers what the UI keeps and what
- * reaches the camera, the fixed cards, the control bar's buttons, typing into a text field, the sizes the UI lays out
- * and draws in, and how readable the theme is.
+ * reaches the camera, the fixed cards, the control bar's buttons, the settings window, typing into a text field, the
+ * sizes the UI lays out and draws in, and how readable the theme is.
  */
 #include "input/camera_controller.hpp"
 #include "input/input_dispatcher.hpp"
@@ -13,6 +13,7 @@
 #include "ui/card.hpp"
 #include "ui/control_bar.hpp"
 #include "ui/hints_window.hpp"
+#include "ui/settings_window.hpp"
 #include "ui/stats_window.hpp"
 #include "ui/theme.hpp"
 #include "ui/user_interface.hpp"
@@ -65,6 +66,9 @@ namespace
 
     /** How far inside a button a click lands, from the button's outer edge. */
     constexpr float ButtonInset = 4.0f;
+
+    /** How far apart clicks are when a test looks for a control down a column: well under a row's height. */
+    constexpr float ScanStep = 4.0f;
 
     /** The text field window of the typing tests: its place and size, clear of the stats window. */
     constexpr ImVec2 FieldWindowPosition{300.0f, 300.0f};
@@ -178,6 +182,15 @@ namespace
         /** Whether the frames show the hints window. */
         bool HasHints = false;
 
+        /**
+         * Whether the frames show the settings window, the settings it changes, their defaults, and whether it said a
+         * setting changed.
+         */
+        bool                 HasSettings = false;
+        Wotah::SceneSettings Settings;
+        Wotah::SceneSettings Defaults;
+        bool                 SettingsChanged = false;
+
         /** Whether the frames show the control bar, whether it shows the world paused, and what was clicked in it. */
         bool                    HasControlBar = false;
         bool                    IsPaused      = false;
@@ -202,7 +215,7 @@ namespace
             return HasRenderer;
         }
 
-        /** Runs UI frames: the stats window and, when wanted, the hints, the control bar and the text field window. */
+        /** Runs UI frames: the stats window and, when wanted, the hints, settings, control bar and text field. */
         void RunFrames(int count = SettleFrames)
         {
             const Wotah::FrameStats stats;
@@ -213,6 +226,11 @@ namespace
                 if (HasHints)
                 {
                     Wotah::ShowHintsWindow();
+                }
+                if (HasSettings)
+                {
+                    const bool isChanged = Wotah::ShowSettingsWindow(Settings, Defaults);
+                    SettingsChanged      = SettingsChanged || isChanged;
                 }
                 if (HasControlBar)
                 {
@@ -434,20 +452,22 @@ TEST_SUITE("ui")
         CHECK(headless.Ui.OnInput(MakeWheelStep(middle)));
     }
 
-    TEST_CASE(
-        "the program's three cards fit its window: stats top left, hints top right, the bar below, none overlapping")
+    TEST_CASE("the program's cards fit its window: stats, hints, settings and the bar, none overlapping")
     {
         HeadlessUi headless;
         REQUIRE(headless.Create());
         headless.HasHints      = true;
+        headless.HasSettings   = true;
         headless.HasControlBar = true;
         headless.RunFrames();
 
-        const ImGuiWindow* stats = ImGui::FindWindowByName(Wotah::StatsWindowTitle);
-        const ImGuiWindow* hints = ImGui::FindWindowByName(Wotah::HintsWindowTitle);
-        const ImGuiWindow* bar   = ImGui::FindWindowByName(Wotah::ControlBarName);
+        const ImGuiWindow* stats    = ImGui::FindWindowByName(Wotah::StatsWindowTitle);
+        const ImGuiWindow* hints    = ImGui::FindWindowByName(Wotah::HintsWindowTitle);
+        const ImGuiWindow* settings = ImGui::FindWindowByName(Wotah::SettingsWindowTitle);
+        const ImGuiWindow* bar      = ImGui::FindWindowByName(Wotah::ControlBarName);
         REQUIRE(stats != nullptr);
         REQUIRE(hints != nullptr);
+        REQUIRE(settings != nullptr);
         REQUIRE(bar != nullptr);
 
         // The hints sit in the top-right corner, a card's margin in.
@@ -459,6 +479,55 @@ TEST_SUITE("ui")
         CHECK(stats->Pos.x + stats->Size.x + Wotah::CardMargin <= hints->Pos.x);
         CHECK(stats->Pos.y + stats->Size.y + Wotah::CardMargin <= bar->Pos.y);
         CHECK(hints->Pos.y + hints->Size.y + Wotah::CardMargin <= bar->Pos.y);
+
+        // The settings sit in the bottom-left corner, below the stats and left of the bar.
+        const float height = static_cast<float>(ScreenSize.Height);
+        CHECK(std::abs(settings->Pos.x - Wotah::CardMargin) <= PixelSlack);
+        CHECK(std::abs(settings->Pos.y + settings->Size.y - (height - Wotah::CardMargin)) <= PixelSlack);
+        CHECK(stats->Pos.y + stats->Size.y + Wotah::CardMargin <= settings->Pos.y);
+        CHECK(settings->Pos.x + settings->Size.x + Wotah::CardMargin <= bar->Pos.x);
+    }
+
+    TEST_CASE(
+        "the settings window: a click on a slider changes that setting and says so; Reset puts every setting back")
+    {
+        HeadlessUi headless;
+        REQUIRE(headless.Create());
+        headless.HasSettings                       = true;
+        headless.Defaults.SunAzimuthDegrees        = 90.0f;
+        headless.Defaults.SunElevationDegrees      = 45.0f;
+        headless.Defaults.Gravity                  = 9.8f;
+        headless.Defaults.BallBounciness           = 0.6f;
+        headless.Defaults.CubeTurnDegreesPerSecond = 36.0f;
+        headless.Settings                          = headless.Defaults;
+        headless.RunFrames();
+        CHECK_FALSE(headless.SettingsChanged); // only shown, nothing touched
+
+        const ImGuiWindow* window = ImGui::FindWindowByName(Wotah::SettingsWindowTitle);
+        REQUIRE(window != nullptr);
+        const ImVec2& padding = ImGui::GetStyle().WindowPadding;
+
+        // Down the sliders' column, just inside its right end: the first click that lands on a slider is the sun's
+        // direction, which jumps to nearly its most. Nothing else changes.
+        const float sliderX = window->Pos.x + window->Size.x - padding.x - ButtonInset;
+        const float bottom  = window->Pos.y + window->Size.y;
+        for (float y = window->Pos.y + padding.y; y < bottom && !headless.SettingsChanged; y += ScanStep)
+        {
+            headless.Click({sliderX, y});
+        }
+        REQUIRE(headless.SettingsChanged);
+        CHECK(headless.Settings.SunAzimuthDegrees > 300.0f);
+        CHECK(IsNear(headless.Settings.SunElevationDegrees, headless.Defaults.SunElevationDegrees));
+        CHECK(IsNear(headless.Settings.Gravity, headless.Defaults.Gravity));
+
+        // Reset to defaults, the button in the bottom-left corner, puts it back.
+        headless.SettingsChanged = false;
+        headless.Click({window->Pos.x + padding.x + ButtonInset, bottom - padding.y - ButtonInset});
+        CHECK(headless.SettingsChanged);
+        CHECK(IsNear(headless.Settings.SunAzimuthDegrees, headless.Defaults.SunAzimuthDegrees));
+
+        // The window keeps the mouse, so dragging a slider never turns the camera.
+        CHECK(headless.Ui.OnInput(MakeWheelStep({sliderX, bottom - padding.y - ButtonInset})));
     }
 
     TEST_CASE("the pause button reads Resume while paused, keeps its width so the bar does not jump, and still works")

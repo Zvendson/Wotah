@@ -65,11 +65,24 @@ namespace Wotah
      */
     [[nodiscard]] glm::vec3 MakeLightDirection(float azimuth, float elevation);
 
+    /**
+     * How much of the sun's light gets through the air, per color (red, green, blue), compared with a sun straight
+     * overhead, for a sun elevation in radians above the horizon. The lower the sun, the more air its light crosses,
+     * and the air takes blue more than red: a low sun is dim and reddish, as at sunset. 1 overhead (elevations past it
+     * count as overhead), nearly 0 at the horizon, 0 below it or for an elevation that is not a number.
+     */
+    [[nodiscard]] glm::vec3 MakeSunlightThroughAir(float elevation);
+
     /** Everything that lights the scene. */
     struct SceneLights
     {
         /** The light that reaches every surface from all around, even those turned away from every light. */
         glm::vec3 AmbientColor{0.25f};
+        /**
+         * Light the ground throws back up, on top of AmbientColor, reaching a surface by how much it faces down: all of
+         * it facing straight down, half on upright sides, none facing up. 0 by default, leaving AmbientColor alone.
+         */
+        glm::vec3 GroundBounce{0.0f};
         /** The directional lights, at most MaxDirectionalLights. */
         std::vector<DirectionalLight> DirectionalLights;
         /**

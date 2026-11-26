@@ -1,7 +1,7 @@
 /**
  * @file input_tests.cpp
  * CameraController, SceneShortcuts and InputDispatcher with made-up events: movement per key, turning, zooming, the F
- * key, the R key, focus loss, and a pretend UI in front of the camera.
+ * key, the R and Tab keys, focus loss, and a pretend UI in front of the camera.
  */
 #include "input/camera_controller.hpp"
 #include "input/input_dispatcher.hpp"
@@ -326,5 +326,30 @@ TEST_SUITE("input")
         ui.IsTyping = true;
         dispatcher.Dispatch(MakeKeyEvent(Wotah::KeyCode::R, true));
         CHECK_FALSE(shortcuts.TakeResetRequest());
+    }
+    TEST_CASE("Tab asks once to show or hide the settings, also when held; behind a typing UI it never does")
+    {
+        Wotah::SceneShortcuts shortcuts;
+        CHECK_FALSE(shortcuts.TakeSettingsRequest());
+        CHECK(shortcuts.OnInput(MakeKeyEvent(Wotah::KeyCode::Tab, true)));
+        CHECK_FALSE(shortcuts.TakeResetRequest()); // Tab is not R
+        CHECK(shortcuts.TakeSettingsRequest());
+        CHECK_FALSE(shortcuts.TakeSettingsRequest()); // answered once
+
+        Wotah::InputEvent repeated = MakeKeyEvent(Wotah::KeyCode::Tab, true);
+        repeated.IsRepeat          = true;
+        CHECK(shortcuts.OnInput(repeated));
+        CHECK_FALSE(shortcuts.TakeSettingsRequest());
+
+        FakeUi                 ui;
+        Wotah::InputDispatcher dispatcher;
+        dispatcher.AddHandler(ui);
+        dispatcher.AddHandler(shortcuts);
+        ui.IsTyping = true;
+        dispatcher.Dispatch(MakeKeyEvent(Wotah::KeyCode::Tab, true));
+        CHECK_FALSE(shortcuts.TakeSettingsRequest());
+        ui.IsTyping = false;
+        dispatcher.Dispatch(MakeKeyEvent(Wotah::KeyCode::Tab, true));
+        CHECK(shortcuts.TakeSettingsRequest());
     }
 }

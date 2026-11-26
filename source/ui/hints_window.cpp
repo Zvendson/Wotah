@@ -1,7 +1,8 @@
 /**
  * @file hints_window.cpp
  * The hints window: a card with a header, a thin line under it, and a two-column table of key caps and what they do.
- * The controls listed are those of input/camera_controller.hpp and input/scene_shortcuts.hpp.
+ * The controls listed are those of input/camera_controller.hpp and input/scene_shortcuts.hpp (R, and Tab for the
+ * settings window).
  */
 #include "ui/hints_window.hpp"
 
@@ -31,9 +32,10 @@ namespace
     constexpr std::array<const char*, 1> ZoomKeys{"Wheel"};
     constexpr std::array<const char*, 1> CameraResetKeys{"F"};
     constexpr std::array<const char*, 1> SceneResetKeys{"R"};
+    constexpr std::array<const char*, 1> SettingsKeys{"Tab"};
 
     /** Every control, in the order they are listed. */
-    constexpr std::array<Hint, 7> Hints{{
+    constexpr std::array<Hint, 8> Hints{{
         {MoveKeys, "Move"},
         {UpKeys, "Up"},
         {DownKeys, "Down"},
@@ -41,6 +43,7 @@ namespace
         {ZoomKeys, "Closer / farther"},
         {CameraResetKeys, "Reset camera"},
         {SceneResetKeys, "Reset scene"},
+        {SettingsKeys, "Settings"},
     }};
 
     /** The table's columns: the keys and what they do. */

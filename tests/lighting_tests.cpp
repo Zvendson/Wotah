@@ -1,6 +1,7 @@
 /**
  * @file lighting_tests.cpp
- * The compass of sky lights (MakeLightDirection for lights in every direction and height), and the shadow cascades:
+ * The compass of sky lights (MakeLightDirection for lights in every direction and height), how much sunlight crosses
+ * the air (MakeSunlightThroughAir), and the shadow cascades:
  * where they end, the stretch of view each shows, and a light's view of it (MakeShadowViewProjection).
  */
 #include "render/camera.hpp"
@@ -62,6 +63,44 @@ TEST_SUITE("lighting")
 
         // Always length 1.
         CHECK(IsNear(glm::length(Wotah::MakeLightDirection(1.0f, 0.3f)), 1.0f));
+    }
+
+    TEST_CASE(
+        "sunlight through the air: all of it overhead, dimmer and redder the lower the sun, none below the horizon")
+    {
+        const glm::vec3 all(1.0f);
+        const glm::vec3 none(0.0f);
+        CHECK(IsNear(Wotah::MakeSunlightThroughAir(glm::radians(90.0f)), all));
+        CHECK(IsNear(Wotah::MakeSunlightThroughAir(glm::radians(120.0f)), all)); // past overhead counts as overhead
+
+        // Lower and lower: every color keeps less, blue the least, so the light dims and turns red.
+        glm::vec3 higher = Wotah::MakeSunlightThroughAir(glm::radians(90.0f));
+        for (const float degrees : {60.0f, 45.0f, 30.0f, 20.0f, 10.0f, 5.0f, 2.0f})
+        {
+            CAPTURE(degrees);
+            const glm::vec3 light = Wotah::MakeSunlightThroughAir(glm::radians(degrees));
+            CHECK(light.r < higher.r);
+            CHECK(light.g < higher.g);
+            CHECK(light.b < higher.b);
+            CHECK(light.r > light.g);
+            CHECK(light.g > light.b);
+            higher = light;
+        }
+
+        // At the scene's start, 45 degrees up, most of it gets through; 2 degrees up, the light is clearly red.
+        CHECK(Wotah::MakeSunlightThroughAir(glm::radians(45.0f)).b > 0.8f);
+        const glm::vec3 sunset = Wotah::MakeSunlightThroughAir(glm::radians(2.0f));
+        CHECK(sunset.r < 0.5f);
+        CHECK(sunset.r > 20.0f * sunset.b);
+
+        // On the horizon the light crosses about 38 times the air of straight up: a dim red glow is left, hardly any
+        // blue. Below it, or for an elevation that is not a number, nothing.
+        const glm::vec3 horizon = Wotah::MakeSunlightThroughAir(0.0f);
+        CHECK(horizon.r > 0.1f);
+        CHECK(horizon.r < 0.2f);
+        CHECK(horizon.b < 0.001f);
+        CHECK(IsNear(Wotah::MakeSunlightThroughAir(glm::radians(-1.0f)), none));
+        CHECK(IsNear(Wotah::MakeSunlightThroughAir(std::numeric_limits<float>::quiet_NaN()), none));
     }
 
     TEST_CASE("a light's view of a shown sphere: all of it on the map, the casters' whole depth in 0..1")

@@ -211,6 +211,8 @@ add_library(wotah STATIC
     source/ui/control_bar.cpp
     source/ui/hints_window.hpp
     source/ui/hints_window.cpp
+    source/ui/settings_window.hpp
+    source/ui/settings_window.cpp
     source/ui/stats_window.hpp
     source/ui/stats_window.cpp
     source/ui/theme.hpp

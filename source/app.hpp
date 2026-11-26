@@ -15,6 +15,7 @@
 #include "render/camera.hpp"
 #include "render/device.hpp"
 #include "render/lighting.hpp"
+#include "ui/settings_window.hpp"
 #include "ui/user_interface.hpp"
 
 #include <atomic>
@@ -114,6 +115,13 @@ namespace Wotah
         void ApplyClicks(const ControlBarClicks& clicks);
 
         /**
+         * Puts m_settings into the scene: the sun, the sky's light and shadows into the lights; gravity, the balls'
+         * bounce and the cube's turn into the physics (failures logged). Time speed and field of view need no call:
+         * each frame reads them.
+         */
+        void ApplySettings();
+
+        /**
          * Puts the scene back as it started, at once and without making anything again: the cube at its first turn,
          * turning, and both balls where they began, standing still. A failure is logged.
          */
@@ -160,7 +168,7 @@ namespace Wotah
         /** Flies the active camera: W A S D, Space, Shift, the right mouse button to turn, the wheel, and F. */
         CameraController m_cameraController;
 
-        /** The scene's keys: R resets the scene. */
+        /** The scene's keys: R resets the scene, Tab shows or hides the settings. */
         SceneShortcuts m_sceneShortcuts;
 
         /** The input the drawing thread took from the window this frame; kept, so it does not allocate again. */
@@ -168,6 +176,12 @@ namespace Wotah
 
         /** Whether the world stands still (the control bar's Pause); the camera still flies. Drawing thread only. */
         bool m_isPaused = false;
+
+        /** What the settings window changes; Create fills in the scene's own values. Drawing thread only. */
+        SceneSettings m_settings;
+
+        /** Whether the settings window shows; Tab switches it. Hidden at the start. Drawing thread only. */
+        bool m_isSettingsOpen = false;
 
         /** Whether the drawing thread still draws; it clears this when it ends, for whatever reason. */
         std::atomic<bool> m_isDrawing = false;

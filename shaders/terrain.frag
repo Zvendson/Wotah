@@ -14,7 +14,7 @@ layout(location = 4) in vec3  inWorldPosition;
 
 layout(location = 0) out vec4 outColor;
 
-const vec3  GrassColor   = vec3(0.30, 0.45, 0.20); // muted green
+const vec3  GrassColor   = vec3(0.30, 0.45, 0.20); // muted green; source/app.cpp's GrassReflectance matches it
 const float TileSize     = 1.0;  // the checker's squares, in world units
 const float TileContrast = 0.06; // how much lighter and darker the squares are
 

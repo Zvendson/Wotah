@@ -1,7 +1,7 @@
 // The scene's lights, shared by every fragment shader (#include "lighting.glsl"): an ambient color that reaches every
-// surface, and up to WOTAH_MAX_DIRECTIONAL_LIGHTS directional lights (the sun, the moon), each with its own color and
-// its own shadows. Written every frame by source/render/lighting.cpp; WOTAH_MAX_DIRECTIONAL_LIGHTS and
-// WOTAH_SHADOW_CASCADES come from CMakeLists.txt, the same numbers the C++ side uses.
+// surface, light bounced up from the ground, and up to WOTAH_MAX_DIRECTIONAL_LIGHTS directional lights (the sun, the
+// moon), each with its own color and its own shadows. Written every frame by source/render/lighting.cpp;
+// WOTAH_MAX_DIRECTIONAL_LIGHTS and WOTAH_SHADOW_CASCADES come from CMakeLists.txt, the same numbers the C++ side uses.
 
 // One directional light; matches GpuDirectionalLight in source/render/lighting.cpp (std140: vec4s and mat4s).
 struct DirectionalLight
@@ -15,6 +15,7 @@ struct DirectionalLight
 layout(std140, set = 0, binding = 0) uniform SceneLights
 {
     vec4             ambient;       // rgb: the light reaching every surface
+    vec4             groundBounce;  // rgb: the light the ground throws back up, reaching surfaces that face down
     uvec4            count;         // x: how many directional lights are used
     vec4             cascadeEnds;   // where each cascade ends, along the camera's view
     vec4             cascadeTexels; // world units per map pixel in each cascade
@@ -105,12 +106,16 @@ float GetLightReaching(uint lightIndex, vec3 position, vec3 surface, float facin
 }
 
 // A color lit by the scene, for a surface at position (world space), viewDepth in front of the camera, facing along
-// normal (any length): the ambient light, plus every directional light by how squarely it falls on the surface (Lambert)
-// and how much of it is not blocked on the way (its shadow maps).
+// normal (any length): the ambient light, the ground's bounced light by how much the surface faces down, plus every
+// directional light by how squarely it falls on the surface (Lambert) and how much of it is not blocked on the way (its
+// shadow maps).
 vec3 Light(vec3 color, vec3 normal, vec3 position, float viewDepth)
 {
-    vec3 surface  = normalize(normal);
-    vec3 received = sceneLights.ambient.rgb;
+    vec3 surface = normalize(normal);
+
+    // How much of the ground a surface sees: all of it facing straight down, half from an upright side, none facing up.
+    float seesGround = 0.5 - 0.5 * surface.y;
+    vec3  received   = sceneLights.ambient.rgb + sceneLights.groundBounce.rgb * seesGround;
     uint used     = min(sceneLights.count.x, uint(WOTAH_MAX_DIRECTIONAL_LIGHTS));
     for (uint index = 0; index < used; ++index)
     {

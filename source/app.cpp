@@ -6,7 +6,9 @@
  * come from the physics world (Jolt). Uses dynamic rendering (no VkRenderPass / VkFramebuffer) with a depth image; the
  * shapes are Meshes on the GPU, camera and object matrices come in as push constants, and the lights through a uniform
  * buffer with every light's shadow map beside it. Over the scene lie a small stats window, a list of the controls and a
- * control bar (Dear ImGui) that pauses the world and resets the scene or the camera; R resets the scene too.
+ * control bar (Dear ImGui) that pauses the world and resets the scene or the camera; R resets the scene too. Tab opens
+ * a settings window with sliders for the sun, the sky's light, shadows, gravity, time, the balls' bounce, the cube's
+ * turn and the field of view.
  */
 #include "app.hpp"
 
@@ -24,8 +26,10 @@
 #include "render/ui_renderer.hpp"
 #include "ui/control_bar.hpp"
 #include "ui/hints_window.hpp"
+#include "ui/settings_window.hpp"
 #include "ui/stats_window.hpp"
 
+#include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
@@ -35,6 +39,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <numbers>
@@ -167,14 +172,41 @@ static constexpr float BallMoveDamping = 0.2f;
 static constexpr uint32_t BallSegments = 48;
 static constexpr uint32_t BallRings    = 24;
 
-/** The ambient light: the blue sky lighting every surface a little, also those facing away from sun and moon. */
+/**
+ * The ambient light: the blue sky lighting every surface a little, also those facing away from sun and moon; this much
+ * with the sun at its start height, less when it stands lower.
+ */
 static constexpr glm::vec3 SkyAmbient{0.2f, 0.24f, 0.32f};
 
-/** The sun: warm white, in the east at 45 degrees above the horizon (compass: render/lighting.hpp). */
+/**
+ * The sun: warm white, in the east at 45 degrees above the horizon (compass: render/lighting.hpp). Its color is the one
+ * at this height; higher it turns whiter and brighter, lower dimmer and redder (App::ApplySettings).
+ */
 static constexpr float     SunAzimuth   = glm::radians(90.0f);
 static constexpr float     SunElevation = glm::radians(45.0f);
 static constexpr glm::vec3 SunColor{1.0f, 0.95f, 0.85f};
 static constexpr float     SunIntensity = 0.9f;
+
+/**
+ * How much of each color the grass throws back up: its color as drawn (shaders/terrain.frag, GrassColor), so the light
+ * bounced onto things matches the ground they stand on.
+ */
+static constexpr glm::vec3 GrassReflectance{0.30f, 0.45f, 0.20f};
+
+/**
+ * The least share of its start light the sky gives while the sun is up: around sunset the whole sky stays bright after
+ * the sun's own light has faded. A guess, by eye.
+ */
+static constexpr float TwilightSkyShare = 0.5f;
+
+/** How much each color counts towards how bright a color looks (luminance weights, ITU-R BT.709): green most. */
+static constexpr glm::vec3 BrightnessWeights{0.2126f, 0.7152f, 0.0722f};
+
+/** How bright a color looks to the eye (its luminance): 1 for white at full strength. */
+static float GetBrightness(const glm::vec3& color)
+{
+    return glm::dot(color, BrightnessWeights);
+}
 
 /** Where the sun sits in SceneLights::DirectionalLights; the sky draws its disk from that light. */
 static constexpr std::size_t SunLightIndex = 0;
@@ -187,6 +219,33 @@ static constexpr std::size_t SunLightIndex = 0;
 static constexpr glm::vec3 MoonDirection{0.3f, -0.3f, -1.0f};
 static constexpr glm::vec3 MoonColor{0.45f, 0.55f, 1.0f};
 static constexpr float     MoonIntensity = 0.0f;
+
+/** Where the settings start beyond the values above: time runs as fast as the clock, the sky gives all its light. */
+static constexpr float RealTimeSpeed = 1.0f;
+static constexpr float FullSkyLight  = 1.0f;
+
+/** The settings as the scene starts: the values above, in the settings window's units. */
+static Wotah::SceneSettings MakeDefaultSettings()
+{
+    Wotah::SceneSettings settings;
+    settings.SunAzimuthDegrees        = glm::degrees(SunAzimuth);
+    settings.SunElevationDegrees      = glm::degrees(SunElevation);
+    settings.SunBrightness            = SunIntensity;
+    settings.SkyLight                 = FullSkyLight;
+    settings.HasShadows               = true;
+    settings.Gravity                  = Wotah::StandardGravity;
+    settings.TimeSpeed                = RealTimeSpeed;
+    settings.BallBounciness           = RubberSurface.Bounciness;
+    settings.CubeTurnDegreesPerSecond = glm::degrees(CubeSpin.y);
+    settings.FieldOfViewDegrees       = glm::degrees(Wotah::Camera{}.GetFieldOfView()); // every camera's default
+    return settings;
+}
+
+/** The cube's spin for a turn speed in degrees per second: around its upright axis. */
+static glm::vec3 MakeCubeSpin(float degreesPerSecond)
+{
+    return {0.0f, glm::radians(degreesPerSecond), 0.0f};
+}
 
 /** What mesh.vert gets per draw; matches its PushConstants block. */
 struct MeshPushConstants
@@ -436,6 +495,10 @@ bool Wotah::App::Create()
     }
     m_focusViews.front() = corner;
 
+    // The settings start as the scene was just set up; putting them in once makes them the one source from now on.
+    m_settings = MakeDefaultSettings();
+    ApplySettings();
+
     // The UI is asked first and keeps what lands on its windows; the camera controller and the scene's keys get the
     // rest.
     m_input.AddHandler(m_ui);
@@ -583,13 +646,18 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     {
         ResetScene();
     }
+    if (m_sceneShortcuts.TakeSettingsRequest())
+    {
+        m_isSettingsOpen = !m_isSettingsOpen;
+    }
     m_window.RequestCursorCaptured(m_cameraController.IsTurning());
     m_cameraController.Update(GetActiveCamera(), frameSeconds);
 
-    // The world moves on by the time this frame took, unless paused: the cube turns, the balls fall, bounce and roll.
+    // The world moves on by the time this frame took, as fast as the settings say, unless paused: the cube turns, the
+    // balls fall, bounce and roll.
     if (!m_isPaused)
     {
-        m_state->Physics.Step(frameSeconds);
+        m_state->Physics.Step(frameSeconds * m_settings.TimeSpeed);
     }
 
     // A new window size, or a swapchain the system no longer finds fitting: make it again before drawing. While the
@@ -618,6 +686,9 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     const VkExtent2D extent = m_state->Swapchain.GetExtent();
     Camera&          camera = GetActiveCamera();
     (void)camera.SetAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
+    // And the settings' field of view, also after F put a camera back to its focus view; the slider's range lies well
+    // inside the 0 to 180 degrees a camera takes, so it always fits.
+    (void)camera.SetFieldOfView(glm::radians(m_settings.FieldOfViewDegrees));
     // The GPU is done with the last frame (BeginFrame waited for it), so the lights can be rewritten. Bad lights are
     // logged by Update and the last good ones stay, so the frame still draws.
     (void)m_state->Lighting.Update(m_lights, camera);
@@ -669,10 +740,71 @@ void Wotah::App::ShowUi(float frameSeconds)
     m_ui.BeginFrame(m_window.GetSize(), pictureSize, frameSeconds);
     ShowStatsWindow(stats);
     ShowHintsWindow();
+    bool isSettingsChanged = false;
+    if (m_isSettingsOpen)
+    {
+        const SceneSettings defaults = MakeDefaultSettings();
+        isSettingsChanged            = ShowSettingsWindow(m_settings, defaults);
+    }
     const ControlBarClicks clicks = ShowControlBar(m_isPaused);
     m_ui.EndFrame();
 
     ApplyClicks(clicks);
+    if (isSettingsChanged)
+    {
+        ApplySettings();
+    }
+}
+
+void Wotah::App::ApplySettings()
+{
+    const SceneSettings& settings = m_settings;
+
+    // The light: the sun (always at SunLightIndex) where the settings put it, the sky's light, shadows on or off. The
+    // lower the sun, the more air its light crosses: it dims and reddens (MakeSunlightThroughAir), and the sky, lit by
+    // it, gives less light too, so a low sun darkens the whole scene, the upright faces it shines on included. The
+    // scene's sun color and sky light are their look at the start height, so the share is measured against that.
+    const float     elevation  = glm::radians(settings.SunElevationDegrees);
+    const glm::vec3 throughAir = MakeSunlightThroughAir(elevation) / MakeSunlightThroughAir(SunElevation);
+
+    // The eye gets used to less light and makes up for part of the loss: it sees the light's drop in brightness as its
+    // square root (a guess, by eye). So a sun on the horizon, which keeps about a twentieth of the start's brightness,
+    // looks about a quarter as bright: dim and red, not black. The color keeps the air's reddening in full.
+    const float     dimming  = GetBrightness(throughAir);
+    const float     seen     = std::sqrt(dimming);
+    const glm::vec3 sunColor = dimming > 0.0f ? SunColor * throughAir * (seen / dimming) : glm::vec3(0.0f);
+    if (SunLightIndex < m_lights.DirectionalLights.size())
+    {
+        DirectionalLight& sun = m_lights.DirectionalLights[SunLightIndex];
+        sun.Direction         = MakeLightDirection(glm::radians(settings.SunAzimuthDegrees), elevation);
+        sun.Color             = sunColor;
+        sun.Intensity         = settings.SunBrightness;
+    }
+
+    // The sky fades with the sun as the eye sees it, but keeps at least its twilight share: the whole sky stays bright
+    // for a while around sunset, after the sun's own light has gone.
+    const float skyShare  = std::max(seen, TwilightSkyShare);
+    m_lights.AmbientColor = SkyAmbient * settings.SkyLight * skyShare;
+    m_lights.Shadows      = settings.HasShadows ? ShadowArea{ShadowAreaCenter, ShadowAreaRadius} : ShadowArea{};
+
+    // The grass throws part of the light falling on it back up: the sun's (as squarely as it falls on flat ground) and
+    // the sky's. Upright sides get half of it and undersides all, so they are not lit by the sky alone; most of all
+    // with the sun high, as at noon, when it shines past upright sides and they would look nearly black.
+    const glm::vec3 sunOnGround = sunColor * settings.SunBrightness * std::max(std::sin(elevation), 0.0f);
+    m_lights.GroundBounce       = GrassReflectance * (sunOnGround + m_lights.AmbientColor);
+
+    // The physics: gravity, the balls' surface, the cube's turn. Time speed and field of view are read every frame.
+    State&      state       = *m_state;
+    BodySurface ballSurface = RubberSurface;
+    ballSurface.Bounciness  = settings.BallBounciness;
+    const bool isApplied =
+        state.Physics.SetGravity(settings.Gravity) && state.Physics.SetSurface(state.BallBody, ballSurface) &&
+        state.Physics.SetSurface(state.DroppedBallBody, ballSurface) &&
+        state.Physics.SetVelocity(state.CubeBody, glm::vec3(0.0f), MakeCubeSpin(settings.CubeTurnDegreesPerSecond));
+    if (!isApplied)
+    {
+        Logger::Error("Could not put the settings into the physics");
+    }
 }
 
 void Wotah::App::ApplyClicks(const ControlBarClicks& clicks)
@@ -694,13 +826,15 @@ void Wotah::App::ApplyClicks(const ControlBarClicks& clicks)
 void Wotah::App::ResetScene()
 {
     // Only the moving bodies go back, in the world as it is: nothing is made again, so no frame waits for it (making
-    // the world again, ground included, held a frame up). The cube turns on from its first angle.
-    State&     state   = *m_state;
-    const bool isReset = state.Physics.PlaceBody(state.CubeBody, state.CubeStart.Position, state.CubeStart.Rotation) &&
-                         state.Physics.SetVelocity(state.CubeBody, glm::vec3(0.0f), CubeSpin) &&
-                         state.Physics.PlaceBody(state.BallBody, state.BallStart.Position, state.BallStart.Rotation) &&
-                         state.Physics.PlaceBody(state.DroppedBallBody, state.DroppedBallStart.Position,
-                                                 state.DroppedBallStart.Rotation);
+    // the world again, ground included, held a frame up). The cube turns on from its first angle, as fast as the
+    // settings say; gravity and the balls' bounce stay as set.
+    State&     state = *m_state;
+    const bool isReset =
+        state.Physics.PlaceBody(state.CubeBody, state.CubeStart.Position, state.CubeStart.Rotation) &&
+        state.Physics.SetVelocity(state.CubeBody, glm::vec3(0.0f), MakeCubeSpin(m_settings.CubeTurnDegreesPerSecond)) &&
+        state.Physics.PlaceBody(state.BallBody, state.BallStart.Position, state.BallStart.Rotation) &&
+        state.Physics.PlaceBody(state.DroppedBallBody, state.DroppedBallStart.Position,
+                                state.DroppedBallStart.Rotation);
     if (!isReset)
     {
         Logger::Error("Could not reset the scene");

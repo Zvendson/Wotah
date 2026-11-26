@@ -1,6 +1,7 @@
 /**
  * @file lighting.cpp
- * Packs the scene's lights into the uniform buffer shaders/lighting.glsl reads, and sets up its descriptor set.
+ * Packs the scene's lights into the uniform buffer shaders/lighting.glsl reads, and sets up its descriptor set; places
+ * lights in the sky and works out how much sunlight crosses the air.
  */
 #include "render/lighting.hpp"
 
@@ -9,7 +10,10 @@
 #include "render/device.hpp"
 #include "render/vulkan_utils.hpp"
 
+#include <glm/common.hpp>
+#include <glm/exponential.hpp>
 #include <glm/geometric.hpp>
+#include <glm/trigonometric.hpp>
 #include <glm/vec4.hpp>
 #include <vulkan/vulkan.h>
 
@@ -18,6 +22,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <optional>
 #include <span>
 
@@ -25,6 +30,26 @@ namespace
 {
     /** Below this squared length a direction counts as zero. */
     constexpr float NearlyZeroSquared = 1.0e-12f;
+
+    /**
+     * How much the air dims red, green and blue light crossing it once straight up from sea level (its optical depth):
+     * the air's own scattering, about 0.05, 0.10 and 0.22 at 650, 550 and 450 nm (Bucholtz 1995, "Rayleigh-scattering
+     * calculations for the terrestrial atmosphere"). Haze, which dims every color more, is left out: a very clear day,
+     * so a sun on the horizon still gives a red glow (with haze it went black).
+     */
+    constexpr glm::vec3 AirDimming{0.05f, 0.10f, 0.22f};
+
+    /**
+     * Kasten and Young's fit of how many times more air light crosses at an elevation than straight up (1989, "Revised
+     * optical air mass tables and approximation formula"): 1 / (sin h + a (h + b)^c), h in degrees. Unlike 1 / sin h,
+     * it stays right down to the horizon (about 38 there).
+     */
+    constexpr float AirMassScale        = 0.50572f;
+    constexpr float AirMassShiftDegrees = 6.07995f;
+    constexpr float AirMassPower        = -1.6364f;
+
+    /** The highest a sun stands: straight overhead. */
+    constexpr float Overhead = std::numbers::pi_v<float> / 2.0f;
 
     /**
      * One directional light as the shader reads it (std140: vec4s and a mat4, all on 16-byte steps). Matches
@@ -47,6 +72,8 @@ namespace
     {
         /** rgb: the ambient color; a unused. */
         glm::vec4 Ambient{0.0f};
+        /** rgb: the light the ground throws back up (SceneLights::GroundBounce); a unused. */
+        glm::vec4 GroundBounce{0.0f};
         /** x: how many directional lights are used; yzw unused, so the next member starts 16-byte aligned. */
         std::array<uint32_t, 4> Count{};
         /** Where each cascade ends, along the camera's view (MakeCascadeEnds); 0 everywhere without shadows. */
@@ -63,8 +90,8 @@ namespace
     static_assert(Wotah::ShadowCascadeCount == 4, "CascadeEnds and CascadeTexels hold one cascade per vec4 component");
     static_assert(sizeof(GpuDirectionalLight) == 48 + 64 * Wotah::ShadowCascadeCount);
     static_assert(offsetof(GpuDirectionalLight, CascadeViews) == 48);
-    static_assert(offsetof(GpuSceneLights, Directional) == 80);
-    static_assert(sizeof(GpuSceneLights) == 80 + sizeof(GpuDirectionalLight) * Wotah::MaxDirectionalLights);
+    static_assert(offsetof(GpuSceneLights, Directional) == 96);
+    static_assert(sizeof(GpuSceneLights) == 96 + sizeof(GpuDirectionalLight) * Wotah::MaxDirectionalLights);
 
     /**
      * The share of a cascade at its far end where it blends into the next one, so the change of map pixel size shows
@@ -135,6 +162,7 @@ namespace
         GpuSceneLights     packed;
         const CascadeAreas cascades = MakeCascades(lights, camera, packed);
         packed.Ambient              = glm::vec4(lights.AmbientColor, 0.0f);
+        packed.GroundBounce         = glm::vec4(lights.GroundBounce, 0.0f);
         packed.Count[0]             = static_cast<uint32_t>(lights.DirectionalLights.size()); // checked above
         for (std::size_t index = 0; index < lights.DirectionalLights.size(); ++index)
         {
@@ -170,6 +198,22 @@ glm::vec3 Wotah::MakeLightDirection(float azimuth, float elevation)
     const glm::vec3 towardsLight{std::sin(azimuth) * std::cos(elevation), std::sin(elevation),
                                  -std::cos(azimuth) * std::cos(elevation)};
     return -towardsLight;
+}
+
+glm::vec3 Wotah::MakeSunlightThroughAir(float elevation)
+{
+    if (!(elevation >= 0.0f))
+    {
+        return glm::vec3(0.0f); // below the horizon (or not a number): no sunlight reaches the ground
+    }
+    const float height  = std::min(elevation, Overhead);
+    const float degrees = glm::degrees(height);
+    const float airMass =
+        1.0f / (std::sin(height) + AirMassScale * std::pow(degrees + AirMassShiftDegrees, AirMassPower));
+
+    // Each color keeps exp(-dimming * air) of its light (Beer-Lambert), here measured against the air straight up.
+    // The fit gives a hair under 1 overhead, so the share is capped at all of it.
+    return glm::min(glm::exp(-AirDimming * (airMass - 1.0f)), glm::vec3(1.0f));
 }
 
 Wotah::Lighting::~Lighting()

@@ -1063,6 +1063,25 @@ TEST_SUITE("gpu")
         CHECK(CountPixels(pixels, 0x00, 0x00, 0x00) > 25000); // front face and the edges
     }
 
+    TEST_CASE("light bounced up from the ground: half of it on upright sides, none on the top")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        // Only the ground's bounce, no sky light and no sun, so every face shows how much of it it gets.
+        Wotah::SceneLights lights;
+        lights.AmbientColor = glm::vec3(0.0f);
+        lights.GroundBounce = glm::vec3(0.8f);
+        OffscreenScene what;
+        what.Lights                       = lights;
+        const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, MakeStartCamera(), what);
+
+        // The orange cube (1, 0.5, 0): both upright faces in view get half of 0.8, (0.4, 0.2, 0); the top faces up and
+        // sees no ground, so it stays black, with the edges.
+        CHECK(CountPixels(pixels, 0x66, 0x33, 0x00) > 20000); // right and front face: 0.4 and 0.2 of 255
+        CHECK(CountPixels(pixels, 0x00, 0x00, 0x00) > 3000);  // top face (seen flat) and edges
+    }
+
     TEST_CASE("the light buffer takes up to the maximum of directional lights and refuses bad ones")
     {
         HiddenGpu gpu;
@@ -1126,6 +1145,12 @@ TEST_SUITE("gpu")
         const std::array<int, 3> disk =
             GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(-sun.Direction), sky));
         CHECK(IsColorNear(disk, 1.0f, 0.95f, 0.85f));
+
+        // A low sun's dim red light still shows a bright red disk, its color at full strength, never a black one.
+        sky.Lights.DirectionalLights.front().Color = {0.5f, 0.1f, 0.0f};
+        const std::array<int, 3> redDisk =
+            GetCenterColor(DrawSceneOffscreen(gpu.Device, MakeCameraLookingAt(-sun.Direction), sky));
+        CHECK(IsColorNear(redDisk, 1.0f, 0.2f, 0.0f));
     }
 
     TEST_CASE("the scene under the sky: the shapes in front, the sky behind, the draw order still free")

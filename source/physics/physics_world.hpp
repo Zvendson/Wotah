@@ -136,6 +136,19 @@ namespace Wotah
         bool SetVelocity(BodyId body, const glm::vec3& moving, const glm::vec3& spinning);
 
         /**
+         * Gives the body's surface new grip and bounciness from now on. False (and logged) for an unknown body or
+         * values that are below 0 or not numbers.
+         */
+        bool SetSurface(BodyId body, const BodySurface& surface);
+
+        /**
+         * Sets gravity's pull straight down, in metres per second squared (Create starts with StandardGravity); 0 lets
+         * everything float. Wakes every moving body, so resting ones feel the change. False (and logged) for a pull
+         * below 0 or not a number, or before Create.
+         */
+        bool SetGravity(float pull);
+
+        /**
          * Puts a moving body at a place and turn at once and stops it, as if it had stood there all along: drawing does
          * not slide it over from where it was. A kinematic body loses its velocity too; give it again with SetVelocity.
          * False (and logged) for a static or unknown body, or a place or turn that is not made of numbers.

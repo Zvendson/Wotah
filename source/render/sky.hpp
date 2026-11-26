@@ -37,8 +37,8 @@ namespace Wotah
         void Destroy();
 
         /**
-         * Records the sky as seen through the camera, with the sun where sun shines from and in its color. Draw it
-         * before everything else in the frame.
+         * Records the sky as seen through the camera, with the sun where sun shines from, in its color at full
+         * strength (a dim red light still shows a bright red sun). Draw it before everything else in the frame.
          */
         void Draw(VkCommandBuffer commandBuffer, const glm::mat4& viewProjection, const DirectionalLight& sun) const;
 

@@ -11,6 +11,7 @@
 #include <glm/vec4.hpp>
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
@@ -75,7 +76,11 @@ void Wotah::Sky::Draw(VkCommandBuffer commandBuffer, const glm::mat4& viewProjec
     {
         pushConstants.TowardsSun = glm::vec4(-glm::normalize(sun.Direction), 0.0f);
     }
-    pushConstants.SunColor = glm::vec4(sun.Color, 1.0f);
+    // The disk and its glow show the light's color at full strength: however little light the sun gives (low over the
+    // horizon, its light is dim and red), the disk itself is far too bright for a screen, so only its tint changes. A
+    // light without any color stays black.
+    const float strongest  = std::max({sun.Color.r, sun.Color.g, sun.Color.b});
+    pushConstants.SunColor = glm::vec4(strongest > 0.0f ? sun.Color / strongest : sun.Color, 1.0f);
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline.GetHandle());
     vkCmdPushConstants(commandBuffer, m_pipeline.GetLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants),

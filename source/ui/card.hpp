@@ -1,7 +1,7 @@
 /**
  * @file card.hpp
  * The UI's cards: small windows fixed in place, without a title bar, as large as what they hold, in the theme's thin
- * border and with a soft shadow under them. The stats window, the hints window and the control bar are cards.
+ * border and with a soft shadow under them. The stats, hints and settings windows and the control bar are cards.
  *
  *     if (Wotah::BeginCard("Stats", position, Wotah::TopLeftPivot))
  *     {
@@ -28,6 +28,9 @@ namespace Wotah
 
     /** Which point of a card sits on its anchor: the middle of its bottom edge. */
     inline constexpr glm::vec2 BottomMiddlePivot{0.5f, 1.0f};
+
+    /** Which point of a card sits on its anchor: its bottom-left corner. */
+    inline constexpr glm::vec2 BottomLeftPivot{0.0f, 1.0f};
 
     /**
      * Starts a card called name (unique among the UI's windows; it is not shown) with its pivot point on anchor, in the

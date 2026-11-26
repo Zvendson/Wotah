@@ -1,7 +1,7 @@
 /**
  * @file physics_world.cpp
  * The physics world on top of Jolt Physics 5.6: starting Jolt once for every world, the layers that say what collides
- * with what, adding and placing bodies, fixed steps, and blending the last two steps for drawing.
+ * with what, adding, placing and changing bodies, gravity, fixed steps, and blending the last two steps for drawing.
  */
 #include "physics/physics_world.hpp"
 
@@ -412,6 +412,44 @@ bool Wotah::PhysicsWorld::SetVelocity(BodyId body, const glm::vec3& moving, cons
     JPH::BodyInterface& bodies = m_state->System.GetBodyInterfaceNoLock();
     bodies.SetLinearAndAngularVelocity(tracked->Id, ToJolt(moving), ToJolt(spinning));
     bodies.ActivateBody(tracked->Id); // a resting body would ignore it until woken
+    return true;
+}
+
+bool Wotah::PhysicsWorld::SetSurface(BodyId body, const BodySurface& surface)
+{
+    const State::TrackedBody* tracked = m_state ? m_state->Find(body) : nullptr;
+    const bool isUsable = surface.Friction >= 0.0f && std::isfinite(surface.Friction) && surface.Bounciness >= 0.0f &&
+                          std::isfinite(surface.Bounciness);
+    if (tracked == nullptr || !isUsable)
+    {
+        Logger::Error("Only a known body takes a surface, with a grip and a bounciness of 0 or more");
+        return false;
+    }
+    JPH::BodyInterface& bodies = m_state->System.GetBodyInterfaceNoLock();
+    bodies.SetFriction(tracked->Id, surface.Friction);
+    bodies.SetRestitution(tracked->Id, surface.Bounciness);
+    return true;
+}
+
+bool Wotah::PhysicsWorld::SetGravity(float pull)
+{
+    if (!m_state || !(pull >= 0.0f) || !std::isfinite(pull))
+    {
+        Logger::Error("Gravity needs a created world and a pull of 0 or more, not {}", pull);
+        return false;
+    }
+    State& state = *m_state;
+    state.System.SetGravity(JPH::Vec3(0.0f, -pull, 0.0f));
+
+    // A resting body sleeps and would not feel the new pull until something woke it (Jolt docs, "Sleeping bodies").
+    JPH::BodyInterface& bodies = state.System.GetBodyInterfaceNoLock();
+    for (const State::TrackedBody& tracked : state.Bodies)
+    {
+        if (tracked.Motion != BodyMotion::Static)
+        {
+            bodies.ActivateBody(tracked.Id);
+        }
+    }
     return true;
 }
 

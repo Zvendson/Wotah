@@ -1,7 +1,7 @@
 /**
  * @file hints_window.hpp
- * A small window over the scene that lists the controls: which keys and mouse buttons fly the camera and reset the
- * scene. Shown in every UI frame, between UserInterface::BeginFrame and EndFrame.
+ * A small window over the scene that lists the controls: which keys and mouse buttons fly the camera, reset the scene
+ * and open the settings. Shown in every UI frame, between UserInterface::BeginFrame and EndFrame.
  *
  *     Wotah::ShowHintsWindow();
  */

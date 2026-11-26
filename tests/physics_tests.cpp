@@ -2,7 +2,8 @@
  * @file physics_tests.cpp
  * The physics world (physics/physics_world.hpp): gravity, landing and resting on the ground, bouncing, balls pushing
  * each other, a box to land on, the turning kinematic cube, steps that do not depend on the frame rate, smooth blending
- * for drawing, a world made again from the start, bodies placed back at once, and refused input. No GPU needed.
+ * for drawing, a world made again from the start, bodies placed back at once, gravity and surfaces changed, and
+ * refused input. No GPU needed.
  */
 #include "physics/physics_world.hpp"
 
@@ -76,6 +77,28 @@ namespace
             world.Step(Wotah::PhysicsStepSeconds);
         }
     }
+
+    /**
+     * Runs the world for 2 seconds at 60 frames a second and tells how high a ball (BallRadius) rose again after it
+     * first touched the floor, measured from the floor to its lowest point; empty when it never landed.
+     */
+    std::optional<float> FindBounceHeight(Wotah::PhysicsWorld& world, Wotah::BodyId ball)
+    {
+        bool  hasLanded        = false;
+        float highAfterLanding = 0.0f;
+        for (int frame = 0; frame < CountFrames(2.0f); ++frame)
+        {
+            world.Step(Wotah::PhysicsStepSeconds);
+            const float height = GetPosition(world, ball).y - BallRadius;
+            hasLanded          = hasLanded || height < RestingSlack;
+            highAfterLanding   = hasLanded ? std::max(highAfterLanding, height) : 0.0f;
+        }
+        if (!hasLanded)
+        {
+            return std::nullopt;
+        }
+        return highAfterLanding;
+    }
 } // namespace
 
 TEST_SUITE("physics")
@@ -127,24 +150,16 @@ TEST_SUITE("physics")
                 world.AddSphere(BallRadius, MakeBall({0.0f, 2.0f + BallRadius, 0.0f}, bounciness));
             REQUIRE(ball.has_value());
 
-            bool  hasLanded        = false;
-            float highAfterLanding = 0.0f;
-            for (int frame = 0; frame < CountFrames(2.0f); ++frame)
-            {
-                world.Step(Wotah::PhysicsStepSeconds);
-                const float height = GetPosition(world, *ball).y - BallRadius;
-                hasLanded          = hasLanded || height < RestingSlack;
-                highAfterLanding   = hasLanded ? std::max(highAfterLanding, height) : 0.0f;
-            }
-            REQUIRE(hasLanded);
+            const std::optional<float> bounce = FindBounceHeight(world, *ball);
+            REQUIRE(bounce.has_value());
             if (bounciness > 0.0f)
             {
-                CHECK(highAfterLanding > 1.2f);
-                CHECK(highAfterLanding < 2.0f); // never higher than it fell
+                CHECK(*bounce > 1.2f);
+                CHECK(*bounce < 2.0f); // never higher than it fell
             }
             else
             {
-                CHECK(highAfterLanding < RestingSlack);
+                CHECK(*bounce < RestingSlack);
             }
         }
     }
@@ -363,6 +378,66 @@ TEST_SUITE("physics")
         CHECK_FALSE(world.PlaceBody(Wotah::BodyId{}, start, noTurn));
         CHECK_FALSE(world.PlaceBody(*ball, glm::vec3(std::numeric_limits<float>::quiet_NaN()), noTurn));
         CHECK_FALSE(world.PlaceBody(*ball, start, glm::quat(0.0f, 0.0f, 0.0f, 0.0f)));
+    }
+
+    TEST_CASE("gravity can be changed: 0 lets a ball float, and a ball that fell asleep floating falls once it returns")
+    {
+        Wotah::PhysicsWorld world;
+        SetUpWorld(world, true);
+        const glm::vec3                    start{0.0f, 5.0f, 0.0f};
+        const std::optional<Wotah::BodyId> ball = world.AddSphere(BallRadius, MakeBall(start));
+        REQUIRE(ball.has_value());
+
+        // Without gravity it hangs where it is, long enough for Jolt to put it to sleep (half a second of rest).
+        REQUIRE(world.SetGravity(0.0f));
+        Run(world, 2.0f);
+        CHECK(glm::length(GetPosition(world, *ball) - start) < 1.0e-5f);
+
+        // Twice the standard pull wakes it: half a second of fall is 1/2 (2 g) t^2 = 2.45 units. Jolt's steps fall 2.37
+        // here, as the new pull shows from the second step on (measured the same for a ball that never slept), so the
+        // check allows one step's worth of fall either way. Left asleep, the ball would not fall at all (measured: 0).
+        const float pull = 2.0f * Wotah::StandardGravity;
+        REQUIRE(world.SetGravity(pull));
+        Run(world, 0.5f);
+        const float fallen      = start.y - GetPosition(world, *ball).y;
+        const float expected    = 0.5f * pull * 0.25f;
+        const float oneStepFall = pull * Wotah::PhysicsStepSeconds * 0.5f; // a step's worth at half a second's speed
+        CHECK(std::abs(fallen - expected) < oneStepFall);
+
+        // A pull below 0 or not a number is refused, as is any pull before the world is made.
+        CHECK_FALSE(world.SetGravity(-1.0f));
+        CHECK_FALSE(world.SetGravity(std::numeric_limits<float>::quiet_NaN()));
+        Wotah::PhysicsWorld neverCreated;
+        CHECK_FALSE(neverCreated.SetGravity(Wotah::StandardGravity));
+    }
+
+    TEST_CASE("a body's surface can be changed: a dead ball made bouncy bounces; bad surfaces and bodies are refused")
+    {
+        Wotah::PhysicsWorld world;
+        SetUpWorld(world, true);
+        const glm::vec3                    start{0.0f, 2.0f + BallRadius, 0.0f};
+        const std::optional<Wotah::BodyId> ball = world.AddSphere(BallRadius, MakeBall(start, 0.0f));
+        REQUIRE(ball.has_value());
+        const std::optional<float> deadBounce = FindBounceHeight(world, *ball);
+        REQUIRE(deadBounce.has_value());
+        CHECK(*deadBounce < RestingSlack);
+
+        // Bouncy now, as the settings window's slider makes the program's balls: dropped again, it bounces back up.
+        Wotah::BodySurface bouncy;
+        bouncy.Bounciness = 0.9f;
+        REQUIRE(world.SetSurface(*ball, bouncy));
+        REQUIRE(world.PlaceBody(*ball, start, glm::quat(1.0f, 0.0f, 0.0f, 0.0f)));
+        const std::optional<float> bouncyBounce = FindBounceHeight(world, *ball);
+        REQUIRE(bouncyBounce.has_value());
+        CHECK(*bouncyBounce > 1.2f);
+
+        Wotah::BodySurface noGrip;
+        noGrip.Friction = -0.1f;
+        Wotah::BodySurface noNumber;
+        noNumber.Bounciness = std::numeric_limits<float>::quiet_NaN();
+        CHECK_FALSE(world.SetSurface(*ball, noGrip));
+        CHECK_FALSE(world.SetSurface(*ball, noNumber));
+        CHECK_FALSE(world.SetSurface(Wotah::BodyId{}, bouncy));
     }
 
     TEST_CASE("bad bodies, steps and ids are refused, and several worlds live side by side")
