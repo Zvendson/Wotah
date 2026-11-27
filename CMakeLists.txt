@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
-project(VulkanSquare CXX)
+# The version: the one place it lives. A release tag must match it (v0.1.0; .github/workflows/release.yml checks).
+project(VulkanSquare VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

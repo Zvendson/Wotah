@@ -2,8 +2,10 @@
 # Windows and Linux in release configuration, runs every test that needs no GPU (the runners have none), and publishes
 # a GitHub release of that tag with both packages; a version with a "-" part (alpha, beta) is marked as a pre-release.
 # A tag anywhere else is refused before anything is built: releases come from main only (push main before or with the
-# tag). Started by hand (Actions tab, "Run workflow") on any branch it only builds and tests, and keeps the packages as
-# the run's artifacts: a trial before tagging, never a release.
+# tag). So is a tag whose version is not the one in CMakeLists.txt (project's VERSION; a "-" part left aside), or has
+# no section in CHANGELOG.md ("## 0.1.0 - <date>"): that section becomes the release's notes. Started by hand (Actions
+# tab, "Run workflow") on any branch it only builds and tests, and keeps the packages as the run's artifacts: a trial
+# before tagging, never a release.
 #
 # Each package holds the one program file: shaders and data are compiled in, the C++ runtime is linked in. Players need
 # a graphics driver with Vulkan 1.3; on Linux also the Vulkan loader (libvulkan1) and a system about as new as Ubuntu
@@ -33,7 +35,7 @@ jobs:
         with:
           fetch-depth: 0 # every branch's history, main's too
 
-      - name: Check that the tagged commit is one of main's own
+      - name: Check the tag (on main, the version in CMakeLists.txt, a section in CHANGELOG.md)
         env:
           TAG: ${{ github.ref_name }}
         # Main's own commits: those on its first-parent line, where each release is merged in and tagged. A commit
@@ -48,7 +50,17 @@ jobs:
             echo "::error::$TAG is not on the main branch: releases come from main only."
             exit 1
           fi
-          echo "$TAG is on main."
+          version="${TAG#v}"
+          project=$(sed -nE 's/^project\([^)]*VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt)
+          if [[ "${version%%-*}" != "$project" ]]; then
+            echo "::error::$TAG does not match the version in CMakeLists.txt ($project)."
+            exit 1
+          fi
+          if [[ -z "$(bash .github/scripts/changelog-section.sh "$version")" ]]; then
+            echo "::error::CHANGELOG.md has no section for $version."
+            exit 1
+          fi
+          echo "$TAG is on main, matches CMakeLists.txt and has its changelog section."
 
   windows:
     name: Windows
@@ -169,6 +181,8 @@ jobs:
     permissions:
       contents: write # to publish the release
     steps:
+      - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
         with:
           path: packages
@@ -178,9 +192,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        # Its notes are GitHub's list of what came in since the last release.
+        # Its notes are the version's section of the changelog.
         run: |
-          options=(--title "Wotah ${TAG#v}" --generate-notes --verify-tag)
+          version="${TAG#v}"
+          bash .github/scripts/changelog-section.sh "$version" > "$RUNNER_TEMP/notes.md"
+          options=(--title "Wotah $version" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag)
           if [[ "$TAG" == *-* ]]; then
             options+=(--prerelease)
           fi
