@@ -27,6 +27,69 @@ bool Wotah::Succeeded(VkResult result, const char* action)
     return false;
 }
 
+void Wotah::RecordLayoutChange(VkCommandBuffer commandBuffer, VkImage image, const LayoutChange& change)
+{
+    VkImageMemoryBarrier barrier = MakeVulkanInfo<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
+    barrier.srcAccessMask        = change.SourceAccess;
+    barrier.dstAccessMask        = change.TargetAccess;
+    barrier.oldLayout            = change.From;
+    barrier.newLayout            = change.To;
+    barrier.srcQueueFamilyIndex  = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex  = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image                = image;
+    barrier.subresourceRange     = {change.Aspect, 0, VK_REMAINING_MIP_LEVELS, change.FirstLayer, change.LayerCount};
+    vkCmdPipelineBarrier(commandBuffer, change.SourceStage, change.TargetStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+}
+
+void Wotah::RecordBeginDrawing(VkCommandBuffer commandBuffer, VkExtent2D extent, const DrawTarget& color,
+                               const DrawTarget& depth)
+{
+    const auto toAttachment = [](const DrawTarget& target)
+    {
+        VkRenderingAttachmentInfo attachment =
+            MakeVulkanInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
+        attachment.imageView   = target.View;
+        attachment.imageLayout = target.Layout;
+        attachment.loadOp      = target.IsCleared ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+        attachment.storeOp     = target.IsKept ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_NONE;
+        attachment.clearValue  = target.Clear;
+        return attachment;
+    };
+    const VkRenderingAttachmentInfo colorAttachment = toAttachment(color);
+    const VkRenderingAttachmentInfo depthAttachment = toAttachment(depth);
+
+    VkRenderingInfo rendering      = MakeVulkanInfo<VkRenderingInfo>(VK_STRUCTURE_TYPE_RENDERING_INFO);
+    rendering.renderArea           = {{0, 0}, extent};
+    rendering.layerCount           = 1;
+    rendering.colorAttachmentCount = color.View != VK_NULL_HANDLE ? 1 : 0;
+    rendering.pColorAttachments    = color.View != VK_NULL_HANDLE ? &colorAttachment : nullptr;
+    rendering.pDepthAttachment     = depth.View != VK_NULL_HANDLE ? &depthAttachment : nullptr;
+    vkCmdBeginRendering(commandBuffer, &rendering);
+
+    const VkViewport viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height),
+                              0.0f, 1.0f};
+    const VkRect2D   scissor{{0, 0}, extent};
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+}
+
+VkSampler Wotah::CreateClampedSampler(VkDevice device, VkFilter filter, const char* action)
+{
+    VkSamplerCreateInfo info = MakeVulkanInfo<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
+    info.magFilter           = filter;
+    info.minFilter           = filter;
+    info.mipmapMode          = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    info.addressModeU        = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeV        = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeW        = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    VkSampler sampler        = VK_NULL_HANDLE;
+    if (!Succeeded(vkCreateSampler(device, &info, nullptr, &sampler), action))
+    {
+        return VK_NULL_HANDLE;
+    }
+    return sampler;
+}
+
 Wotah::OneTimeCommands::~OneTimeCommands()
 {
     Free();

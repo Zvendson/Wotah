@@ -83,12 +83,6 @@ namespace Wotah
         [[nodiscard]] SceneLights& GetLights() noexcept { return m_lights; }
 
     private:
-        /**
-         * Starts the physics world: the land around the origin and the ball in the air above the sea; false (and
-         * logged) when that fails.
-         */
-        [[nodiscard]] bool CreatePhysics();
-
         /** Shows the window; the first thing Run does. */
         void Start();
 
@@ -99,10 +93,22 @@ namespace Wotah
         void DrawFrames(const std::stop_token& stop);
 
         /**
-         * One frame: hands out the input, moves the camera by frameSeconds, makes the swapchain again when needed, and
-         * draws the scene with the UI over it; false (and logged) when Vulkan failed.
+         * One frame: hands out the input, moves camera and world on by frameSeconds, makes the swapchain again when
+         * needed, and draws the scene with the UI over it; false (and logged) when Vulkan failed.
          */
         [[nodiscard]] bool DrawFrame(float frameSeconds);
+
+        /**
+         * Hands this frame's input to the handlers, does what the keys asked for (F, R, Tab), and lets the camera fly
+         * by frameSeconds.
+         */
+        void HandleInput(float frameSeconds);
+
+        /**
+         * Moves the world on by frameSeconds times the time speed, unless paused: the ball falls, bounces and rolls,
+         * and the day runs on. The sky's small movements go on in real time, paused or not.
+         */
+        void AdvanceWorld(float frameSeconds);
 
         /**
          * Puts this frame's UI together (the stats window, the controls' hints and the control bar), for a frame of
@@ -114,8 +120,8 @@ namespace Wotah
         void ApplyClicks(const ControlBarClicks& clicks);
 
         /**
-         * Puts m_settings into the scene: ApplySkySettings, then ApplyPhysicsSettings. Time speed and field of view
-         * need no call: each frame reads them.
+         * Puts m_settings into the scene: ApplySkySettings, then gravity and the ball's bounce into the world (a
+         * failure is logged). Time speed and field of view need no call: each frame reads them.
          */
         void ApplySettings();
 
@@ -126,22 +132,13 @@ namespace Wotah
          */
         void ApplySkySettings();
 
-        /** Puts gravity and the ball's bounce into the physics; a failure is logged. */
-        void ApplyPhysicsSettings();
-
-        /**
-         * Puts the scene back as it started, at once and without making anything again: the ball where it began, in
-         * the air, standing still. A failure is logged.
-         */
-        void ResetScene();
-
         /**
          * Waits until the GPU has finished the last frame, so nothing is destroyed while in use; the last thing Run
          * does.
          */
         void Stop();
 
-        /** The Vulkan handles; defined in app.cpp so this header stays free of Vulkan. */
+        /** The Vulkan objects and the world; defined in app.cpp so this header stays free of Vulkan and physics. */
         struct State;
 
         // Order matters: members are destroyed in reverse, so the device goes before the window its surface is on, and
@@ -168,8 +165,9 @@ namespace Wotah
         std::size_t m_activeCamera = 0;
 
         /**
-         * What lights the scene; Create puts a sun and a moon in. It also holds the sky's sun and moon disks and its
-         * clock (real seconds, wrapped at SkyLoopSeconds), which the sky draws and the water mirrors.
+         * What lights the scene; the settings put a sun and a moon in (ApplySkySettings). It also holds the sky's sun
+         * and moon disks and its clock (real seconds, wrapped at SkyLoopSeconds), which the sky draws and the water
+         * mirrors.
          */
         SceneLights m_lights;
 

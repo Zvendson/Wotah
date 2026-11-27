@@ -27,6 +27,13 @@ namespace
      */
     constexpr uint32_t SizeChosenBySwapchain = UINT32_MAX;
 
+    /**
+     * The images' uses: drawn into, and copied from once the solid scene is drawn, for the water to read
+     * (render/scene_behind.hpp). Every desktop system offers both.
+     */
+    constexpr VkImageUsageFlags SwapchainImageUsage =
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+
     /** The surface formats the GPU offers for the surface; empty (and logged) on failure. */
     std::vector<VkSurfaceFormatKHR> FindSurfaceFormats(VkPhysicalDevice gpu, VkSurfaceKHR surface)
     {
@@ -95,6 +102,12 @@ bool Wotah::Swapchain::Create(const Device& device, const Window& window)
         return false;
     }
 
+    if ((capabilities.supportedUsageFlags & SwapchainImageUsage) != SwapchainImageUsage)
+    {
+        Logger::Error("The screen's images cannot be both drawn into and copied from");
+        return false;
+    }
+
     const std::vector<VkSurfaceFormatKHR> formats = FindSurfaceFormats(gpu, surface);
     if (formats.empty())
     {
@@ -114,7 +127,7 @@ bool Wotah::Swapchain::Create(const Device& device, const Window& window)
     createInfo.imageColorSpace  = m_format.colorSpace;
     createInfo.imageExtent      = m_extent;
     createInfo.imageArrayLayers = 1;
-    createInfo.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    createInfo.imageUsage       = SwapchainImageUsage;
     createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE; // one queue draws and presents
     createInfo.preTransform     = capabilities.currentTransform;
     createInfo.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;

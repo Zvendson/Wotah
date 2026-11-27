@@ -17,10 +17,7 @@
 
 namespace
 {
-    /** The sky's shaders (shaders/fullscreen.vert, shaders/sky.frag), compiled to SPIR-V by the build. */
-    constexpr uint32_t FullscreenVertexShader[] = {
-#include "fullscreen.vert.inc"
-    };
+    /** The sky's fragment shader (shaders/sky.frag), compiled to SPIR-V by the build. */
     constexpr uint32_t SkyFragmentShader[] = {
 #include "sky.frag.inc"
     };
@@ -79,12 +76,8 @@ bool Wotah::Sky::Create(const Device& device, VkFormat colorFormat, VkFormat dep
 {
     // The frame has a depth image, so the pipeline names its format, but the sky neither tests nor writes depth: it is
     // infinitely far away, and everything drawn after it lies in front.
-    PipelineSettings settings;
-    settings.VertexShader   = FullscreenVertexShader;
-    settings.FragmentShader = SkyFragmentShader;
-    settings.ColorFormat    = colorFormat;
-    settings.DepthFormat    = depthFormat;
-    settings.PushConstants  = SkyPushConstantRanges;
+    PipelineSettings settings = MakeFullscreenSettings(SkyFragmentShader, colorFormat, depthFormat);
+    settings.PushConstants    = SkyPushConstantRanges;
     return m_pipeline.Create(device, settings);
 }
 

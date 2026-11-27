@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace
 {
@@ -146,4 +147,21 @@ Wotah::SkyLights Wotah::MakeSkyLights(const SkyLightSettings& settings)
     const glm::vec3 moonOnGround = MoonColor * lights.Moon.Intensity * std::max(std::sin(moonElevation), 0.0f);
     lights.GroundBounce          = GroundReflectance * (sunOnGround + moonOnGround + lights.AmbientColor);
     return lights;
+}
+
+void Wotah::PutSkyLights(const SkyLights& sky, SceneLights& lights)
+{
+    // Room for sun and moon the first time only, so a frame that puts them in again allocates nothing.
+    std::vector<DirectionalLight>& directional = lights.DirectionalLights;
+    if (directional.size() <= MoonLightIndex)
+    {
+        directional.resize(MoonLightIndex + 1);
+    }
+    directional[SunLightIndex]  = sky.Sun;
+    directional[MoonLightIndex] = sky.Moon;
+    lights.SkySun               = sky.SunDisk;
+    lights.SkyMoon              = sky.MoonDisk;
+    lights.AmbientColor         = sky.AmbientColor;
+    lights.GroundBounce         = sky.GroundBounce;
+    lights.HazeColor            = sky.HazeColor;
 }

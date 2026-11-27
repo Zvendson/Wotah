@@ -23,6 +23,9 @@ namespace Wotah
     /** The folder that holds the running executable; empty when the operating system does not tell. */
     std::optional<std::filesystem::path> FindExecutableDirectory();
 
+    /** Whether every part of a vector is a number (none infinite or NaN). */
+    [[nodiscard]] bool IsFinite(const glm::vec3& vector) noexcept;
+
     // ---- Noise: smooth randomness for landscapes and other natural shapes ----
     //
     // Every function here gives the same result as its twin in shaders/noise.glsl, to float rounding, so what the CPU

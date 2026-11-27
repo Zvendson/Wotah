@@ -141,6 +141,12 @@ namespace Wotah
                                                            const BodySurface& surface);
 
         /**
+         * Takes a body out of the world for good; its id names nothing from now on. False (and logged) for an unknown
+         * body.
+         */
+        bool RemoveBody(BodyId body);
+
+        /**
          * Sets how fast a moving body moves (world units per second) and spins (radians per second around each axis);
          * a kinematic body keeps that until told otherwise. False (and logged) for a static or unknown body.
          */

@@ -36,25 +36,10 @@ namespace
     /** Copies size bytes from source to target on the GPU and waits for it. */
     void CopyOnGpu(const Wotah::Device& device, VkBuffer source, VkBuffer target, VkDeviceSize size)
     {
-        const VkDevice          handle = device.GetHandle();
-        VkCommandPoolCreateInfo poolInfo =
-            Wotah::MakeVulkanInfo<VkCommandPoolCreateInfo>(VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO);
-        poolInfo.queueFamilyIndex = device.GetQueueFamily();
-        VkCommandPool pool        = VK_NULL_HANDLE;
-        REQUIRE(vkCreateCommandPool(handle, &poolInfo, nullptr, &pool) == VK_SUCCESS);
-
-        VkCommandBufferAllocateInfo commandInfo =
-            Wotah::MakeVulkanInfo<VkCommandBufferAllocateInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
-        commandInfo.commandPool        = pool;
-        commandInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        commandInfo.commandBufferCount = 1;
-        VkCommandBuffer commands       = VK_NULL_HANDLE;
-        REQUIRE(vkAllocateCommandBuffers(handle, &commandInfo, &commands) == VK_SUCCESS);
-
-        VkCommandBufferBeginInfo beginInfo =
-            Wotah::MakeVulkanInfo<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
-        REQUIRE(vkBeginCommandBuffer(commands, &beginInfo) == VK_SUCCESS);
-        VkBufferCopy region{};
+        Wotah::OneTimeCommands copying;
+        REQUIRE(copying.Begin(device));
+        const VkCommandBuffer commands = copying.Get();
+        VkBufferCopy          region{};
         region.size = size;
         vkCmdCopyBuffer(commands, source, target, 1, &region);
         VkMemoryBarrier toHost = Wotah::MakeVulkanInfo<VkMemoryBarrier>(VK_STRUCTURE_TYPE_MEMORY_BARRIER);
@@ -62,14 +47,7 @@ namespace
         toHost.dstAccessMask   = VK_ACCESS_HOST_READ_BIT;
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &toHost, 0,
                              nullptr, 0, nullptr);
-        REQUIRE(vkEndCommandBuffer(commands) == VK_SUCCESS);
-
-        VkSubmitInfo submit       = Wotah::MakeVulkanInfo<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers    = &commands;
-        REQUIRE(vkQueueSubmit(device.GetQueue(), 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS);
-        device.WaitUntilIdle();
-        vkDestroyCommandPool(handle, pool, nullptr);
+        REQUIRE(copying.SubmitAndWait());
     }
 } // namespace
 

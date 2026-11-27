@@ -137,10 +137,28 @@ void Wotah::DescriptorSet::WriteImage(uint32_t binding, VkImageView view, VkSamp
     vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
 }
 
-void Wotah::DescriptorSet::Bind(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, uint32_t setIndex) const
+void Wotah::DescriptorSet::WriteStorageImage(uint32_t binding, VkImageView view)
 {
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, setIndex, 1, &m_set, 0,
-                            nullptr);
+    if (!IsBindingOf(binding, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE))
+    {
+        return;
+    }
+    VkDescriptorImageInfo imageInfo{};
+    imageInfo.imageView        = view;
+    imageInfo.imageLayout      = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet write = MakeVulkanInfo<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+    write.dstSet               = m_set;
+    write.dstBinding           = binding;
+    write.descriptorCount      = 1;
+    write.descriptorType       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    write.pImageInfo           = &imageInfo;
+    vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
+}
+
+void Wotah::DescriptorSet::Bind(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, uint32_t setIndex,
+                                VkPipelineBindPoint bindPoint) const
+{
+    vkCmdBindDescriptorSets(commandBuffer, bindPoint, pipelineLayout, setIndex, 1, &m_set, 0, nullptr);
 }
 
 bool Wotah::DescriptorSet::IsBindingOf(uint32_t binding, VkDescriptorType type) const

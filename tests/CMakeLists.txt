@@ -18,16 +18,19 @@ target_link_libraries(imgui_null PUBLIC imgui)
 add_executable(wotah_tests
     main.cpp
     test_utils.hpp
+    beach_tests.cpp
     buffer_tests.cpp
     camera_tests.cpp
     clipmap_tests.cpp
     gpu_tests.cpp
     height_field_tests.cpp
     input_tests.cpp
+    land_collider_tests.cpp
     lighting_tests.cpp
     logger_tests.cpp
     mesh_data_tests.cpp
     mesh_tests.cpp
+    mirror_view_tests.cpp
     physics_tests.cpp
     sky_clock_tests.cpp
     sky_lights_tests.cpp

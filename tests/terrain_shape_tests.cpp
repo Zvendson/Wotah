@@ -97,7 +97,7 @@ TEST_SUITE("terrain shape")
 
         // From spots on the coast's middle line every 50 units over a kilometre, past the surf (the waterline swings
         // up to CoastWander + BendStrength off that line), the ground lies under the sea level all the way to where
-        // the camera's sight ends (app.cpp's far plane, 2 km).
+        // the camera's sight ends (the beach's start camera, scene/beach.cpp: 2 km).
         constexpr float SightEnd = 2000.0f;
         const float     surf     = beach.CoastWander + beach.BendStrength + 30.0f;
         float           highest  = std::numeric_limits<float>::lowest();

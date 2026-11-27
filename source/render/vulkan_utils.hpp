@@ -15,10 +15,21 @@
  *         vkCmdCopyBuffer(setup.Get(), source, target, 1, &region);
  *         setup.SubmitAndWait();
  *     }
+ *
+ *     constexpr Wotah::LayoutChange ToReadable{VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+ *                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, ...};
+ *     Wotah::RecordLayoutChange(commands, image, ToReadable);
+ *
+ *     Wotah::DrawTarget color;   // the image drawn into, cleared first
+ *     color.View   = view;
+ *     color.Layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+ *     Wotah::RecordBeginDrawing(commands, extent, color, Wotah::DrawTarget{});   // no depth image
  */
 #pragma once
 
 #include <vulkan/vulkan_core.h>
+
+#include <cstdint>
 
 namespace Wotah
 {
@@ -41,6 +52,59 @@ namespace Wotah
         info.sType = type;
         return info;
     }
+
+    /** An image's change from one layout to another, with what must finish before it and what waits after it. */
+    struct LayoutChange
+    {
+        /** The layout the image is in; UNDEFINED drops its content. */
+        VkImageLayout From = VK_IMAGE_LAYOUT_UNDEFINED;
+        /** The layout it goes to. */
+        VkImageLayout To = VK_IMAGE_LAYOUT_UNDEFINED;
+        /** The accesses that must be done before the change. */
+        VkAccessFlags SourceAccess = 0;
+        /** The accesses that wait for it. */
+        VkAccessFlags TargetAccess = 0;
+        /** The stages that must be done before the change. */
+        VkPipelineStageFlags SourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        /** The stages that wait for it. */
+        VkPipelineStageFlags TargetStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        /** Which part of the image: color or depth. */
+        VkImageAspectFlags Aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+        /** The first layer changed, and how many from it (VK_REMAINING_ARRAY_LAYERS: all the rest). */
+        uint32_t FirstLayer = 0;
+        uint32_t LayerCount = VK_REMAINING_ARRAY_LAYERS;
+    };
+
+    /** Records a layout change of an image's layers (all of them unless change says), every mip level. */
+    void RecordLayoutChange(VkCommandBuffer commandBuffer, VkImage image, const LayoutChange& change);
+
+    /**
+     * One image a rendering draws into (RecordBeginDrawing): its view (VK_NULL_HANDLE: none), the layout it is in
+     * meanwhile, whether it starts cleared to Clear (or with what it holds), and whether what is drawn is kept (or the
+     * image only read, as a depth test's depth).
+     */
+    struct DrawTarget
+    {
+        VkImageView   View      = VK_NULL_HANDLE;
+        VkImageLayout Layout    = VK_IMAGE_LAYOUT_UNDEFINED;
+        bool          IsCleared = true;
+        VkClearValue  Clear{};
+        bool          IsKept = true;
+    };
+
+    /**
+     * Begins a rendering (dynamic rendering, one layer) of an area extent large into a color and a depth image (either
+     * may have no view), with viewport and scissor covering it, as every pipeline takes them per draw
+     * (render/pipeline.hpp). End it with vkCmdEndRendering.
+     */
+    void RecordBeginDrawing(VkCommandBuffer commandBuffer, VkExtent2D extent, const DrawTarget& color,
+                            const DrawTarget& depth);
+
+    /**
+     * A sampler of one mip level that clamps at the image's edges, filtering as asked (nearest: texel by texel;
+     * linear: blended between texels); VK_NULL_HANDLE (and logged as "Could not <action>") when Vulkan refuses.
+     */
+    [[nodiscard]] VkSampler CreateClampedSampler(VkDevice device, VkFilter filter, const char* action);
 
     /**
      * A command buffer recorded once and run right away, for setup work outside the frames (uploads, an image's first

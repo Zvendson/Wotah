@@ -7,12 +7,15 @@
 #include "render/device.hpp"
 #include "render/lighting.hpp"
 #include "render/mesh_data.hpp"
-#include "render/scene_depth.hpp"
+#include "render/mirror_view.hpp"
+#include "render/scene_behind.hpp"
 #include "render/water.hpp"
 
-#include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
 #include <vulkan/vulkan.h>
+
+#include <cstddef>
+#include <cstdint>
 
 namespace
 {
@@ -24,13 +27,28 @@ namespace
 #include "water.frag.inc"
     };
 
-    /** What water.vert gets per level; matches its PushConstants block. */
+    /** The view from under the surface (shaders/underwater.frag), over the whole picture. */
+    constexpr uint32_t UnderwaterFragmentShader[] = {
+#include "underwater.frag.inc"
+    };
+
+    /** What underwater.frag gets; matches its PushConstants block. */
+    struct UnderwaterPushConstants
+    {
+        /** x: the surface's height; yzw unused. */
+        glm::vec4 Surface{0.0f};
+    };
+
+    constexpr std::array<VkPushConstantRange, 1> UnderwaterPushConstantRanges{
+        {{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(UnderwaterPushConstants)}}};
+
+    /**
+     * What water.vert and water.frag get: the clipmap's push constants (ClipmapLevels::Draw pushes them per level),
+     * then the surface; matches their PushConstants blocks.
+     */
     struct WaterPushConstants
     {
-        /** World space to clip space: the camera. */
-        glm::mat4 ViewProjection{1.0f};
-        /** xy: the level's middle; z: its cells' size; w: half its width in cells (clipmap.glsl). */
-        glm::vec4 Level{0.0f};
+        Wotah::ClipmapPushConstants Clipmap;
         /** x: the surface's height; yzw unused. */
         glm::vec4 Surface{0.0f};
     };
@@ -38,8 +56,14 @@ namespace
     // Every GPU offers at least 128 bytes of push constants (Vulkan spec, "Required Limits", maxPushConstantsSize).
     static_assert(sizeof(WaterPushConstants) <= 128, "the push constants must fit the 128 bytes every GPU offers");
 
+    /** Both stages read them: the fragment shader sees through the camera to find where the bent view lands. */
+    constexpr VkShaderStageFlags WaterPushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    /** Where the surface lies in the push constants, in bytes. */
+    constexpr uint32_t SurfaceOffset = offsetof(WaterPushConstants, Surface);
+
     constexpr std::array<VkPushConstantRange, 1> WaterPushConstantRanges{
-        {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(WaterPushConstants)}}};
+        {{WaterPushStages, 0, sizeof(WaterPushConstants)}}};
 } // namespace
 
 Wotah::WaterRenderer::~WaterRenderer()
@@ -48,21 +72,19 @@ Wotah::WaterRenderer::~WaterRenderer()
 }
 
 bool Wotah::WaterRenderer::Create(const Device& device, VkFormat colorFormat, VkFormat depthFormat,
-                                  const Lighting& lighting, const SceneDepth& sceneDepth)
+                                  const Lighting& lighting, const SceneBehind& behind, const MirrorView& mirror)
 {
     Destroy(); // a second Create replaces the first instead of leaking it
-    const ClipmapGrid grid = MakeClipmapGrid();
-    m_parts                = grid.Parts;
-    m_placement            = PlaceClipmap(glm::vec2(0.0f)); // around the origin until FollowViewer
-    if (!m_grid.Create(device, grid.Mesh))
+    if (!m_levels.Create(device))
     {
         return false;
     }
 
-    // Over what is already drawn (BlendMode::Filtered: the shader says, per color, how much of it shows through), seen
-    // from both sides (from under the water too), depth tested against the solid scene but never written: the depth
-    // image is only read now (Renderer::BeginSeeThrough).
-    const std::array<VkDescriptorSetLayout, 2> setLayouts{lighting.GetSetLayout(), sceneDepth.GetSetLayout()};
+    // Over what is already drawn, which the shader reads from the copy and covers (what lies under the water shows
+    // through the shader, bent), seen from both sides (from under the water too), depth tested against the solid scene
+    // but never written: the depth image is only read now (Renderer::BeginSeeThrough).
+    const std::array<VkDescriptorSetLayout, 3> setLayouts{lighting.GetSetLayout(), behind.GetSetLayout(),
+                                                          mirror.GetSetLayout()};
     PipelineSettings                           settings;
     settings.VertexShader         = WaterVertexShader;
     settings.FragmentShader       = WaterFragmentShader;
@@ -73,39 +95,56 @@ bool Wotah::WaterRenderer::Create(const Device& device, VkFormat colorFormat, Vk
     settings.CullMode             = VK_CULL_MODE_NONE;
     settings.DepthTest            = true;
     settings.DepthWrite           = false;
-    settings.Blend                = BlendMode::Filtered;
+    settings.Blend                = BlendMode::Opaque;
     settings.PushConstants        = WaterPushConstantRanges;
     settings.DescriptorSetLayouts = setLayouts;
-    return m_pipeline.Create(device, settings);
+
+    // Under the surface: every pixel of the solid scene tinted, from its copy, before the surface is drawn over it; no
+    // depth test (it covers the whole picture), no culling (one triangle).
+    const std::array<VkDescriptorSetLayout, 2> underwaterSetLayouts{lighting.GetSetLayout(), behind.GetSetLayout()};
+    PipelineSettings underwater     = MakeFullscreenSettings(UnderwaterFragmentShader, colorFormat, depthFormat);
+    underwater.PushConstants        = UnderwaterPushConstantRanges;
+    underwater.DescriptorSetLayouts = underwaterSetLayouts;
+    return m_pipeline.Create(device, settings) && m_underwaterPipeline.Create(device, underwater);
 }
 
 void Wotah::WaterRenderer::Destroy()
 {
+    m_underwaterPipeline.Destroy();
     m_pipeline.Destroy();
-    m_grid.Destroy();
-    m_placement = {};
+    m_levels.Destroy();
 }
 
 void Wotah::WaterRenderer::FollowViewer(const glm::vec3& viewer)
 {
-    m_placement = PlaceClipmap({viewer.x, viewer.z});
+    m_levels.FollowViewer(viewer);
+    m_viewer = viewer;
 }
 
 void Wotah::WaterRenderer::Draw(VkCommandBuffer commandBuffer, const glm::mat4& viewProjection,
-                                const Lighting& lighting, const SceneDepth& sceneDepth, const Sea& sea) const
+                                const Lighting& lighting, const SceneBehind& behind, const MirrorView& mirror,
+                                const Sea& sea) const
 {
+    // Under the surface, everything the viewer sees lies in the water: tinted first, the surface drawn over it.
+    if (m_viewer.y < sea.Level)
+    {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_underwaterPipeline.GetHandle());
+        lighting.Bind(commandBuffer, m_underwaterPipeline.GetLayout());
+        behind.Bind(commandBuffer, m_underwaterPipeline.GetLayout(), WaterSceneBehindSet);
+        const UnderwaterPushConstants underwater{glm::vec4(sea.Level, 0.0f, 0.0f, 0.0f)};
+        vkCmdPushConstants(commandBuffer, m_underwaterPipeline.GetLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(underwater), &underwater);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0); // fullscreen.vert's one triangle
+    }
+
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline.GetHandle());
     lighting.Bind(commandBuffer, m_pipeline.GetLayout());
-    sceneDepth.Bind(commandBuffer, m_pipeline.GetLayout(), WaterSceneDepthSet);
+    behind.Bind(commandBuffer, m_pipeline.GetLayout(), WaterSceneBehindSet);
+    mirror.Bind(commandBuffer, m_pipeline.GetLayout(), WaterMirrorSet);
 
-    WaterPushConstants pushConstants;
-    pushConstants.ViewProjection = viewProjection;
-    pushConstants.Surface        = glm::vec4(sea.Level, 0.0f, 0.0f, 0.0f);
-    for (const ClipmapLevel& level : m_placement)
-    {
-        pushConstants.Level = glm::vec4(level.Center, level.CellSize, static_cast<float>(ClipmapHalfCells));
-        vkCmdPushConstants(commandBuffer, m_pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
-        m_grid.Draw(commandBuffer, m_parts[level.Part]);
-    }
+    // The surface's height once, after the clipmap's part of the push constants; the levels push their part.
+    const glm::vec4 surface(sea.Level, 0.0f, 0.0f, 0.0f);
+    vkCmdPushConstants(commandBuffer, m_pipeline.GetLayout(), WaterPushStages, SurfaceOffset, sizeof(surface),
+                       &surface);
+    m_levels.Draw(commandBuffer, m_pipeline.GetLayout(), WaterPushStages, viewProjection);
 }

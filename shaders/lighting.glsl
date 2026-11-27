@@ -113,6 +113,67 @@ float GetLightReaching(uint lightIndex, vec3 position, vec3 surface, float facin
     return 1.0; // beyond the shadows' reach
 }
 
+// How much light a surface throws back looked at along cosine (the cosine of the angle to its normal), for a
+// reflectance looked at straight on: Schlick's approximation of the Fresnel equations (Schlick 1994, "An Inexpensive
+// BRDF Model for Physically-based Rendering").
+float GetFresnel(float cosine, float reflectance)
+{
+    return reflectance + (1.0 - reflectance) * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
+}
+
+// GGX's share of a rough surface's facets turned to halfway between light and view (Walter et al. 2007, "Microfacet
+// Models for Refraction through Rough Surfaces"), halfwayFacing the cosine between the normal and that halfway
+// direction, alpha the roughness.
+float GetFacetShare(float halfwayFacing, float alpha)
+{
+    const float pi           = 3.14159265;
+    float       alphaSquared = alpha * alpha;
+    float       spread       = halfwayFacing * halfwayFacing * (alphaSquared - 1.0) + 1.0;
+    return alphaSquared / (pi * spread * spread);
+}
+
+// The share of a light a rough mirror throws towards the camera: GGX's facets turned just so, the Fresnel share of
+// reflectance at that angle, and how much the facets hide each other from the light and the camera (Smith's
+// height-correlated masking and shadowing, Heitz 2014, "Understanding the Masking-Shadowing Function in
+// Microfacet-Based BRDFs"), times the light's cosine. Without that last part a surface seen at a flat angle would throw
+// back far more light than it gets. surface, towardsLight and towardsCamera have length 1.
+float GetGlossShare(vec3 surface, vec3 towardsLight, vec3 towardsCamera, float roughness, float reflectance)
+{
+    float facing = dot(surface, towardsLight);
+    float seen   = dot(surface, towardsCamera);
+    if (facing <= 0.0 || seen <= 0.0)
+    {
+        return 0.0;
+    }
+    vec3  halfway      = normalize(towardsLight + towardsCamera);
+    float alphaSquared = roughness * roughness;
+    float hidden       = facing * sqrt(seen * seen * (1.0 - alphaSquared) + alphaSquared) +
+                   seen * sqrt(facing * facing * (1.0 - alphaSquared) + alphaSquared);
+    float visible = 0.5 / max(hidden, 1.0e-6);
+    return GetFacetShare(max(dot(surface, halfway), 0.0), roughness) * visible *
+           GetFresnel(dot(halfway, towardsCamera), reflectance) * facing;
+}
+
+// The light a glossy film (water on wet sand) at position throws towards the camera: every directional light mirrored
+// as rough as roughness (GetGlossShare), blocked by shadows like any light. surface is the normal (length 1),
+// towardsCamera the direction to the camera (length 1).
+vec3 LightGloss(vec3 surface, vec3 towardsCamera, vec3 position, float viewDepth, float roughness, float reflectance)
+{
+    vec3 gloss = vec3(0.0);
+    uint used  = min(sceneLights.count.x, uint(WOTAH_MAX_DIRECTIONAL_LIGHTS));
+    for (uint index = 0; index < used; ++index)
+    {
+        DirectionalLight light  = sceneLights.directional[index];
+        float            share  = GetGlossShare(surface, light.towardsLight.xyz, towardsCamera, roughness, reflectance);
+        float            facing = dot(surface, light.towardsLight.xyz);
+        if (share > 0.0)
+        {
+            gloss += light.radiance.rgb * share * GetLightReaching(index, position, surface, facing, viewDepth);
+        }
+    }
+    return gloss;
+}
+
 // A color lit by the scene, for a surface at position (world space), viewDepth in front of the camera, facing along
 // normal (any length): the ambient light, the ground's bounced light by how much the surface faces down, plus every
 // directional light by how squarely it falls on the surface (Lambert) and how much of it is not blocked on the way (its

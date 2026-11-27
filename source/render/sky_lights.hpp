@@ -9,9 +9,8 @@
  *
  *     Wotah::SkyLightSettings settings;
  *     settings.TimeOfDayHours  = 18.5f;
- *     const Wotah::SkyLights sky = Wotah::MakeSkyLights(settings);
- *     lights.DirectionalLights   = {sky.Sun, sky.Moon};
- *     // and sky.SunDisk, sky.MoonDisk to Sky::Draw
+ *     Wotah::PutSkyLights(Wotah::MakeSkyLights(settings), sceneLights);
+ *     // sceneLights.DirectionalLights[Wotah::SunLightIndex] is the sun now; SkySun its disk for Sky::Draw
  */
 #pragma once
 
@@ -19,10 +18,15 @@
 
 #include <glm/vec3.hpp>
 
+#include <cstddef>
 #include <numbers>
 
 namespace Wotah
 {
+    /** Where sun and moon sit in SceneLights::DirectionalLights (PutSkyLights); any further lights come after them. */
+    inline constexpr std::size_t SunLightIndex  = 0;
+    inline constexpr std::size_t MoonLightIndex = 1;
+
     /** What the sky's lights are made from. */
     struct SkyLightSettings
     {
@@ -81,4 +85,11 @@ namespace Wotah
 
     /** The sky's lights for these settings. */
     [[nodiscard]] SkyLights MakeSkyLights(const SkyLightSettings& settings);
+
+    /**
+     * Puts the sky's lights into the scene's: sun and moon at SunLightIndex and MoonLightIndex (making room for them
+     * the first time; lights after them stay), their disks for the sky, the sky's light, the haze and the light the
+     * ground throws back. Shadows and the sky's clock stay as they are.
+     */
+    void PutSkyLights(const SkyLights& sky, SceneLights& lights);
 } // namespace Wotah

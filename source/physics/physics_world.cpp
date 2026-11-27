@@ -6,6 +6,7 @@
 #include "physics/physics_world.hpp"
 
 #include "core/logger.hpp"
+#include "core/utils.hpp"
 
 #include <Jolt/Jolt.h>
 #include <Jolt/Core/Factory.h>
@@ -186,15 +187,11 @@ namespace
 
     // ---- Checks ----------------------------------------------------------------------------------------------------
 
-    bool IsFinite(const glm::vec3& vector)
-    {
-        return std::isfinite(vector.x) && std::isfinite(vector.y) && std::isfinite(vector.z);
-    }
-
     /** Whether a place and a rotation are numbers, and the rotation names one (it is not a zero quaternion). */
     bool IsUsablePlace(const glm::vec3& position, const glm::quat& rotation)
     {
-        return IsFinite(position) && std::isfinite(rotation.w) && IsFinite({rotation.x, rotation.y, rotation.z}) &&
+        return Wotah::IsFinite(position) && std::isfinite(rotation.w) &&
+               Wotah::IsFinite({rotation.x, rotation.y, rotation.z}) &&
                glm::dot(rotation, rotation) >= NearlyZeroSquared;
     }
 
@@ -432,6 +429,22 @@ std::optional<Wotah::BodyId> Wotah::PhysicsWorld::AddHeightField(std::span<const
     const std::optional<BodyId> body = m_state->AddBody(shape, settings);
     m_state->System.OptimizeBroadPhase(); // as for triangles: the broad phase finds a large body faster when sorted
     return body;
+}
+
+bool Wotah::PhysicsWorld::RemoveBody(BodyId body)
+{
+    const State::TrackedBody* tracked = m_state ? m_state->Find(body) : nullptr;
+    if (tracked == nullptr)
+    {
+        Logger::Error("Only a known body can be removed");
+        return false;
+    }
+    JPH::BodyInterface& bodies = m_state->System.GetBodyInterfaceNoLock();
+    bodies.RemoveBody(tracked->Id);
+    bodies.DestroyBody(tracked->Id);
+    std::erase_if(m_state->Bodies,
+                  [body](const State::TrackedBody& kept) { return kept.Id.GetIndexAndSequenceNumber() == body.Value; });
+    return true;
 }
 
 bool Wotah::PhysicsWorld::SetVelocity(BodyId body, const glm::vec3& moving, const glm::vec3& spinning)

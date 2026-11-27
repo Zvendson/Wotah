@@ -1,0 +1,329 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// Makes the ground's textures (source/render/terrain_materials.hpp) from noise, one mip level at a time, every
+// layer (ground.glsl) at once: wet sand with a sheen, shallow ripples and little holes; dry sand with wind ripples and
+// grains; grass of thin blades from green to straw over dark soil; rock with cracks and lichen. Each tile repeats
+// seamlessly (tile_noise.glsl). A coarser mip level is made from the same noise with the detail finer than its texels
+// left out (their average kept), instead of from the finer level, so it is the right blur of the pattern, not of its
+// texels.
+//
+// Two passes per level: the first writes color and height (look) and roughness (surface's blue); the second works
+// out the slope from the heights around each texel (surface's red and green).
+
+#include "noise.glsl"
+#include "tile_noise.glsl"
+#include "ground.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba8) uniform image2DArray look;    // rgb: color; a: height (0 to 1)
+layout(set = 0, binding = 1, rgba8) uniform image2DArray surface; // rg: slope (ground.glsl); b: roughness
+
+layout(push_constant) uniform PushConstants
+{
+    uint size; // texels to a side of this mip level
+    uint pass; // 0: color, height and roughness; 1: slope
+} push;
+
+const float Pi = 3.14159265;
+
+// A texel of ground: its color, height (0 to 1, in GroundHeightRange) and roughness (GGX's alpha).
+struct Ground
+{
+    vec3  color;
+    float height;
+    float roughness;
+};
+
+// ---- Sand ----
+
+// Their colors, by eye after photographs of a temperate sandy beach: pale to warm dry sand, darker where wet.
+const vec3 DrySandPale = vec3(0.84, 0.77, 0.62);
+const vec3 DrySandWarm = vec3(0.77, 0.67, 0.50);
+const vec3 WetSandColor = vec3(0.50, 0.44, 0.33);
+
+// Wind ripples: crests along the texture's v (the world's z: along the coast, terrain_shape.glsl), SandRipplesAcross
+// of them across the tile (ground.glsl; 10 centimetres apart), wandering by up to RippleWander of a ripple; a gentle
+// windward rise and a steeper lee (a skewed sine). The land's hex-tiling shifts tiles only by whole ripples across,
+// so where two tiles blend their ripples stay in step (only the small wander differs). By eye.
+const float RippleWander = 0.6;
+const float RippleSkew   = 0.6;
+
+// Ripples come in patches: where noise of RipplePatchCells cells passes RipplePatchStart, fully from RipplePatchFull;
+// between the patches the sand lies flat. By eye.
+const int   RipplePatchCells = 3;
+const float RipplePatchStart = -0.15;
+const float RipplePatchFull  = 0.25;
+
+// Grains, one a texel at the finest level (2 millimetres), lighter or darker by GrainShade; DarkGrainShare of them
+// dark minerals, ShellShare pale bits of shell. Coarser levels hold their average, GrainAverage.
+const int   GrainsPerTile  = 1024;
+const float GrainShade     = 0.25;
+const float DarkGrainShare = 0.04;
+const vec3  DarkGrain      = vec3(0.42, 0.39, 0.37);
+const float ShellShare     = 0.012;
+const vec3  ShellGrain     = vec3(1.18, 1.2, 1.25);
+const vec3  GrainAverage   = vec3(0.979, 0.977, 0.978);
+
+// Wet sand's little holes (from air bubbles and sand worms): in PitShare of PitCells cells to a side, PitRadius metres
+// wide; shallow pools of water (darker, smoother) where noise of PoolCells cells passes PoolStart. By eye.
+const int   PitCells  = 64;
+const float PitShare  = 0.12;
+const vec2  PitRadius = vec2(0.0012, 0.0025);
+const int   PoolCells = 8;
+const float PoolStart = 0.1;
+const float PoolFull  = 0.45;
+
+// ---- Grass ----
+
+// Blades: BladesPerCell in each of BladeCells cells to a side (2 centimetres on a 1 metre tile), each from a random
+// spot in its cell in a random direction, BladeLength long and BladeWidth wide (metres), narrowing to its tip, its tip
+// standing higher than its foot; looked for BladeReach cells around. Their colors from lush green to straw, darker at
+// the foot, over dark soil and old thatch. By eye after photographs of dune grass and meadows.
+const int  BladeCells    = 48;
+const int  BladesPerCell = 4;
+const int  BladeReach    = 4;
+const vec2 BladeLength   = vec2(0.03, 0.08);
+const vec2 BladeWidth    = vec2(0.002, 0.004);
+const vec3 LushBlade     = vec3(0.19, 0.40, 0.10);
+const vec3 MidBlade      = vec3(0.33, 0.50, 0.17);
+const vec3 StrawBlade    = vec3(0.58, 0.54, 0.29);
+const vec3 Soil          = vec3(0.17, 0.14, 0.09);
+const int  DrynessCells  = 4; // straw-rich and lush patches of a quarter metre
+
+// ---- Rock ----
+
+// Gray to light rock with brown stains, thin dark cracks and lichen. By eye.
+const vec3 RockDark    = vec3(0.37, 0.35, 0.32);
+const vec3 RockLight   = vec3(0.60, 0.57, 0.52);
+const vec3 RockStain   = vec3(0.50, 0.42, 0.33);
+const vec3 LichenColor = vec3(0.60, 0.58, 0.32);
+const int  RockCells   = 3; // its main lumps: a metre on a 3 metre tile
+const int  CrackCells  = 6;
+const float CrackSharpness = 28.0;
+
+// Each pattern's own salt.
+const uint RippleSalt = 0x7F4A7C15u;
+const uint GrainSalt  = 0xBF58476Du;
+const uint MottleSalt = 0x94D049BBu;
+const uint PitSalt    = 0x2545F491u;
+const uint PoolSalt   = 0x4F1BBCDCu;
+const uint BladeSalt  = 0x9FB21C65u;
+const uint DrySalt    = 0x6C8E9CF5u;
+const uint RockSalt   = 0x3C79AC49u;
+const uint CrackSalt  = 0xD1B54A32u;
+const uint LichenSalt = 0x8CB92BA7u;
+const uint StainSalt  = 0x1D8E4E27u;
+
+// ---- Sand ----
+
+// The ripples' height (0 to 1) at uv (0 to 1 across the tile); flat (0.5) where they are finer than texels. Their
+// strength varies over the tile.
+float GetRipples(vec2 uv, float texel)
+{
+    float wander   = RippleWander * GetTileLayeredNoise(uv * 4.0, 4, RippleSalt, 4, texel * 4.0);
+    float phase    = 2.0 * Pi * (uv.x * float(SandRipplesAcross) + wander);
+    float profile  = 0.5 + 0.5 * sin(phase + RippleSkew * sin(phase));
+    float patches  = GetTileLayeredNoise(uv * float(RipplePatchCells), RipplePatchCells, RippleSalt + 7u, 2, 0.0);
+    float strength = smoothstep(RipplePatchStart, RipplePatchFull, patches);
+    return mix(0.5, profile, strength * GetLayerShare(1.0 / float(SandRipplesAcross), 2.0 * texel));
+}
+
+// The grains' tint at uv, and a little bump (out, -0.5 to 0.5); their average on coarser levels. contrast scales how
+// much the grains differ (wet sand's are less distinct).
+vec3 GetGrains(vec2 uv, float texel, float contrast, out float bump)
+{
+    bump = 0.0;
+    if (texel > 1.5 / float(GrainsPerTile))
+    {
+        return mix(vec3(1.0), GrainAverage, contrast);
+    }
+    vec3 random = GetTileCellRandom(ivec2(floor(uv * float(GrainsPerTile))), GrainsPerTile, GrainSalt);
+    vec3 tint   = vec3(1.0 + GrainShade * (random.x - 0.5));
+    if (random.y < DarkGrainShare)
+    {
+        tint *= DarkGrain;
+    }
+    else if (random.y > 1.0 - ShellShare)
+    {
+        tint *= ShellGrain;
+    }
+    bump = random.z - 0.5;
+    return mix(vec3(1.0), tint, contrast);
+}
+
+// Dry sand: ripples, grains, broad pale and warm patches; a little darker in the ripples' lee.
+Ground MakeDrySand(vec2 uv, float texel)
+{
+    float ripples = GetRipples(uv, texel);
+    float bump;
+    vec3  grains  = GetGrains(uv, texel, 1.0, bump);
+    float mottle  = GetTileLayeredNoise(uv * 4.0, 4, MottleSalt, 4, texel * 4.0);
+    vec3  color   = mix(DrySandPale, DrySandWarm, clamp(0.5 + mottle, 0.0, 1.0)) * grains * (0.96 + 0.08 * ripples);
+    return Ground(color, clamp(0.8 * ripples + 0.2 * (0.5 + bump), 0.0, 1.0), 0.9);
+}
+
+// How deep a little hole at uv is (0 to 1): in some of the cells, around a random spot inside it; gone where the holes
+// are finer than texels.
+float GetPit(vec2 uv, float texel)
+{
+    ivec2 cell   = ivec2(floor(uv * float(PitCells)));
+    vec3  random = GetTileCellRandom(cell, PitCells, PitSalt);
+    float radius = mix(PitRadius.x, PitRadius.y, random.z) / GroundTileSize[WetSandLayer];
+    if (random.x > PitShare || GetLayerShare(radius, texel) <= 0.0)
+    {
+        return 0.0;
+    }
+    vec2  middle = (vec2(cell) + 0.15 + 0.7 * GetTileCellRandom(cell, PitCells, PitSalt + 1u).xy) / float(PitCells);
+    float inside = 1.0 - smoothstep(radius - 0.5 * texel, radius + 0.5 * texel, length(uv - middle));
+    return inside * GetLayerShare(radius, texel);
+}
+
+// Wet sand: flatter ripples (the water smoothed them), faint grains, pools of water (darker, smoother), little holes;
+// smooth enough to shine (roughness well below dry sand's).
+Ground MakeWetSand(vec2 uv, float texel)
+{
+    float ripples = mix(0.5, GetRipples(uv, texel), 0.35);
+    float bump;
+    vec3  grains  = GetGrains(uv, texel, 0.5, bump);
+    float water   = GetTileLayeredNoise(uv * float(PoolCells), PoolCells, PoolSalt, 3, texel * float(PoolCells));
+    float pools   = smoothstep(PoolStart, PoolFull, water);
+    float pit     = GetPit(uv, texel);
+    vec3  color   = WetSandColor * grains * (1.0 - 0.12 * pools) * (1.0 - 0.3 * pit);
+    float height  = 0.6 * ripples * (1.0 - 0.5 * pools) + 0.4 * (0.5 + 0.3 * bump) - 0.15 * pit;
+    return Ground(color, clamp(height, 0.0, 1.0), mix(0.45, 0.15, pools));
+}
+
+// ---- Grass ----
+
+// Grass: every blade within reach drawn as a narrowing stroke, covering as much of the texel as it does (so thin
+// blades on coarse levels blend in instead of flickering); where several cover it, the higher ones count more.
+// Uncovered: soil.
+Ground MakeGrass(vec2 uv, float texel)
+{
+    float dryness = clamp(0.5 + GetTileLayeredNoise(uv * float(DrynessCells), DrynessCells, DrySalt, 2,
+                                                    texel * float(DrynessCells)),
+                          0.0, 1.0);
+    ivec2 home      = ivec2(floor(uv * float(BladeCells)));
+    float uncovered = 1.0;
+    vec3  blades    = vec3(0.0);
+    float weights   = 0.0;
+    float height    = 0.0;
+    for (int y = -BladeReach; y <= BladeReach; ++y)
+    {
+        for (int x = -BladeReach; x <= BladeReach; ++x)
+        {
+            ivec2 cell = home + ivec2(x, y);
+            for (int blade = 0; blade < BladesPerCell; ++blade)
+            {
+                uint  salt   = BladeSalt + uint(2 * blade);
+                vec3  first  = GetTileCellRandom(cell, BladeCells, salt);
+                vec3  second = GetTileCellRandom(cell, BladeCells, salt + 1u);
+                vec2  foot   = (vec2(cell) + first.xy) / float(BladeCells);
+                float angle  = 2.0 * Pi * first.z;
+                vec2  along  = vec2(cos(angle), sin(angle));
+                float bladeLength = mix(BladeLength.x, BladeLength.y, second.x) / GroundTileSize[GrassLayer];
+                float bladeWidth  = mix(BladeWidth.x, BladeWidth.y, second.y) / GroundTileSize[GrassLayer];
+
+                vec2  toUv    = uv - foot;
+                float share   = clamp(dot(toUv, along) / bladeLength, 0.0, 1.0);
+                float apart   = distance(toUv, along * share * bladeLength);
+                float halfWidth = 0.5 * bladeWidth * (1.0 - 0.6 * share);
+                float covered = 1.0 - smoothstep(halfWidth - 0.5 * texel, halfWidth + 0.5 * texel, apart);
+                if (covered <= 0.0)
+                {
+                    continue;
+                }
+                float tall  = (0.35 + 0.65 * second.z) * (0.3 + 0.7 * share);
+                float green = clamp(second.z * 0.7 + dryness * 0.6 - 0.15, 0.0, 1.0);
+                vec3  color = green < 0.5 ? mix(LushBlade, MidBlade, green * 2.0) :
+                                            mix(MidBlade, StrawBlade, green * 2.0 - 1.0);
+                color *= 0.6 + 0.55 * share; // darker at the foot, in the others' shade
+                float weight = covered * (0.2 + tall * tall * 4.0);
+                blades += weight * color;
+                weights += weight;
+                height = max(height, covered * tall);
+                uncovered *= 1.0 - covered;
+            }
+        }
+    }
+    vec3 soil  = Soil * (0.85 + 0.3 * GetTileNoise(uv * 32.0, 32, DrySalt + 3u).x);
+    vec3 color = weights > 0.0 ? mix(soil, blades / weights, 1.0 - uncovered) : soil;
+    return Ground(color, clamp(height, 0.0, 1.0), 0.8);
+}
+
+// ---- Rock ----
+
+// Rock: lumps of light and dark gray with brown stains, finer grit, thin dark cracks, lichen in patches.
+Ground MakeRock(vec2 uv, float texel)
+{
+    float lumps  = GetTileLayeredNoise(uv * float(RockCells), RockCells, RockSalt, 6, texel * float(RockCells));
+    float grit   = GetTileLayeredNoise(uv * 24.0, 24, RockSalt + 9u, 3, texel * 24.0);
+    float stain  = smoothstep(0.05, 0.35, GetTileLayeredNoise(uv * 2.0, 2, StainSalt, 3, texel * 2.0));
+    float lichen = smoothstep(0.3, 0.45, GetTileLayeredNoise(uv * 5.0, 5, LichenSalt, 4, texel * 5.0));
+    float crack  = pow(1.0 - min(abs(GetTileNoise(uv * float(CrackCells), CrackCells, CrackSalt).x), 1.0),
+                       CrackSharpness) *
+                  GetLayerShare(1.0 / (float(CrackCells) * CrackSharpness), texel);
+
+    vec3 color = mix(RockDark, RockLight, clamp(0.5 + lumps, 0.0, 1.0)) * (1.0 + 0.12 * grit);
+    color      = mix(color, RockStain, 0.5 * stain);
+    color      = mix(color, LichenColor, 0.8 * lichen);
+    color *= 1.0 - 0.55 * crack;
+    float height = 0.5 + 0.45 * lumps + 0.15 * grit - 0.4 * crack;
+    return Ground(color, clamp(height, 0.0, 1.0), 0.85);
+}
+
+// The ground of a layer at uv, texel wide (both in tiles).
+Ground MakeGround(int layer, vec2 uv, float texel)
+{
+    switch (layer)
+    {
+    case WetSandLayer:
+        return MakeWetSand(uv, texel);
+    case DrySandLayer:
+        return MakeDrySand(uv, texel);
+    case GrassLayer:
+        return MakeGrass(uv, texel);
+    default:
+        return MakeRock(uv, texel);
+    }
+}
+
+// A texel's height in metres (wrapping around the tile's edges).
+float GetHeightAt(ivec2 texel, int layer, int size)
+{
+    ivec2 wrapped = WrapCorner(texel, size);
+    return imageLoad(look, ivec3(wrapped, layer)).a * GroundHeightRange[layer];
+}
+
+void main()
+{
+    ivec3 at   = ivec3(gl_GlobalInvocationID);
+    int   size = int(push.size);
+    if (at.x >= size || at.y >= size)
+    {
+        return;
+    }
+    int layer = at.z;
+
+    if (push.pass == 0u)
+    {
+        float  texel  = 1.0 / float(size);
+        vec2   uv     = (vec2(at.xy) + 0.5) * texel;
+        Ground ground = MakeGround(layer, uv, texel);
+        imageStore(look, at, vec4(clamp(ground.color, 0.0, 1.0), ground.height));
+        imageStore(surface, at, vec4(0.5, 0.5, ground.roughness, 1.0));
+        return;
+    }
+
+    // The slope from the heights one texel to each side (central differences), in metres per metre.
+    float metres  = GroundTileSize[layer] / float(size);
+    float east    = GetHeightAt(at.xy + ivec2(1, 0), layer, size);
+    float west    = GetHeightAt(at.xy - ivec2(1, 0), layer, size);
+    float south   = GetHeightAt(at.xy + ivec2(0, 1), layer, size);
+    float north   = GetHeightAt(at.xy - ivec2(0, 1), layer, size);
+    vec2  slope   = clamp(vec2(east - west, south - north) / (2.0 * metres), -1.0, 1.0);
+    float rough   = imageLoad(surface, at).b;
+    imageStore(surface, at, vec4(slope * SlopeEncoding + 0.5, rough, 1.0));
+}

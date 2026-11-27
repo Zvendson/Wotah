@@ -1,6 +1,7 @@
 /**
  * @file pipeline.cpp
- * Builds a graphics pipeline for dynamic rendering from PipelineSettings, and frees it.
+ * Builds a graphics pipeline for dynamic rendering from PipelineSettings, and frees it; the settings of a pipeline
+ * over the whole picture.
  */
 #include "render/pipeline.hpp"
 
@@ -19,6 +20,11 @@
 
 namespace
 {
+    /** The vertex shader of every pipeline over the whole picture (shaders/fullscreen.vert), compiled by the build. */
+    constexpr uint32_t FullscreenVertexShader[] = {
+#include "fullscreen.vert.inc"
+    };
+
     /** The shaders' entry point; every shader of the project names its entry point main. */
     constexpr const char* ShaderEntryPoint = "main";
 
@@ -121,19 +127,13 @@ namespace
             return state;
         }
 
-        // Color: output * alpha + color * (1 - alpha) for Alpha, output * alpha + color for Additive, output + color *
-        // the second output for Filtered.
+        // Color: output * alpha + color * (1 - alpha) for Alpha, output * alpha + color for Additive.
         state.blendEnable         = VK_TRUE;
         state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         if (mode == Wotah::BlendMode::Additive)
         {
             state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        }
-        if (mode == Wotah::BlendMode::Filtered)
-        {
-            state.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-            state.dstColorBlendFactor = VK_BLEND_FACTOR_SRC1_COLOR;
         }
         state.colorBlendOp = VK_BLEND_OP_ADD;
 
@@ -144,6 +144,17 @@ namespace
         return state;
     }
 } // namespace
+
+Wotah::PipelineSettings Wotah::MakeFullscreenSettings(std::span<const uint32_t> fragmentShader, VkFormat colorFormat,
+                                                      VkFormat depthFormat)
+{
+    PipelineSettings settings;
+    settings.VertexShader   = FullscreenVertexShader;
+    settings.FragmentShader = fragmentShader;
+    settings.ColorFormat    = colorFormat;
+    settings.DepthFormat    = depthFormat;
+    return settings;
+}
 
 Wotah::Pipeline::~Pipeline()
 {
@@ -280,6 +291,64 @@ void Wotah::Pipeline::Destroy()
     if (m_device != VK_NULL_HANDLE)
     {
         // The pipeline before the layout it was built with; both accept VK_NULL_HANDLE (Vulkan spec).
+        vkDestroyPipeline(m_device, m_pipeline, nullptr);
+        vkDestroyPipelineLayout(m_device, m_layout, nullptr);
+    }
+    m_device   = VK_NULL_HANDLE;
+    m_layout   = VK_NULL_HANDLE;
+    m_pipeline = VK_NULL_HANDLE;
+}
+
+Wotah::ComputePipeline::~ComputePipeline()
+{
+    Destroy();
+}
+
+bool Wotah::ComputePipeline::Create(const Device& device, const ComputePipelineSettings& settings)
+{
+    Destroy(); // a second Create replaces the first instead of leaking it
+    if (settings.Shader.empty() || !FitsCount(settings.DescriptorSetLayouts) || !FitsCount(settings.PushConstants))
+    {
+        Logger::Error("A compute pipeline needs a shader");
+        return false;
+    }
+    m_device = device.GetHandle();
+
+    VkPipelineLayoutCreateInfo layoutInfo =
+        Wotah::MakeVulkanInfo<VkPipelineLayoutCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
+    layoutInfo.setLayoutCount         = CountOf(settings.DescriptorSetLayouts);
+    layoutInfo.pSetLayouts            = settings.DescriptorSetLayouts.data();
+    layoutInfo.pushConstantRangeCount = CountOf(settings.PushConstants);
+    layoutInfo.pPushConstantRanges    = settings.PushConstants.data();
+    if (!Succeeded(vkCreatePipelineLayout(m_device, &layoutInfo, nullptr, &m_layout),
+                   "create the compute pipeline layout"))
+    {
+        return false;
+    }
+
+    const ShaderModule shader(m_device, settings.Shader, "compute");
+    if (shader.Get() == VK_NULL_HANDLE)
+    {
+        return false;
+    }
+    VkPipelineShaderStageCreateInfo stage =
+        Wotah::MakeVulkanInfo<VkPipelineShaderStageCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
+    stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = shader.Get();
+    stage.pName  = ShaderEntryPoint;
+
+    VkComputePipelineCreateInfo pipelineInfo =
+        Wotah::MakeVulkanInfo<VkComputePipelineCreateInfo>(VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO);
+    pipelineInfo.stage  = stage;
+    pipelineInfo.layout = m_layout;
+    return Succeeded(vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_pipeline),
+                     "create the compute pipeline");
+}
+
+void Wotah::ComputePipeline::Destroy()
+{
+    if (m_device != VK_NULL_HANDLE)
+    {
         vkDestroyPipeline(m_device, m_pipeline, nullptr);
         vkDestroyPipelineLayout(m_device, m_layout, nullptr);
     }

@@ -16,6 +16,7 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
+#include <cmath>
 #include <string>
 #include <system_error>
 
@@ -120,6 +121,11 @@ namespace
         return glm::vec2(LayerCos * place.x - LayerSin * place.y, LayerSin * place.x + LayerCos * place.y) * LayerScale;
     }
 } // namespace
+
+bool Wotah::IsFinite(const glm::vec3& vector) noexcept
+{
+    return std::isfinite(vector.x) && std::isfinite(vector.y) && std::isfinite(vector.z);
+}
 
 std::optional<std::filesystem::path> Wotah::FindExecutableDirectory()
 {

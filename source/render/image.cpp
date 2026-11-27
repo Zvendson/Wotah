@@ -26,7 +26,7 @@ namespace
         VK_FORMAT_D16_UNORM,
     };
 
-    /** What a depth format must allow: being drawn into, and being read by shaders (Renderer::GetSceneDepth). */
+    /** What a depth format must allow: being drawn into, and being read by shaders (SceneBehind, MirrorView). */
     constexpr VkFormatFeatureFlags DepthFeatures =
         VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
 
@@ -64,28 +64,41 @@ Wotah::Image::~Image()
     Destroy();
 }
 
+uint32_t Wotah::GetMipLevelCountFor(VkExtent2D extent) noexcept
+{
+    uint32_t count = 1;
+    for (uint32_t side = std::max(extent.width, extent.height); side > 1; side /= 2)
+    {
+        ++count;
+    }
+    return count;
+}
+
 bool Wotah::Image::Create(const Device& device, VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
-                          uint32_t layerCount)
+                          uint32_t layerCount, uint32_t mipLevelCount)
 {
     Destroy(); // a second Create replaces the first image instead of leaking it
-    if (extent.width == 0 || extent.height == 0 || layerCount == 0)
+    if (extent.width == 0 || extent.height == 0 || layerCount == 0 || mipLevelCount == 0 ||
+        mipLevelCount > GetMipLevelCountFor(extent))
     {
-        Logger::Error("An image needs a size and a layer count above 0, not {}x{} with {} layers", extent.width,
-                      extent.height, layerCount);
+        Logger::Error("An image needs a size, a layer count and a fitting mip level count above 0, not {}x{} with {} "
+                      "layers and {} mip levels",
+                      extent.width, extent.height, layerCount, mipLevelCount);
         return false;
     }
-    m_device     = device.GetHandle();
-    m_allocator  = device.GetAllocator();
-    m_format     = format;
-    m_extent     = extent;
-    m_aspect     = GetAspectOf(format);
-    m_layerCount = layerCount;
+    m_device        = device.GetHandle();
+    m_allocator     = device.GetAllocator();
+    m_format        = format;
+    m_extent        = extent;
+    m_aspect        = GetAspectOf(format);
+    m_layerCount    = layerCount;
+    m_mipLevelCount = mipLevelCount;
 
     VkImageCreateInfo imageInfo = Wotah::MakeVulkanInfo<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
     imageInfo.imageType         = VK_IMAGE_TYPE_2D;
     imageInfo.format            = format;
     imageInfo.extent            = {extent.width, extent.height, 1};
-    imageInfo.mipLevels         = 1;
+    imageInfo.mipLevels         = mipLevelCount;
     imageInfo.arrayLayers       = layerCount;
     imageInfo.samples           = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling            = VK_IMAGE_TILING_OPTIMAL;
@@ -106,7 +119,7 @@ bool Wotah::Image::Create(const Device& device, VkExtent2D extent, VkFormat form
     viewInfo.image            = m_image;
     viewInfo.viewType         = layerCount == 1 ? VK_IMAGE_VIEW_TYPE_2D : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     viewInfo.format           = format;
-    viewInfo.subresourceRange = {m_aspect, 0, 1, 0, layerCount}; // the whole image: one mip level, every layer
+    viewInfo.subresourceRange = {m_aspect, 0, mipLevelCount, 0, layerCount}; // the whole image
     return Succeeded(vkCreateImageView(m_device, &viewInfo, nullptr, &m_view), "create an image view");
 }
 
@@ -121,13 +134,14 @@ void Wotah::Image::Destroy()
     {
         vmaDestroyImage(m_allocator, m_image, m_allocation);
     }
-    m_device     = VK_NULL_HANDLE;
-    m_allocator  = nullptr;
-    m_image      = VK_NULL_HANDLE;
-    m_allocation = nullptr;
-    m_view       = VK_NULL_HANDLE;
-    m_format     = VK_FORMAT_UNDEFINED;
-    m_extent     = {};
-    m_aspect     = 0;
-    m_layerCount = 0;
+    m_device        = VK_NULL_HANDLE;
+    m_allocator     = nullptr;
+    m_image         = VK_NULL_HANDLE;
+    m_allocation    = nullptr;
+    m_view          = VK_NULL_HANDLE;
+    m_format        = VK_FORMAT_UNDEFINED;
+    m_extent        = {};
+    m_aspect        = 0;
+    m_layerCount    = 0;
+    m_mipLevelCount = 0;
 }

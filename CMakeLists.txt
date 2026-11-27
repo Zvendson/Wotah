@@ -126,7 +126,9 @@ set(WOTAH_MAX_DIRECTIONAL_LIGHTS 8)
 set(WOTAH_SHADOW_CASCADES 4)
 set(WOTAH_SHADER_INCLUDES ${WOTAH_SHADER_INCLUDE_DIR}/atmosphere.glsl ${WOTAH_SHADER_INCLUDE_DIR}/lighting.glsl
     ${WOTAH_SHADER_INCLUDE_DIR}/sky.glsl ${WOTAH_SHADER_INCLUDE_DIR}/noise.glsl
-    ${WOTAH_SHADER_INCLUDE_DIR}/clipmap.glsl ${WOTAH_SHADER_INCLUDE_DIR}/terrain_shape.glsl)
+    ${WOTAH_SHADER_INCLUDE_DIR}/clipmap.glsl ${WOTAH_SHADER_INCLUDE_DIR}/terrain_shape.glsl
+    ${WOTAH_SHADER_INCLUDE_DIR}/tile_noise.glsl ${WOTAH_SHADER_INCLUDE_DIR}/ground.glsl
+    ${WOTAH_SHADER_INCLUDE_DIR}/water.glsl)
 function(wotah_compile_shaders out_var output_dir)
     set(outputs "")
     foreach(source ${ARGN})
@@ -155,8 +157,10 @@ wotah_compile_shaders(SHADERS ${SHADER_OUT}
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/terrain.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/terrain.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/terrain_shadow.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/terrain_material.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/water.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/water.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/underwater.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/shadow.vert)
 
 # Everything but the entry point, so the program and the tests run the same code.
@@ -175,6 +179,8 @@ add_library(wotah STATIC
     source/input/input_handler.hpp
     source/input/scene_shortcuts.hpp
     source/input/scene_shortcuts.cpp
+    source/physics/land_collider.hpp
+    source/physics/land_collider.cpp
     source/physics/physics_world.hpp
     source/physics/physics_world.cpp
     source/platform/window.hpp
@@ -185,6 +191,8 @@ add_library(wotah STATIC
     source/render/camera.cpp
     source/render/clipmap.hpp
     source/render/clipmap.cpp
+    source/render/clipmap_levels.hpp
+    source/render/clipmap_levels.cpp
     source/render/descriptor_set.hpp
     source/render/descriptor_set.cpp
     source/render/device.hpp
@@ -199,12 +207,18 @@ add_library(wotah STATIC
     source/render/mesh.cpp
     source/render/mesh_data.hpp
     source/render/mesh_data.cpp
+    source/render/mesh_pipelines.hpp
+    source/render/mesh_pipelines.cpp
     source/render/pipeline.hpp
     source/render/pipeline.cpp
     source/render/renderer.hpp
     source/render/renderer.cpp
-    source/render/scene_depth.hpp
-    source/render/scene_depth.cpp
+    source/render/mirror_view.hpp
+    source/render/mirror_view.cpp
+    source/render/scene_behind.hpp
+    source/render/scene_behind.cpp
+    source/render/scene_renderer.hpp
+    source/render/scene_renderer.cpp
     source/render/shadow_maps.hpp
     source/render/shadow_maps.cpp
     source/render/sky.hpp
@@ -215,6 +229,8 @@ add_library(wotah STATIC
     source/render/sky_lights.cpp
     source/render/swapchain.hpp
     source/render/swapchain.cpp
+    source/render/terrain_materials.hpp
+    source/render/terrain_materials.cpp
     source/render/terrain_renderer.hpp
     source/render/terrain_renderer.cpp
     source/render/ui_renderer.hpp
@@ -227,6 +243,8 @@ add_library(wotah STATIC
     source/render/water.cpp
     source/render/water_renderer.hpp
     source/render/water_renderer.cpp
+    source/scene/beach.hpp
+    source/scene/beach.cpp
     source/terrain/terrain_shape.hpp
     source/terrain/terrain_shape.cpp
     source/ui/card.hpp

@@ -6,6 +6,7 @@
 #include "render/shadow_maps.hpp"
 
 #include "core/logger.hpp"
+#include "core/utils.hpp"
 #include "render/camera.hpp"
 #include "render/device.hpp"
 #include "render/vulkan_utils.hpp"
@@ -45,42 +46,6 @@ namespace
      * the map's pixel size from one frame to the next.
      */
     constexpr float RadiusStep = 1.0f / 16.0f;
-
-    /** A layout change of some of the maps' layers. */
-    struct LayerChange
-    {
-        uint32_t             FirstLayer   = 0;
-        uint32_t             LayerCount   = 1;
-        VkImageLayout        From         = VK_IMAGE_LAYOUT_UNDEFINED;
-        VkImageLayout        To           = VK_IMAGE_LAYOUT_UNDEFINED;
-        VkPipelineStageFlags SourceStage  = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-        VkAccessFlags        SourceAccess = 0;
-        VkPipelineStageFlags TargetStage  = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-        VkAccessFlags        TargetAccess = 0;
-    };
-
-    /** Records a layout change of the layers in change. */
-    void ChangeLayers(VkCommandBuffer commandBuffer, VkImage image, const LayerChange& change)
-    {
-        VkImageMemoryBarrier barrier =
-            Wotah::MakeVulkanInfo<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
-        barrier.srcAccessMask       = change.SourceAccess;
-        barrier.dstAccessMask       = change.TargetAccess;
-        barrier.oldLayout           = change.From;
-        barrier.newLayout           = change.To;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image               = image;
-        barrier.subresourceRange    = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, change.FirstLayer, change.LayerCount};
-        vkCmdPipelineBarrier(commandBuffer, change.SourceStage, change.TargetStage, 0, 0, nullptr, 0, nullptr, 1,
-                             &barrier);
-    }
-
-    /** Whether every part of a vector is a number other than infinity. */
-    bool IsFinite(const glm::vec3& vector)
-    {
-        return std::isfinite(vector.x) && std::isfinite(vector.y) && std::isfinite(vector.z);
-    }
 } // namespace
 
 std::optional<Wotah::CascadeEnds> Wotah::MakeCascadeEnds(float nearest, float reach)
@@ -249,19 +214,21 @@ bool Wotah::ShadowMaps::Create(const Device& device, uint32_t lightCount)
     {
         return false;
     }
-    LayerChange toClear;
+    LayoutChange toClear;
+    toClear.Aspect       = VK_IMAGE_ASPECT_DEPTH_BIT;
     toClear.LayerCount   = layerCount;
     toClear.To           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     toClear.TargetStage  = VK_PIPELINE_STAGE_TRANSFER_BIT;
     toClear.TargetAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
-    ChangeLayers(setup.Get(), m_image.GetHandle(), toClear);
+    RecordLayoutChange(setup.Get(), m_image.GetHandle(), toClear);
 
     const VkClearDepthStencilValue nothing{NothingDrawn, 0};
     const VkImageSubresourceRange  allLayers{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, layerCount};
     vkCmdClearDepthStencilImage(setup.Get(), m_image.GetHandle(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &nothing, 1,
                                 &allLayers);
 
-    LayerChange toRead;
+    LayoutChange toRead;
+    toRead.Aspect       = VK_IMAGE_ASPECT_DEPTH_BIT;
     toRead.LayerCount   = layerCount;
     toRead.From         = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     toRead.To           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -269,7 +236,7 @@ bool Wotah::ShadowMaps::Create(const Device& device, uint32_t lightCount)
     toRead.SourceAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
     toRead.TargetStage  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     toRead.TargetAccess = VK_ACCESS_SHADER_READ_BIT;
-    ChangeLayers(setup.Get(), m_image.GetHandle(), toRead);
+    RecordLayoutChange(setup.Get(), m_image.GetHandle(), toRead);
     return setup.SubmitAndWait();
 }
 
@@ -304,34 +271,21 @@ bool Wotah::ShadowMaps::BeginLayer(VkCommandBuffer commandBuffer, uint32_t layer
     }
 
     // The old content is not needed (it is cleared), but the last frame's shaders must be done reading it.
-    LayerChange toDraw;
+    LayoutChange toDraw;
+    toDraw.Aspect       = VK_IMAGE_ASPECT_DEPTH_BIT;
     toDraw.FirstLayer   = layer;
+    toDraw.LayerCount   = 1;
     toDraw.To           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     toDraw.SourceStage  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     toDraw.TargetStage  = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     toDraw.TargetAccess = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    ChangeLayers(commandBuffer, m_image.GetHandle(), toDraw);
+    RecordLayoutChange(commandBuffer, m_image.GetHandle(), toDraw);
 
-    VkRenderingAttachmentInfo depth =
-        Wotah::MakeVulkanInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
-    depth.imageView                     = m_layerViews[layer];
-    depth.imageLayout                   = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depth.loadOp                        = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth.storeOp                       = VK_ATTACHMENT_STORE_OP_STORE; // the scene reads it afterwards
-    depth.clearValue.depthStencil.depth = NothingDrawn;
-
-    const VkExtent2D extent{ShadowMapSize, ShadowMapSize};
-    VkRenderingInfo  rendering = Wotah::MakeVulkanInfo<VkRenderingInfo>(VK_STRUCTURE_TYPE_RENDERING_INFO);
-    rendering.renderArea       = {{0, 0}, extent};
-    rendering.layerCount       = 1;
-    rendering.pDepthAttachment = &depth;
-    vkCmdBeginRendering(commandBuffer, &rendering);
-
-    const VkViewport viewport{0.0f, 0.0f, static_cast<float>(ShadowMapSize), static_cast<float>(ShadowMapSize),
-                              0.0f, 1.0f};
-    const VkRect2D   scissor{{0, 0}, extent};
-    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+    DrawTarget depth; // kept: the scene reads it afterwards
+    depth.View                     = m_layerViews[layer];
+    depth.Layout                   = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth.Clear.depthStencil.depth = NothingDrawn;
+    RecordBeginDrawing(commandBuffer, {ShadowMapSize, ShadowMapSize}, DrawTarget{}, depth);
     return true;
 }
 
@@ -340,13 +294,15 @@ void Wotah::ShadowMaps::EndLayer(VkCommandBuffer commandBuffer, uint32_t layer) 
     vkCmdEndRendering(commandBuffer);
 
     // The depths written must be done and visible before the scene's fragment shaders compare against them.
-    LayerChange toRead;
+    LayoutChange toRead;
+    toRead.Aspect       = VK_IMAGE_ASPECT_DEPTH_BIT;
     toRead.FirstLayer   = layer;
+    toRead.LayerCount   = 1;
     toRead.From         = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     toRead.To           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     toRead.SourceStage  = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     toRead.SourceAccess = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     toRead.TargetStage  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     toRead.TargetAccess = VK_ACCESS_SHADER_READ_BIT;
-    ChangeLayers(commandBuffer, m_image.GetHandle(), toRead);
+    RecordLayoutChange(commandBuffer, m_image.GetHandle(), toRead);
 }

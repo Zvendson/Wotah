@@ -3,8 +3,9 @@
  * Runs a frame: waits for the GPU, takes a swapchain image, records into a command buffer that draws into it (with a
  * depth image, so nearer surfaces hide farther ones) with dynamic rendering, submits the work and shows the image. What
  * is drawn stays with the caller. Between BeginFrame and BeginScene the frame can record its own passes first, such as
- * the shadow maps. After the solid scene, BeginSeeThrough lets what lies over it (water) read how far the solid scene
- * is behind each pixel.
+ * the shadow maps, and the picture a flat mirror shows (BeginMirror, render/mirror_view.hpp). After the solid scene,
+ * BeginSeeThrough lets what lies over it (water) read the solid scene behind each pixel: how far, and its colors
+ * (render/scene_behind.hpp).
  *
  *     Wotah::Renderer renderer;
  *     if (renderer.Create(device, swapchain))
@@ -13,10 +14,11 @@
  *         if (start == Wotah::FrameStart::Ready)
  *         {
  *             // passes before the scene, e.g. the shadow maps
+ *             renderer.BeginMirror();      // optional: what the water mirrors, read through renderer.GetMirror()
  *             renderer.BeginScene();
  *             vkCmdBindPipeline(renderer.GetCommandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
  *             vkCmdDraw(renderer.GetCommandBuffer(), 3, 1, 0, 0);
- *             renderer.BeginSeeThrough();  // optional: water and the like, reading renderer.GetSceneDepth()
+ *             renderer.BeginSeeThrough();  // optional: water and the like, reading renderer.GetSceneBehind()
  *             renderer.EndFrame();
  *         }
  *     }
@@ -25,7 +27,8 @@
 #pragma once
 
 #include "render/image.hpp"
-#include "render/scene_depth.hpp"
+#include "render/mirror_view.hpp"
+#include "render/scene_behind.hpp"
 
 #include <vulkan/vulkan_core.h>
 
@@ -63,9 +66,9 @@ namespace Wotah
         Renderer& operator=(const Renderer&) = delete;
 
         /**
-         * Creates the depth image (which shaders can read, see GetSceneDepth), the command pool and buffer, the
-         * semaphores and the frame fence for the swapchain; false (and logged) when one fails. The device and the
-         * swapchain must outlive the renderer.
+         * Creates the depth image, the solid scene's copy and the mirror for shaders to read (GetSceneBehind,
+         * GetMirror), the command pool and buffer, the semaphores and the frame fence for the swapchain; false (and
+         * logged) when one fails. The device and the swapchain must outlive the renderer.
          */
         [[nodiscard]] bool Create(const Device& device, Swapchain& swapchain);
 
@@ -74,8 +77,9 @@ namespace Wotah
 
         /**
          * Makes the swapchain again at the window's current size (after Window::TakeResize or Swapchain::IsOutOfDate),
-         * with a depth image and semaphores to match. Waits until the GPU is idle first. The pipelines stay, as
-         * viewport and scissor are set every frame; false (and logged) when Vulkan fails or the image format changed.
+         * with a depth image, scene copy, mirror and semaphores to match. Waits until the GPU is idle first. The
+         * pipelines stay, as viewport and scissor are set every frame; false (and logged) when Vulkan fails or the
+         * image format changed.
          */
         [[nodiscard]] bool RecreateSwapchain(const Device& device, const Window& window);
 
@@ -92,20 +96,32 @@ namespace Wotah
         [[nodiscard]] FrameStart BeginFrame();
 
         /**
+         * Starts drawing the mirror's picture (render/mirror_view.hpp): cleared, viewport and scissor at its size. Draw
+         * what a flat mirror shows, through MakeMirrorViewProjection, with pipelines that cull clockwise front faces.
+         * At most once per frame, after BeginFrame said Ready and before BeginScene; refused (logged) otherwise.
+         */
+        void BeginMirror();
+
+        /**
          * Starts drawing into the frame's image: the image and the depth are cleared, and viewport and scissor cover
-         * all of it. Once per frame, after BeginFrame said Ready.
+         * all of it. The mirror's picture is done first (only cleared if BeginMirror did not run). Once per frame,
+         * after BeginFrame said Ready.
          */
         void BeginScene();
 
         /**
          * Ends the solid part of the scene and starts what lies over it (water, glass): the depth drawn so far stays
-         * the depth test but is no longer written, and fragment shaders can read it through GetSceneDepth. Pipelines
-         * drawn after it must not write depth. At most once per frame, after BeginScene; refused (logged) otherwise.
+         * the depth test but is no longer written, and fragment shaders can read it and a copy of the colors drawn so
+         * far through GetSceneBehind. Pipelines drawn after it must not write depth. At most once per frame, after
+         * BeginScene; refused (logged) otherwise.
          */
         void BeginSeeThrough();
 
-        /** The solid scene's depth for shaders drawn after BeginSeeThrough; they bind it themselves. */
-        [[nodiscard]] const SceneDepth& GetSceneDepth() const noexcept { return m_sceneDepth; }
+        /** The mirror's picture for shaders drawn after BeginScene; they bind it themselves. */
+        [[nodiscard]] const MirrorView& GetMirror() const noexcept { return m_mirror; }
+
+        /** The solid scene's depth and colors for shaders drawn after BeginSeeThrough; they bind it themselves. */
+        [[nodiscard]] const SceneBehind& GetSceneBehind() const noexcept { return m_sceneBehind; }
 
         /** The command buffer of the frame between BeginFrame and EndFrame. */
         [[nodiscard]] VkCommandBuffer GetCommandBuffer() const noexcept { return m_commandBuffer; }
@@ -117,6 +133,12 @@ namespace Wotah
         [[nodiscard]] bool EndFrame();
 
     private:
+        /**
+         * Makes the images as large as the swapchain's: the depth image, the solid scene's copy and the mirror; false
+         * (and logged) when one fails. Replaces earlier ones, which the GPU must be done with.
+         */
+        [[nodiscard]] bool CreateFrameImages(const Device& device, VkFormat depthFormat);
+
         /** Makes one "drawn" semaphore per swapchain image; false (and logged) when one fails. */
         [[nodiscard]] bool CreateDrawnSemaphores();
 
@@ -139,8 +161,11 @@ namespace Wotah
         /** The depth of every pixel drawn this frame; one image, as only one frame is in flight. */
         Image m_depth;
 
-        /** The depth image as fragment shaders read it after BeginSeeThrough. */
-        SceneDepth m_sceneDepth;
+        /** The depth image and a copy of the colors as fragment shaders read them after BeginSeeThrough. */
+        SceneBehind m_sceneBehind;
+
+        /** What a flat mirror (the sea) shows, drawn after BeginMirror, read after BeginScene. */
+        MirrorView m_mirror;
 
         VkCommandPool            m_commandPool    = VK_NULL_HANDLE;
         VkCommandBuffer          m_commandBuffer  = VK_NULL_HANDLE;
@@ -151,7 +176,8 @@ namespace Wotah
         /** The swapchain image of the frame being recorded. */
         uint32_t m_imageIndex = 0;
 
-        /** Whether BeginScene and BeginSeeThrough ran in the frame being recorded. */
+        /** Whether BeginMirror, BeginScene and BeginSeeThrough ran in the frame being recorded. */
+        bool m_isMirrorBegun     = false;
         bool m_isSceneBegun      = false;
         bool m_isSeeThroughBegun = false;
     };

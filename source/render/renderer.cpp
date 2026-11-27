@@ -20,23 +20,11 @@ namespace
     /** No time limit when waiting for the previous frame: vsync paces the loop. */
     constexpr uint64_t NoTimeout = UINT64_MAX;
 
-    /** An image's change from one layout to another, with what must finish before and wait after it. */
-    struct LayoutChange
-    {
-        VkImageLayout        From         = VK_IMAGE_LAYOUT_UNDEFINED;
-        VkImageLayout        To           = VK_IMAGE_LAYOUT_UNDEFINED;
-        VkAccessFlags        SourceAccess = 0;
-        VkAccessFlags        TargetAccess = 0;
-        VkPipelineStageFlags SourceStage  = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-        VkPipelineStageFlags TargetStage  = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-        VkImageAspectFlags   Aspect       = VK_IMAGE_ASPECT_COLOR_BIT;
-    };
-
     /**
      * Before drawing: the old content is not needed (UNDEFINED), and the color writes wait for the image, which the
      * acquire semaphore releases at the color output stage.
      */
-    constexpr LayoutChange ToDrawTarget{
+    constexpr Wotah::LayoutChange ToDrawTarget{
         VK_IMAGE_LAYOUT_UNDEFINED,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         0,
@@ -47,7 +35,7 @@ namespace
     };
 
     /** After drawing: the color writes finish before the image is handed to the screen. */
-    constexpr LayoutChange ToPresent{
+    constexpr Wotah::LayoutChange ToPresent{
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
@@ -63,7 +51,7 @@ namespace
      * DEPTH_STENCIL_ATTACHMENT_OPTIMAL also fits depth-only formats and needs no extra GPU feature, unlike
      * DEPTH_ATTACHMENT_OPTIMAL.
      */
-    constexpr LayoutChange ToDepthTarget{
+    constexpr Wotah::LayoutChange ToDepthTarget{
         VK_IMAGE_LAYOUT_UNDEFINED,
         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -73,28 +61,11 @@ namespace
         VK_IMAGE_ASPECT_DEPTH_BIT,
     };
 
-    /** The depth image's uses: drawn into, and read by shaders after BeginSeeThrough. */
+    /** The depth image's uses: drawn into, and read by shaders after BeginSeeThrough (SceneBehind). */
     constexpr VkImageUsageFlags DepthUsage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
     /** Depth cleared to the far plane (1.0 in Vulkan's 0..1 range), so every first fragment passes the LESS test. */
     constexpr float FarDepth = 1.0f;
-
-    /** Records a layout change of a whole image. */
-    void ChangeLayout(VkCommandBuffer commandBuffer, VkImage image, const LayoutChange& change)
-    {
-        VkImageMemoryBarrier barrier =
-            Wotah::MakeVulkanInfo<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
-        barrier.srcAccessMask       = change.SourceAccess;
-        barrier.dstAccessMask       = change.TargetAccess;
-        barrier.oldLayout           = change.From;
-        barrier.newLayout           = change.To;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image               = image;
-        barrier.subresourceRange    = {change.Aspect, 0, 1, 0, 1}; // one mip level, one layer
-        vkCmdPipelineBarrier(commandBuffer, change.SourceStage, change.TargetStage, 0, 0, nullptr, 0, nullptr, 1,
-                             &barrier);
-    }
 
     /** A binary semaphore (not CreateSemaphore, a <windows.h> macro); VK_NULL_HANDLE (and logged) on failure. */
     VkSemaphore CreateBinarySemaphore(VkDevice device)
@@ -121,14 +92,13 @@ bool Wotah::Renderer::Create(const Device& device, Swapchain& swapchain)
     m_queue     = device.GetQueue();
     m_swapchain = &swapchain;
 
-    // One depth image serves every frame (one frame in flight), as large as the swapchain's images.
+    // One depth image serves every frame (one frame in flight), as large as the swapchain's images; with it what
+    // shaders read of the solid scene and the mirror's picture.
     const std::optional<VkFormat> depthFormat = FindDepthFormat(device);
-    if (!depthFormat || !m_depth.Create(device, swapchain.GetExtent(), *depthFormat, DepthUsage) ||
-        !m_sceneDepth.Create(device))
+    if (!depthFormat || !CreateFrameImages(device, *depthFormat))
     {
         return false;
     }
-    m_sceneDepth.Point(m_depth);
 
     // The command buffer is reset and recorded again every frame.
     VkCommandPoolCreateInfo poolInfo =
@@ -178,7 +148,8 @@ void Wotah::Renderer::Destroy()
         vkDestroySemaphore(m_device, m_imageAvailable, nullptr);
         vkDestroyCommandPool(m_device, m_commandPool, nullptr); // frees the command buffer too
     }
-    m_sceneDepth.Destroy();
+    m_mirror.Destroy();
+    m_sceneBehind.Destroy();
     m_depth.Destroy();
 
     m_device         = VK_NULL_HANDLE;
@@ -190,6 +161,7 @@ void Wotah::Renderer::Destroy()
     m_renderFinished.clear();
     m_frameFence        = VK_NULL_HANDLE;
     m_imageIndex        = 0;
+    m_isMirrorBegun     = false;
     m_isSceneBegun      = false;
     m_isSeeThroughBegun = false;
 }
@@ -216,12 +188,7 @@ bool Wotah::Renderer::RecreateSwapchain(const Device& device, const Window& wind
     }
 
     DestroyDrawnSemaphores();
-    if (!m_depth.Create(device, m_swapchain->GetExtent(), depthFormat, DepthUsage))
-    {
-        return false;
-    }
-    m_sceneDepth.Point(m_depth); // the new image; the GPU is idle (waited above)
-    return CreateDrawnSemaphores();
+    return CreateFrameImages(device, depthFormat) && CreateDrawnSemaphores();
 }
 
 Wotah::FrameStart Wotah::Renderer::BeginFrame()
@@ -253,16 +220,35 @@ Wotah::FrameStart Wotah::Renderer::BeginFrame()
     {
         return FrameStart::Failed;
     }
+    m_isMirrorBegun     = false;
     m_isSceneBegun      = false;
     m_isSeeThroughBegun = false;
     return FrameStart::Ready;
 }
 
+void Wotah::Renderer::BeginMirror()
+{
+    if (m_isMirrorBegun || m_isSceneBegun)
+    {
+        Logger::Error("The mirror's picture comes once per frame, before BeginScene");
+        return;
+    }
+    m_isMirrorBegun = true;
+    m_mirror.Begin(m_commandBuffer);
+}
+
 void Wotah::Renderer::BeginScene()
 {
+    // The mirror's picture is done; cleared, if nothing drew it, so whatever reads it reads something defined.
+    if (!m_isMirrorBegun)
+    {
+        m_mirror.Begin(m_commandBuffer);
+    }
+    m_mirror.End(m_commandBuffer);
+
     m_isSceneBegun = true;
-    ChangeLayout(m_commandBuffer, m_swapchain->GetImage(m_imageIndex), ToDrawTarget);
-    ChangeLayout(m_commandBuffer, m_depth.GetHandle(), ToDepthTarget);
+    RecordLayoutChange(m_commandBuffer, m_swapchain->GetImage(m_imageIndex), ToDrawTarget);
+    RecordLayoutChange(m_commandBuffer, m_depth.GetHandle(), ToDepthTarget);
     BeginRendering(false);
 }
 
@@ -275,47 +261,28 @@ void Wotah::Renderer::BeginSeeThrough()
     }
     m_isSeeThroughBegun = true;
     vkCmdEndRendering(m_commandBuffer);
-    RecordDepthReadable(m_commandBuffer, m_depth.GetHandle());
+    m_sceneBehind.Record(m_commandBuffer, m_swapchain->GetImage(m_imageIndex), m_depth);
     BeginRendering(true);
 }
 
 void Wotah::Renderer::BeginRendering(bool isSeeThrough)
 {
-    const VkExtent2D extent = m_swapchain->GetExtent();
-
     // The scene starts from the clear color; the see-through part draws over what the scene drew.
-    VkRenderingAttachmentInfo color =
-        Wotah::MakeVulkanInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
-    color.imageView        = m_swapchain->GetView(m_imageIndex);
-    color.imageLayout      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    color.loadOp           = isSeeThrough ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
-    color.storeOp          = VK_ATTACHMENT_STORE_OP_STORE;
-    color.clearValue.color = m_clearColor;
+    DrawTarget color;
+    color.View        = m_swapchain->GetView(m_imageIndex);
+    color.Layout      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color.IsCleared   = !isSeeThrough;
+    color.Clear.color = m_clearColor;
 
     // The scene clears the depth and keeps what it drew, for the see-through part, which only reads it (storing
     // nothing, as nothing changed; a store would count as a write).
-    VkRenderingAttachmentInfo depth =
-        Wotah::MakeVulkanInfo<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
-    depth.imageView   = m_depth.GetView();
-    depth.imageLayout = isSeeThrough ? ReadableDepthLayout : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depth.loadOp      = isSeeThrough ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth.storeOp     = isSeeThrough ? VK_ATTACHMENT_STORE_OP_NONE : VK_ATTACHMENT_STORE_OP_STORE;
-    depth.clearValue.depthStencil.depth = FarDepth;
-
-    VkRenderingInfo renderingInfo      = Wotah::MakeVulkanInfo<VkRenderingInfo>(VK_STRUCTURE_TYPE_RENDERING_INFO);
-    renderingInfo.renderArea           = {{0, 0}, extent};
-    renderingInfo.layerCount           = 1;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachments    = &color;
-    renderingInfo.pDepthAttachment     = &depth;
-    vkCmdBeginRendering(m_commandBuffer, &renderingInfo);
-
-    // Every pipeline takes viewport and scissor per frame (see Pipeline); both cover the whole image.
-    const VkViewport viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height),
-                              0.0f, 1.0f};
-    const VkRect2D   scissor{{0, 0}, extent};
-    vkCmdSetViewport(m_commandBuffer, 0, 1, &viewport);
-    vkCmdSetScissor(m_commandBuffer, 0, 1, &scissor);
+    DrawTarget depth;
+    depth.View      = m_depth.GetView();
+    depth.Layout    = isSeeThrough ? ReadableDepthLayout : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth.IsCleared = !isSeeThrough;
+    depth.Clear.depthStencil.depth = FarDepth;
+    depth.IsKept                   = !isSeeThrough;
+    RecordBeginDrawing(m_commandBuffer, m_swapchain->GetExtent(), color, depth);
 }
 
 bool Wotah::Renderer::EndFrame()
@@ -325,7 +292,7 @@ bool Wotah::Renderer::EndFrame()
         BeginScene(); // the image must still be cleared and made ready to show
     }
     vkCmdEndRendering(m_commandBuffer);
-    ChangeLayout(m_commandBuffer, m_swapchain->GetImage(m_imageIndex), ToPresent);
+    RecordLayoutChange(m_commandBuffer, m_swapchain->GetImage(m_imageIndex), ToPresent);
     if (!Succeeded(vkEndCommandBuffer(m_commandBuffer), "finish recording the frame"))
     {
         return false;
@@ -350,6 +317,15 @@ bool Wotah::Renderer::EndFrame()
 
     m_swapchain->Present(m_queue, drawn, m_imageIndex);
     return true;
+}
+
+bool Wotah::Renderer::CreateFrameImages(const Device& device, VkFormat depthFormat)
+{
+    const VkExtent2D extent      = m_swapchain->GetExtent();
+    const VkFormat   colorFormat = m_swapchain->GetFormat();
+    return m_depth.Create(device, extent, depthFormat, DepthUsage) &&
+           m_sceneBehind.Create(device, m_depth, colorFormat) &&
+           m_mirror.Create(device, extent, colorFormat, depthFormat);
 }
 
 bool Wotah::Renderer::CreateDrawnSemaphores()

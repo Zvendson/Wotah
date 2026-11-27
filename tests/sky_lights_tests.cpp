@@ -59,6 +59,37 @@ namespace
 
 TEST_SUITE("sky lights")
 {
+    TEST_CASE("the sky's lights go into the scene's: sun and moon in their places, later lights kept")
+    {
+        const Wotah::SkyLights sky = Wotah::MakeSkyLights(MakeDay(15.0f));
+
+        // An empty scene gets room for both.
+        Wotah::SceneLights empty;
+        Wotah::PutSkyLights(sky, empty);
+        REQUIRE(empty.DirectionalLights.size() == 2);
+        CHECK(empty.DirectionalLights[Wotah::SunLightIndex].Direction == sky.Sun.Direction);
+        CHECK(empty.DirectionalLights[Wotah::MoonLightIndex].Direction == sky.Moon.Direction);
+        CHECK(empty.SkySun.Intensity == sky.SunDisk.Intensity);
+        CHECK(empty.SkyMoon.Direction == sky.MoonDisk.Direction);
+        CHECK(empty.AmbientColor == sky.AmbientColor);
+        CHECK(empty.GroundBounce == sky.GroundBounce);
+        CHECK(empty.HazeColor == sky.HazeColor);
+
+        // A third light after them stays as it was, and so do the shadows and the sky's clock.
+        Wotah::SceneLights      more;
+        Wotah::DirectionalLight lamp;
+        lamp.Intensity         = 0.25f;
+        more.DirectionalLights = {Wotah::DirectionalLight{}, Wotah::DirectionalLight{}, lamp};
+        more.Shadows           = {glm::vec3(1.0f, 2.0f, 3.0f), 40.0f};
+        more.SkySeconds        = 12.0f;
+        Wotah::PutSkyLights(sky, more);
+        REQUIRE(more.DirectionalLights.size() == 3);
+        CHECK(more.DirectionalLights[Wotah::SunLightIndex].Intensity == sky.Sun.Intensity);
+        CHECK(more.DirectionalLights[2].Intensity == 0.25f);
+        CHECK(more.Shadows.Radius == 40.0f);
+        CHECK(more.SkySeconds == 12.0f);
+    }
+
     TEST_CASE("the sun 45 degrees up gives its own warm white light, the sky its full light, the day's haze")
     {
         Wotah::SkyLightSettings settings = MakeDay(12.0f);

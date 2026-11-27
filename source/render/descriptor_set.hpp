@@ -64,8 +64,15 @@ namespace Wotah
          */
         void WriteImage(uint32_t binding, VkImageView view, VkSampler sampler, VkImageLayout layout);
 
-        /** Binds the set at set index setIndex of a graphics pipeline's layout. */
-        void Bind(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, uint32_t setIndex) const;
+        /**
+         * Points a storage image binding (read and written by shaders, in VK_IMAGE_LAYOUT_GENERAL) at an image view;
+         * refused (logged) for another kind.
+         */
+        void WriteStorageImage(uint32_t binding, VkImageView view);
+
+        /** Binds the set at set index setIndex of a pipeline's layout: a graphics one, or as bindPoint says. */
+        void Bind(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, uint32_t setIndex,
+                  VkPipelineBindPoint bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS) const;
 
         /** The layout, for pipelines that read this set; VK_NULL_HANDLE before Create. */
         [[nodiscard]] VkDescriptorSetLayout GetLayout() const noexcept { return m_layout; }

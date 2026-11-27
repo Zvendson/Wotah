@@ -65,20 +65,10 @@ namespace
         return packed;
     }
 
-    /** What terrain.vert and terrain_shadow.vert get per level; matches their PushConstants block. */
-    struct TerrainPushConstants
-    {
-        /** World space to clip space: the camera, or a light's shadow map. */
-        glm::mat4 ViewProjection{1.0f};
-        /** xy: the level's middle; z: its cells' size; w: half its width in cells (clipmap.glsl). */
-        glm::vec4 Level{0.0f};
-    };
-
-    // Every GPU offers at least 128 bytes of push constants (Vulkan spec, "Required Limits", maxPushConstantsSize).
-    static_assert(sizeof(TerrainPushConstants) <= 128, "the push constants must fit the 128 bytes every GPU offers");
-
+    /** What terrain.vert and terrain_shadow.vert get per level: the clipmap's own push constants, nothing more. */
+    constexpr VkShaderStageFlags                 TerrainPushStages = VK_SHADER_STAGE_VERTEX_BIT;
     constexpr std::array<VkPushConstantRange, 1> TerrainPushConstantRanges{
-        {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(TerrainPushConstants)}}};
+        {{TerrainPushStages, 0, sizeof(Wotah::ClipmapPushConstants)}}};
 
     /**
      * The shape's set: its uniform buffer, read by the vertex shaders (heights) and the fragment shader (the sea
@@ -87,13 +77,6 @@ namespace
     constexpr std::array<Wotah::DescriptorBinding, 1> ShapeBindings{
         {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT}}};
     constexpr uint32_t ShapeBinding = 0;
-
-    /**
-     * How far the land's depths in the shadow maps are pushed away from the light, so lit ground does not shadow
-     * itself: as for the shapes (app.cpp), 2 of the map's smallest depth steps and twice the triangle's slope.
-     */
-    constexpr float ShadowDepthBiasConstant = 2.0f;
-    constexpr float ShadowDepthBiasSlope    = 2.0f;
 
     /** How far in from its middle a level's own triangles start: the finer level fills half its width (clipmap.hpp). */
     constexpr float HoleShare = 0.5f;
@@ -110,11 +93,9 @@ bool Wotah::TerrainRenderer::Create(const Device& device, VkFormat colorFormat, 
     Destroy(); // a second Create replaces the first instead of leaking it
 
     // The shape's buffer and set, flat land to start with, and the grid every level is drawn from.
-    const ClipmapGrid grid = MakeClipmapGrid();
-    m_parts                = grid.Parts;
     if (!m_shapeBuffer.Create(device, sizeof(GpuTerrainShape), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                               BufferMemory::CpuToGpu) ||
-        !m_shapeSet.Create(device, ShapeBindings) || !m_grid.Create(device, grid.Mesh))
+        !m_shapeSet.Create(device, ShapeBindings) || !m_levels.Create(device))
     {
         return false;
     }
@@ -123,11 +104,18 @@ bool Wotah::TerrainRenderer::Create(const Device& device, VkFormat colorFormat, 
     {
         return false;
     }
-    m_placement = PlaceClipmap(glm::vec2(0.0f)); // around the origin until FollowViewer
+    // The ground's textures, made on the GPU (a moment's work at start).
+    if (!m_materials.Create(device))
+    {
+        return false;
+    }
 
-    // Both pipelines see the lights at set 0 and the shape at set 1 (only the scene's fragment shader reads the
-    // lights). The land is seen from above, so back faces are skipped; into shadow maps both sides go, as for shapes.
+    // Every pipeline sees the lights at set 0 and the shape at set 1 (only the lit fragment shader reads the lights),
+    // the lit ones the ground's textures at set 2. The land is seen from above, so back faces are skipped; in the
+    // mirror its front faces wind clockwise; into shadow maps both sides go, as for shapes.
     const std::array<VkDescriptorSetLayout, 2> setLayouts{lighting.GetSetLayout(), m_shapeSet.GetLayout()};
+    const std::array<VkDescriptorSetLayout, 3> litSetLayouts{lighting.GetSetLayout(), m_shapeSet.GetLayout(),
+                                                             m_materials.GetSetLayout()};
     PipelineSettings                           scene;
     scene.VertexShader         = TerrainVertexShader;
     scene.FragmentShader       = TerrainFragmentShader;
@@ -140,7 +128,9 @@ bool Wotah::TerrainRenderer::Create(const Device& device, VkFormat colorFormat, 
     scene.DepthTest            = true;
     scene.DepthWrite           = true;
     scene.PushConstants        = TerrainPushConstantRanges;
-    scene.DescriptorSetLayouts = setLayouts;
+    scene.DescriptorSetLayouts = litSetLayouts;
+    PipelineSettings mirror    = scene;
+    mirror.FrontFace           = VK_FRONT_FACE_CLOCKWISE;
 
     PipelineSettings shadow;
     shadow.VertexShader         = TerrainShadowVertexShader;
@@ -154,17 +144,19 @@ bool Wotah::TerrainRenderer::Create(const Device& device, VkFormat colorFormat, 
     shadow.DepthBiasSlope       = ShadowDepthBiasSlope;
     shadow.PushConstants        = TerrainPushConstantRanges;
     shadow.DescriptorSetLayouts = setLayouts;
-    return m_pipeline.Create(device, scene) && m_shadowPipeline.Create(device, shadow);
+    return m_pipeline.Create(device, scene) && m_mirrorPipeline.Create(device, mirror) &&
+           m_shadowPipeline.Create(device, shadow);
 }
 
 void Wotah::TerrainRenderer::Destroy()
 {
     m_shadowPipeline.Destroy();
+    m_mirrorPipeline.Destroy();
     m_pipeline.Destroy();
-    m_grid.Destroy();
+    m_levels.Destroy();
+    m_materials.Destroy();
     m_shapeSet.Destroy();
     m_shapeBuffer.Destroy();
-    m_placement = {};
 }
 
 bool Wotah::TerrainRenderer::SetShape(const TerrainShape& shape)
@@ -180,16 +172,19 @@ bool Wotah::TerrainRenderer::SetShape(const TerrainShape& shape)
 
 void Wotah::TerrainRenderer::FollowViewer(const glm::vec3& viewer)
 {
-    m_placement = PlaceClipmap({viewer.x, viewer.z});
+    m_levels.FollowViewer(viewer);
 }
 
 void Wotah::TerrainRenderer::Draw(VkCommandBuffer commandBuffer, const glm::mat4& viewProjection,
                                   const Lighting& lighting) const
 {
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline.GetHandle());
-    lighting.Bind(commandBuffer, m_pipeline.GetLayout());
-    m_shapeSet.Bind(commandBuffer, m_pipeline.GetLayout(), TerrainShapeSet);
-    DrawLevels(commandBuffer, m_pipeline, viewProjection, ClipmapLevelCount);
+    DrawLit(commandBuffer, m_pipeline, viewProjection, lighting);
+}
+
+void Wotah::TerrainRenderer::DrawMirrored(VkCommandBuffer commandBuffer, const glm::mat4& mirroredViewProjection,
+                                          const Lighting& lighting) const
+{
+    DrawLit(commandBuffer, m_mirrorPipeline, mirroredViewProjection, lighting);
 }
 
 void Wotah::TerrainRenderer::DrawShadow(VkCommandBuffer commandBuffer, const glm::mat4& lightViewProjection,
@@ -199,13 +194,13 @@ void Wotah::TerrainRenderer::DrawShadow(VkCommandBuffer commandBuffer, const glm
     // level, half its width) is narrower than reach.
     uint32_t end = 1;
     while (end < ClipmapLevelCount &&
-           HoleShare * static_cast<float>(ClipmapHalfCells) * m_placement[end].CellSize < reach)
+           HoleShare * static_cast<float>(ClipmapHalfCells) * m_levels.GetPlacement()[end].CellSize < reach)
     {
         ++end;
     }
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipeline.GetHandle());
     m_shapeSet.Bind(commandBuffer, m_shadowPipeline.GetLayout(), TerrainShapeSet);
-    DrawLevels(commandBuffer, m_shadowPipeline, lightViewProjection, end);
+    m_levels.Draw(commandBuffer, m_shadowPipeline.GetLayout(), TerrainPushStages, lightViewProjection, end);
 }
 
 void Wotah::TerrainRenderer::BindShape(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout) const
@@ -213,17 +208,12 @@ void Wotah::TerrainRenderer::BindShape(VkCommandBuffer commandBuffer, VkPipeline
     m_shapeSet.Bind(commandBuffer, pipelineLayout, TerrainShapeSet);
 }
 
-void Wotah::TerrainRenderer::DrawLevels(VkCommandBuffer commandBuffer, const Pipeline& pipeline,
-                                        const glm::mat4& viewProjection, uint32_t end) const
+void Wotah::TerrainRenderer::DrawLit(VkCommandBuffer commandBuffer, const Pipeline& pipeline,
+                                     const glm::mat4& viewProjection, const Lighting& lighting) const
 {
-    TerrainPushConstants pushConstants;
-    pushConstants.ViewProjection = viewProjection;
-    for (uint32_t index = 0; index < end; ++index)
-    {
-        const ClipmapLevel& level = m_placement[index];
-        pushConstants.Level       = glm::vec4(level.Center, level.CellSize, static_cast<float>(ClipmapHalfCells));
-        vkCmdPushConstants(commandBuffer, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
-        m_grid.Draw(commandBuffer, m_parts[level.Part]);
-    }
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
+    lighting.Bind(commandBuffer, pipeline.GetLayout());
+    m_shapeSet.Bind(commandBuffer, pipeline.GetLayout(), TerrainShapeSet);
+    m_materials.Bind(commandBuffer, pipeline.GetLayout(), TerrainMaterialsSet);
+    m_levels.Draw(commandBuffer, pipeline.GetLayout(), TerrainPushStages, viewProjection);
 }

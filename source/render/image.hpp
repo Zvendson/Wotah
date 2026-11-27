@@ -27,9 +27,13 @@ namespace Wotah
      */
     [[nodiscard]] std::optional<VkFormat> FindDepthFormat(const Device& device);
 
+    /** How many mip levels an image of this size has down to 1 x 1: 1 + log2 of its larger side, rounded down. */
+    [[nodiscard]] uint32_t GetMipLevelCountFor(VkExtent2D extent) noexcept;
+
     /**
-     * A 2D image in GPU-only memory, one mip level and one or more layers, and a view of all of it. The destructor runs
-     * Destroy, so nothing leaks when Create fails part way. The GPU must be done with the image before it is destroyed.
+     * A 2D image in GPU-only memory, one or more layers of one or more mip levels (each half the size of the one
+     * before), and a view of all of it. The destructor runs Destroy, so nothing leaks when Create fails part way. The
+     * GPU must be done with the image before it is destroyed.
      */
     class Image final
     {
@@ -42,12 +46,13 @@ namespace Wotah
 
         /**
          * Creates the image and its view for the given uses (VK_IMAGE_USAGE_*); depth formats get a depth view, others
-         * a color view. With more than one layer the view is an array of all of them. Replaces an image created
-         * before. False (and logged) for a size or layer count of 0 or when Vulkan refuses. The device must outlive
-         * the image.
+         * a color view. With more than one layer the view is an array of all of them; it covers every mip level.
+         * Replaces an image created before. False (and logged) for a size, layer count or mip level count of 0, more
+         * mip levels than halving the size allows (GetMipLevelCountFor), or when Vulkan refuses. The device must
+         * outlive the image.
          */
         [[nodiscard]] bool Create(const Device& device, VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
-                                  uint32_t layerCount = 1);
+                                  uint32_t layerCount = 1, uint32_t mipLevelCount = 1);
 
         /** Frees the view, the image and its memory; safe to call more than once or after a failed Create. */
         void Destroy();
@@ -67,6 +72,9 @@ namespace Wotah
         /** How many layers it has. */
         [[nodiscard]] uint32_t GetLayerCount() const noexcept { return m_layerCount; }
 
+        /** How many mip levels it has. */
+        [[nodiscard]] uint32_t GetMipLevelCount() const noexcept { return m_mipLevelCount; }
+
         /** The aspect its view covers: depth for depth formats, color otherwise; for barriers. */
         [[nodiscard]] VkImageAspectFlags GetAspect() const noexcept { return m_aspect; }
 
@@ -80,7 +88,8 @@ namespace Wotah
         VkImageView        m_view       = VK_NULL_HANDLE;
         VkFormat           m_format     = VK_FORMAT_UNDEFINED;
         VkExtent2D         m_extent{};
-        VkImageAspectFlags m_aspect     = 0;
-        uint32_t           m_layerCount = 0;
+        VkImageAspectFlags m_aspect        = 0;
+        uint32_t           m_layerCount    = 0;
+        uint32_t           m_mipLevelCount = 0;
     };
 } // namespace Wotah

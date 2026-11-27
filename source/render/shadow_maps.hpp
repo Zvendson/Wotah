@@ -57,6 +57,15 @@ namespace Wotah
         float Radius = 0.0f;
     };
 
+    /**
+     * How far casters' depths in the shadow maps are pushed away from the light, so a lit surface does not shadow
+     * itself (PipelineSettings::DepthBiasConstant and DepthBiasSlope of every shadow pipeline): 2 of the map's smallest
+     * depth steps, and twice the triangle's slope. Found by looking at the pictures; with shaders/lighting.glsl lifting
+     * the looked-up point, this leaves the open ground clean without the shadows letting go of the shapes.
+     */
+    inline constexpr float ShadowDepthBiasConstant = 2.0f;
+    inline constexpr float ShadowDepthBiasSlope    = 2.0f;
+
     /** Where each cascade ends, as distances along the camera's view direction; the last one is reach. */
     using CascadeEnds = std::array<float, ShadowCascadeCount>;
 

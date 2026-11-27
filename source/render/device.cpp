@@ -135,8 +135,8 @@ namespace
     }
 
     /**
-     * The first Vulkan 1.3 GPU that can blend with a second output from the shader (dualSrcBlend: water filters what
-     * lies under it per color; every desktop GPU can) and has a queue family that can draw and present to the surface.
+     * The first Vulkan 1.3 GPU that filters textures seen at a slant sharply (samplerAnisotropy: the land's textures;
+     * every desktop GPU can) and has a queue family that can draw and present to the surface.
      */
     std::optional<GpuChoice> FindGpu(VkInstance instance, VkSurfaceKHR surface)
     {
@@ -164,9 +164,10 @@ namespace
             }
             VkPhysicalDeviceFeatures features;
             vkGetPhysicalDeviceFeatures(gpu, &features);
-            if (features.dualSrcBlend != VK_TRUE)
+            if (features.samplerAnisotropy != VK_TRUE)
             {
-                Wotah::Logger::Info("Skipping GPU {}: it cannot blend with two shader outputs", properties.deviceName);
+                Wotah::Logger::Info("Skipping GPU {}: it cannot filter textures seen at a slant",
+                                    properties.deviceName);
                 continue;
             }
 
@@ -183,8 +184,8 @@ namespace
     }
 
     /**
-     * The logical device with one queue from the chosen family, the swapchain extension, dynamic rendering and blending
-     * with two shader outputs.
+     * The logical device with one queue from the chosen family, the swapchain extension, dynamic rendering and
+     * anisotropic filtering.
      */
     VkDevice CreateLogicalDevice(const GpuChoice& choice)
     {
@@ -199,9 +200,9 @@ namespace
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
         features13.dynamicRendering = VK_TRUE;
 
-        // A second shader output as a blend factor (VK_BLEND_FACTOR_SRC1_COLOR): FindGpu chose a GPU that has it.
+        // Anisotropic filtering for textures seen at a slant (the land's): FindGpu chose a GPU that has it.
         VkPhysicalDeviceFeatures features{};
-        features.dualSrcBlend = VK_TRUE;
+        features.samplerAnisotropy = VK_TRUE;
 
         const char* const  swapchainExtension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         VkDeviceCreateInfo createInfo = Wotah::MakeVulkanInfo<VkDeviceCreateInfo>(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);

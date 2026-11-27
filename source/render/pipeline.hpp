@@ -18,6 +18,8 @@
  *     pipeline.Destroy();
  *
  * Viewport and scissor are always dynamic: set them with vkCmdSetViewport and vkCmdSetScissor before drawing.
+ *
+ * A ComputePipeline runs one compute shader (vkCmdDispatch), with its own descriptor sets and push constants.
  */
 #pragma once
 
@@ -39,12 +41,6 @@ namespace Wotah
         Alpha,
         /** Light that adds up: output * alpha + color. */
         Additive,
-        /**
-         * Output added to the color seen through a filter the fragment shader writes as its second output (location 0,
-         * index 1), per color: output + color * filter. Water: its mirrored sky and own glow added, the floor showing
-         * through it tinted. Needs the dualSrcBlend GPU feature, which Device turns on.
-         */
-        Filtered,
     };
 
     /**
@@ -103,6 +99,14 @@ namespace Wotah
     };
 
     /**
+     * The settings of a pipeline that covers the whole picture with this fragment shader: shaders/fullscreen.vert's one
+     * triangle (draw 3 vertices, no vertex buffer), no culling, no depth test or write (the frame's depth format is
+     * named, so it fits the frame's drawing). Add push constants and descriptor sets as the fragment shader needs.
+     */
+    [[nodiscard]] PipelineSettings MakeFullscreenSettings(std::span<const uint32_t> fragmentShader,
+                                                          VkFormat colorFormat, VkFormat depthFormat);
+
+    /**
      * A graphics pipeline and its layout. The destructor runs Destroy, so nothing leaks when Create fails part way.
      */
     class Pipeline final
@@ -124,6 +128,50 @@ namespace Wotah
         void Destroy();
 
         /** The pipeline, for vkCmdBindPipeline. */
+        [[nodiscard]] VkPipeline GetHandle() const noexcept { return m_pipeline; }
+
+        /** The layout, for vkCmdPushConstants and vkCmdBindDescriptorSets. */
+        [[nodiscard]] VkPipelineLayout GetLayout() const noexcept { return m_layout; }
+
+    private:
+        /** The device the pipeline belongs to; not owned, kept for Destroy. */
+        VkDevice m_device = VK_NULL_HANDLE;
+
+        VkPipelineLayout m_layout   = VK_NULL_HANDLE;
+        VkPipeline       m_pipeline = VK_NULL_HANDLE;
+    };
+
+    /** What a compute pipeline is built from; the spans only need to stay valid during ComputePipeline::Create. */
+    struct ComputePipelineSettings
+    {
+        /** The compute shader's SPIR-V words; its entry point is "main". */
+        std::span<const uint32_t> Shader;
+        /** The descriptor set layouts, in set index order. */
+        std::span<const VkDescriptorSetLayout> DescriptorSetLayouts;
+        /** The push constant ranges. */
+        std::span<const VkPushConstantRange> PushConstants;
+    };
+
+    /** A compute pipeline and its layout. The destructor runs Destroy, so nothing leaks when Create fails part way. */
+    class ComputePipeline final
+    {
+    public:
+        ComputePipeline() = default;
+        ~ComputePipeline();
+
+        ComputePipeline(const ComputePipeline&)            = delete;
+        ComputePipeline& operator=(const ComputePipeline&) = delete;
+
+        /**
+         * Builds the layout and the pipeline; false (and logged) for no shader or when Vulkan refuses. The device must
+         * outlive the pipeline.
+         */
+        [[nodiscard]] bool Create(const Device& device, const ComputePipelineSettings& settings);
+
+        /** Frees the pipeline and its layout; safe to call more than once or after a failed Create. */
+        void Destroy();
+
+        /** The pipeline, for vkCmdBindPipeline with VK_PIPELINE_BIND_POINT_COMPUTE. */
         [[nodiscard]] VkPipeline GetHandle() const noexcept { return m_pipeline; }
 
         /** The layout, for vkCmdPushConstants and vkCmdBindDescriptorSets. */
