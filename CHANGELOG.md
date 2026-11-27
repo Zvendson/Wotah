@@ -25,33 +25,32 @@ The first release: an endless beach by the sea, to look at and to play in.
 - A bar at the bottom to add balls, pause the world, and reset the scene (also R) or the camera.
 - For Windows and Linux, one program file each; it needs a graphics card with Vulkan 1.3.
 
-### The journey so far
+### the journey so far
 
-**The goal.** I wanted a beach to stand on: endless land, an endless sea to the west where the sun sets, and water
-that behaves like real water, with waves that build up, break and run up the sand. All drawn with Vulkan from scratch,
-so it can grow into a game engine later.
+the plan was a beach where i can just stand and look at the sea. endless land, endless sea to the west where the sun
+goes down, and water that acts like real water, waves that build up, break and run up the sand. all in vulkan from
+scratch so it can turn into a game engine later
 
-**A window, a square, a cube.** It started with a Vulkan window and a square. The square became a lit cube I could fly
-around with W A S D and the mouse, then got depth, a ball next to it, and coloured lights: a sun and a moon.
+started with a vulkan window and a square. then a lit cube i could fly around with wasd and the mouse, depth, a ball
+next to it, colored lights with a sun and a moon
 
-**Sky and shadows.** A computed sky, a ground to stand things on, and shadows from every light. Drawing moved onto its
-own thread, because Windows stops a program while you drag its window, and the picture froze.
+then a sky, ground and shadows from every light. the picture froze when i dragged the window bcs windows blocks the
+main thread while doing that, so drawing got its own thread
 
-**Physics, a UI, day and night.** A ball that drops and bounces, a small UI to watch, pause and reset, and a real day:
-the sun rises and sets, then the moon and the stars come out, and the light follows the sun.
+a ball that drops and bounces, a small ui to pause and reset, and a real day where the sun goes up and down and at
+night the moon and stars come out
 
-**Water and the endless beach.** The cube made way for water, then for the beach: sand, dunes and hills along a winding
-coast, land and sea reaching the horizon. The water got reflections, refraction, light patterns on the sea floor,
-foam, glints and a view from under the surface. The reflection broke whenever the sun stood low; that took a while.
+then the cube had to go for water and after that the beach. sand, dunes, hills, a coast that winds a bit, land and sea
+going to the horizon. the water got reflections, refraction, these light patterns on the ground, foam, glints and you
+can look from under water too. the reflection was broken when the sun was low, took a while to fix
 
-**Real waves.** The hardest part. The swell now builds up over the shallow floor, breaks into a foaming bore, runs up
-the sand and drains back into the next wave; the sand stays wet behind it, with lines of foam. At first the run-up
-shook, because every wave started from a slightly different line, and the ball barely noticed the surf. Now the
-breaking waves carry it in.
+waves were the hardest part. the swell builds up when it gets shallow, breaks, runs up the sand and pulls back into
+the next wave, the sand stays wet with foam lines. first it was shaky bcs every wave started from a slightly different
+line and the ball didnt care about the surf at all. now the waves carry it to the beach
 
-**More balls.** Balls can be added and moved with arrows. Many balls dropped the frame rate, mostly in debug builds, so
-the water under each ball is now worked out twice as fast and on several threads.
+added more balls and you can move them with arrows. with lots of balls the fps went down, mostly in debug, so the water
+under each ball is calculated twice as fast now and on multiple threads
 
-**The first release.** Building it on GitHub brought its own surprises: Linux missed the Vulkan library and stopped on
-a math library's warnings, and Windows' newest compiler made builds in which a ball hit by another fell through the
-floor. So the Windows release is built with the Visual Studio 2022 compiler for now.
+the release itself was a fight too. linux didnt find the vulkan lib and stopped on warnings in a math lib, and the
+newest windows compiler made builds where a ball that gets hit by another one falls through the floor. so windows is
+built with the vs 2022 compiler for now
