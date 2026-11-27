@@ -16,10 +16,10 @@ driver with Vulkan 1.3; on Linux also the Vulkan loader (`libvulkan1`) and a sys
 
 | Keys | What they do |
 |---|---|
-| W A S D | Move |
+| W A S D | Move the point the camera looks at (faster the farther away) |
 | Space / Shift | Up / down |
-| Right mouse (hold) | Look around |
-| Wheel | Closer / farther |
+| Right mouse (hold) | Turn around that point |
+| Wheel | Closer to it / farther from it |
 | F | Reset the camera |
 | R | Reset the scene |
 | Tab | Settings: time of day, light, waves, gravity, time speed, field of view |

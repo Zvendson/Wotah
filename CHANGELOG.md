@@ -18,8 +18,9 @@ The first release: an endless beach by the sea, to look at and to play in.
 - A day and night cycle: the sun rises and sets, then the moon and the stars come out; everything casts shadows.
 - Balls that float, bob on the waves and get carried in by the surf. Add up to 32 with "Add ball" or B. Click a ball
   and drag its arrows to move it anywhere; let go and it drops.
-- A free camera: W A S D to fly, Space and Shift for up and down, hold the right mouse button to look around, the
-  wheel to come closer, F to go back to the start view.
+- A camera that moves around the point it looks at: W A S D move that point along the ground, Space and Shift up
+  and down, hold the right mouse button to turn around it, the wheel to come closer to it, F to go back to the start
+  view. It moves faster the farther away it is.
 - Settings (Tab): time of day, day length, how high the sun climbs, sun, moon and sky light, wave height, gravity, time
   speed, ball bounce and field of view.
 - A bar at the bottom to add balls, pause the world, and reset the scene (also R) or the camera.
