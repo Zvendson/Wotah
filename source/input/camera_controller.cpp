@@ -16,8 +16,13 @@
 
 namespace
 {
-    /** How fast the camera flies, in world units per second. */
-    constexpr float MoveSpeed = 3.0f;
+    /**
+     * How fast the camera and the point it looks at move: MoveSpeedPerDistance times the distance between them per
+     * second, so the picture slides by about the same amount near and far, and at least MinMoveSpeed world units per
+     * second. By eye: from the start view (30 m from its point) about 23 m a second.
+     */
+    constexpr float MoveSpeedPerDistance = 0.75f;
+    constexpr float MinMoveSpeed         = 5.0f;
 
     /** How far the camera turns per pixel of mouse movement: 0.15 degrees. */
     constexpr float TurnPerPixel = glm::radians(0.15f);
@@ -127,12 +132,14 @@ void Wotah::CameraController::Update(Camera& camera, float seconds)
         return; // a camera on its target has no direction to move, turn or zoom along
     }
 
-    // Turning keeps the camera where it is and swings the target around it.
+    // Turning keeps the point it looks at where it is and swings the camera around it.
     const bool isTurned = m_pendingTurn != glm::vec2(0.0f);
     if (isTurned)
     {
-        view          = Turn(view, distance, m_pendingTurn);
-        m_pendingTurn = glm::vec2(0.0f);
+        const glm::vec3 target = position + view;
+        view                   = Turn(view, distance, m_pendingTurn);
+        position               = target - view;
+        m_pendingTurn          = glm::vec2(0.0f);
     }
 
     // Zooming keeps the target where it is and slides the camera along the view towards or away from it.
@@ -164,8 +171,8 @@ void Wotah::CameraController::Update(Camera& camera, float seconds)
         return; // untouched, so the camera keeps its matrices
     }
 
-    const glm::vec3 offset =
-        isMoved ? glm::normalize(move) * MoveSpeed * seconds : glm::vec3(0.0f); // diagonals no faster
+    const float     speed  = std::max(MinMoveSpeed, MoveSpeedPerDistance * glm::length(view));
+    const glm::vec3 offset = isMoved ? glm::normalize(move) * speed * seconds : glm::vec3(0.0f); // diagonals no faster
     camera.SetPosition(position + offset);
     camera.SetTarget(position + offset + view); // the target moves along, so the camera keeps looking the same way
 }

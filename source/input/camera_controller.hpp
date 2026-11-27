@@ -1,8 +1,9 @@
 /**
  * @file camera_controller.hpp
- * Flies a camera with the keyboard and mouse: W A S D move along the ground, Space up, Shift down, holding the right
- * mouse button turns the camera, the mouse wheel moves it closer to or further from what it looks at, and F asks for
- * the camera's focus view.
+ * Moves a camera around the point it looks at, with the keyboard and mouse: W A S D move the point (and the camera
+ * with it) along the ground, Space up, Shift down, faster the farther the camera is from it; holding the right mouse
+ * button turns the camera around the point; the mouse wheel moves it closer to or further from the point; and F asks
+ * for the camera's focus view.
  *
  *     Wotah::CameraController controller;
  *     dispatcher.AddHandler(controller);

@@ -1672,7 +1672,7 @@ TEST_SUITE("gpu")
         {
             const int least = std::min({up[index], up[index + 1], up[index + 2]});
             stars += least > 80 ? 1 : 0;
-            dark += up[index] + up[index + 1] + up[index + 2] < 45 ? 1 : 0;
+            dark += up[index] + up[index + 1] + up[index + 2] < 45 ? std::size_t{1} : std::size_t{0};
         }
         const std::size_t pixelCount = up.size() / 4;
         CHECK(stars > 20);
@@ -2000,7 +2000,8 @@ TEST_SUITE("gpu")
             const glm::vec3            low{x, 30.0f, -60.0f + x};
             const std::vector<uint8_t> along =
                 DrawSceneOffscreen(gpu.Device, MakeLandCamera(low, low + glm::vec3(0.0f, -0.15f, -1.0f)), sea);
-            const std::vector<uint8_t> lowerPart(along.begin() + (along.size() * 6 / 10 / 4) * 4, along.end());
+            const auto                 lowerStart = static_cast<std::ptrdiff_t>((along.size() * 6 / 10 / 4) * 4);
+            const std::vector<uint8_t> lowerPart(along.begin() + lowerStart, along.end());
             CHECK(CountPixels(lowerPart, 0x1A, 0x1A, 0x1A) == 0);
         }
     }
@@ -2030,7 +2031,8 @@ TEST_SUITE("gpu")
             const glm::vec3            low{x, 30.0f, -60.0f + x};
             const std::vector<uint8_t> along =
                 DrawSceneOffscreen(gpu.Device, MakeLandCamera(low, low + glm::vec3(0.0f, -0.15f, -1.0f)), land);
-            const std::vector<uint8_t> lowerPart(along.begin() + (along.size() * 6 / 10 / 4) * 4, along.end());
+            const auto                 lowerStart = static_cast<std::ptrdiff_t>((along.size() * 6 / 10 / 4) * 4);
+            const std::vector<uint8_t> lowerPart(along.begin() + lowerStart, along.end());
             CHECK(CountPixels(lowerPart, 0x1A, 0x1A, 0x1A) == 0);
         }
     }

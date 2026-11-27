@@ -30,8 +30,11 @@ using Wotah::Testing::MakeScrollEvent;
 
 namespace
 {
-    /** The controller's flying speed (camera_controller.cpp), in units per second. */
-    constexpr float MoveSpeed = 3.0f;
+    /**
+     * The controller's speed (camera_controller.cpp) for a camera as close to its point as these tests' (1 or 1.4
+     * units): its least, in units per second.
+     */
+    constexpr float MoveSpeed = 5.0f;
 
     /** A camera at the origin looking along -z at a target 1 unit away; defaults: near 0.1, far 100. */
     Wotah::Camera MakeCamera()
@@ -70,7 +73,7 @@ namespace
 
 TEST_SUITE("input")
 {
-    TEST_CASE("each movement key moves the camera 3 units per second the right way")
+    TEST_CASE("each movement key moves the camera 5 units per second the right way, when it is close to its point")
     {
         struct Case
         {
@@ -143,7 +146,19 @@ TEST_SUITE("input")
         CHECK(IsNear(camera.GetPosition(), {0.0f, 0.0f, -MoveSpeed}));
     }
 
-    TEST_CASE("the right mouse button turns the camera")
+    TEST_CASE("farther from its point, the camera moves faster: 0.75 times the distance a second")
+    {
+        Wotah::CameraController controller;
+        Wotah::Camera           camera;
+        camera.SetPosition({0.0f, 0.0f, 0.0f});
+        camera.SetTarget({0.0f, 0.0f, -20.0f});
+        (void)controller.OnInput(MakeKeyEvent(Wotah::KeyCode::W, true));
+        controller.Update(camera, 1.0f);
+        CHECK(IsNear(camera.GetPosition(), {0.0f, 0.0f, -15.0f}));
+        CHECK(IsNear(camera.GetTarget(), {0.0f, 0.0f, -35.0f})); // the point moved along
+    }
+
+    TEST_CASE("the right mouse button turns the camera around the point it looks at")
     {
         Wotah::CameraController controller;
         Wotah::Camera           camera = MakeCamera();
@@ -152,12 +167,14 @@ TEST_SUITE("input")
         controller.Update(camera, 0.016f);
         CHECK(IsNear(camera.GetTarget(), {0.0f, 0.0f, -1.0f}));
 
+        // It turns around the point it looks at: the point stays, the camera swings around it.
         CHECK(controller.OnInput(MakeButtonEvent(Wotah::MouseButton::Right, true)));
         CHECK(controller.IsTurning());
         CHECK(controller.OnInput(MakeMoveEvent(100.0f, 0.0f)));
         controller.Update(camera, 0.016f);
         const float turned = glm::radians(15.0f); // 100 pixels at 0.15 degrees each
         CHECK(IsNear(camera.GetTarget() - camera.GetPosition(), {std::sin(turned), 0.0f, -std::cos(turned)}));
+        CHECK(IsNear(camera.GetTarget(), {0.0f, 0.0f, -1.0f}));
 
         (void)controller.OnInput(MakeMoveEvent(0.0f, -100000.0f)); // far up
         controller.Update(camera, 0.016f);

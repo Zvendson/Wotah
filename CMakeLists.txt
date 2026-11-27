@@ -123,7 +123,8 @@ target_include_directories(imguizmo PUBLIC ${imguizmo_SOURCE_DIR}/src)
 target_link_libraries(imguizmo PUBLIC imgui)
 
 # Their headers are theirs: no warnings from inside them (Vulkan::Vulkan is imported, so already a system folder).
-foreach(third_party glfw spdlog glm VulkanMemoryAllocator Jolt imgui imguizmo)
+# glm keeps its include folders on glm-header-only, which glm only links.
+foreach(third_party glfw spdlog glm glm-header-only VulkanMemoryAllocator Jolt imgui imguizmo)
     wotah_mark_system(${third_party})
 endforeach()
 

@@ -27,6 +27,25 @@ namespace
         return projection * glm::lookAt(position, target, glm::vec3(0.0f, 1.0f, 0.0f));
     }
 
+    /**
+     * Whether two matrices are equal to float rounding: a compiler may work out one of them while compiling (GCC
+     * does, for fixed inputs, with exactly rounded tangents) and the other while running, a last digit apart.
+     */
+    bool IsNear(const glm::mat4& first, const glm::mat4& second)
+    {
+        for (int column = 0; column < 4; ++column)
+        {
+            for (int row = 0; row < 4; ++row)
+            {
+                if (std::abs(first[column][row] - second[column][row]) > 1.0e-5f)
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     /** The example's corner camera. */
     Wotah::Camera MakeCornerCamera()
     {
@@ -59,9 +78,9 @@ TEST_SUITE("camera")
     TEST_CASE("a camera gives the matrices glm gives, with Vulkan's flipped y")
     {
         const Wotah::Camera defaults;
-        CHECK(defaults.GetViewProjection() == MakeExpected({0.0f, 0.0f, 3.0f}, {0.0f, 0.0f, 0.0f}, 0.1f, 100.0f));
-        CHECK(MakeCornerCamera().GetViewProjection() ==
-              MakeExpected({2.0f, 1.6f, 2.6f}, {0.0f, 0.0f, 0.0f}, 0.1f, 10.0f));
+        CHECK(IsNear(defaults.GetViewProjection(), MakeExpected({0.0f, 0.0f, 3.0f}, {0.0f, 0.0f, 0.0f}, 0.1f, 100.0f)));
+        CHECK(IsNear(MakeCornerCamera().GetViewProjection(),
+                     MakeExpected({2.0f, 1.6f, 2.6f}, {0.0f, 0.0f, 0.0f}, 0.1f, 10.0f)));
     }
 
     TEST_CASE("changing a setting rebuilds the matrices")
@@ -70,8 +89,8 @@ TEST_SUITE("camera")
         const glm::mat4 before = camera.GetViewProjection();
         camera.SetPosition({-2.0f, 1.6f, 2.6f});
         CHECK(camera.GetViewProjection() != before);
-        CHECK(camera.GetView() ==
-              glm::lookAt(glm::vec3(-2.0f, 1.6f, 2.6f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f)));
+        CHECK(IsNear(camera.GetView(),
+                     glm::lookAt(glm::vec3(-2.0f, 1.6f, 2.6f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f))));
     }
 
     TEST_CASE("a copy changes alone")

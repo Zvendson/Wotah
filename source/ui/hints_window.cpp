@@ -41,7 +41,7 @@ namespace
         {MoveKeys, "Move"},
         {UpKeys, "Up"},
         {DownKeys, "Down"},
-        {TurnKeys, "Look around (hold)"},
+        {TurnKeys, "Turn around (hold)"},
         {ZoomKeys, "Closer / farther"},
         {CameraResetKeys, "Reset camera"},
         {SceneResetKeys, "Reset scene"},
