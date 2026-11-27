@@ -122,11 +122,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install the compiler and the window system libraries
-        # GCC 14 for C++23; GLFW builds for both X11 and Wayland (the packages its build guide names for Debian).
+      - name: Install the compiler, the Vulkan loader and the window system libraries
+        # GCC 14 for C++23; the Vulkan loader to link against and run the tests with (LunarG's Linux SDK has none to
+        # link against); GLFW builds for both X11 and Wayland (the packages its build guide names for Debian).
         run: |
           sudo apt-get update
-          sudo apt-get install --yes g++-14 libwayland-dev libxkbcommon-dev xorg-dev
+          sudo apt-get install --yes g++-14 libvulkan-dev libwayland-dev libxkbcommon-dev xorg-dev
 
       - name: Install the Vulkan SDK
         run: |
@@ -138,7 +139,7 @@ jobs:
           sdk="$RUNNER_TEMP/vulkansdk/$VULKAN_SDK_VERSION/x86_64"
           test -x "$sdk/bin/glslc" || { echo "The Vulkan SDK has no glslc"; exit 1; }
           echo "VULKAN_SDK=$sdk" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$sdk/lib" >> "$GITHUB_ENV" # the tests load the Vulkan loader, which the runner lacks
+          echo "LD_LIBRARY_PATH=$sdk/lib" >> "$GITHUB_ENV" # as LunarG's setup-env.sh: its tools find their libraries
           echo "$sdk/bin" >> "$GITHUB_PATH"
 
       - name: Configure
