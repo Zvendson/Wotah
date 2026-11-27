@@ -4,7 +4,7 @@
 
 An endless beach by the sea, drawn with Vulkan: waves that build up, break and run up the sand, wet sand and lines of
 foam where they reached, reflections and a view from under the water, a day and night cycle with sun, moon and stars,
-and balls that float on the waves and get carried in by the surf. It may grow into a game engine.
+and balls that float on the waves and get carried in by the surf. A project to learn realistic water waves.
 
 ## Download
 

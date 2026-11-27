@@ -27,8 +27,9 @@ The first release: an endless beach by the sea, to look at and to play in.
 
 ### the journey so far
 
-the plan was a beach where i can just stand and look at the sea, with water that acts like real water. waves that build
-up, break and run up the sand. all in vulkan from scratch so it can turn into a game engine later
+this was a project where i wanted to learn realistic water waves. the plan was a beach where i can just stand and look
+at the sea, with water that acts like real water. waves that build up, break and run up the sand. all in vulkan from
+scratch. i used ai together with my own code to get it to where it is now
 
 i didnt start with the water tho. water is basically a mirror, it shows the sky, the sun and whatever is around it. on
 day 1 there would be nothing to reflect and it would look like a flat blue plate. and something has to float in it, so
