@@ -25,43 +25,35 @@ The first release: an endless beach by the sea, to look at and to play in.
 - A bar at the bottom to add balls, pause the world, and reset the scene (also R) or the camera.
 - For Windows and Linux, one program file each; it needs a graphics card with Vulkan 1.3.
 
-### the journey so far
+### The journey so far
 
-this was a project where i wanted to learn realistic water waves. the plan was a beach where i can just stand and look
-at the sea, with water that acts like real water. waves that build up, break and run up the sand. all in vulkan from
-scratch. i used ai together with my own code to get it to where it is now
+This was a project where i wanted to learn realistic water waves. The plan was a beach where i can just stand and look
+at the sea, with water that acts like real water, waves that build up, break and run up the sand. All in vulkan from
+scratch. I used ai together with my own code to get it to where it is now. I didnt start with the water tho. Water is
+basically a mirror, it shows the sky, the sun and whatever is around it. On day 1 there would be nothing to reflect and
+it would look like a flat blue plate. And something has to float in it, so i need physics first, and things need light
+and shadows or they look fake. So the order was: window, objects, light, sky, shadows, physics, and only then water.
 
-i didnt start with the water tho. water is basically a mirror, it shows the sky, the sun and whatever is around it. on
-day 1 there would be nothing to reflect and it would look like a flat blue plate. and something has to float in it, so
-i need physics first, and things need light and shadows or they look fake. so the order was: window, objects, light,
-sky, shadows, physics, and only then water
+Started with a vulkan window and a square, glfw for the window bcs it runs on windows and linux. Then a lit cube i can
+fly around with wasd and the mouse. Glm for the math bcs it works like the shader math. Vulkans own memory handling is a
+pain so i took vma for that, and spdlog to log into a file without slowing the frames down. The picture froze every time
+i dragged the window, windows blocks the main thread while you do that. So drawing got its own thread and the main
+thread only handles the window. For physics i took jolt. Its fast, uses all cores and has buoyancy built in, which i
+needed for the ball later. For the ui i took dear imgui, stats and settings and buttons without building a ui system
+myself.
 
-started with a vulkan window and a square, glfw for the window bcs it runs on windows and linux. then a lit cube i can
-fly around with wasd and the mouse. glm for the math bcs it works like the shader math. vulkans own memory handling is
-a pain so i took vma for that, and spdlog to log into a file without slowing the frames down
+After the sky and a day and night cycle with sun, moon and stars the cube had to go and the water came in. The first
+ground was a fixed plate and you could see where the world ends, looked bad. So land and sea are endless now, grids that
+follow the camera and get coarser far away. The land and the waves are the same formula on the cpu and the gpu, so the
+physics feels exactly what you see, tests check that both stay equal. The reflection was broken when the sun was low and
+the ball in the water looked weird, took a while to get right.
 
-the picture froze every time i dragged the window, windows blocks the main thread while you do that. so drawing got
-its own thread and the main thread only handles the window
-
-for physics i took jolt. its fast, uses all cores and has buoyancy built in, which i needed for the ball later. for the
-ui i took dear imgui, stats and settings and buttons without building a ui system myself
-
-after the sky and a day and night cycle with sun, moon and stars the cube had to go and the water came in. the first
-ground was a fixed plate and you could see where the world ends, looked bad. so land and sea are endless now, grids
-that follow the camera and get coarser far away. the land and the waves are the same formula on the cpu and the gpu,
-so the physics feels exactly what you see, tests check that both stay equal
-
-the reflection was broken when the sun was low and the ball in the water looked weird, took a while to get right
-
-waves were the hardest part. normal ocean waves alone looked like a pool. real surf needs a swell that feels the floor,
-gets higher in shallow water, breaks, runs up the sand and pulls back into the next wave, and leaves wet sand. first it
+Waves were the hardest part. Normal ocean waves alone looked like a pool. Real surf needs a swell that feels the floor,
+gets higher in shallow water, breaks, runs up the sand and pulls back into the next wave, and leaves wet sand. First it
 was shaky bcs every wave started its run up from a slightly different line, and the ball didnt care about the surf at
-all bcs jolts water only slows things down. so the water got its own flow, the broken waves carry the ball in now
-
-more balls and moving them was next. i went with move arrows (imguizmo) instead of grabbing on a spring. with lots of
-balls the fps went down, mostly in debug. the water under every ball was calculated way too often, now its half the
-work and runs on multiple threads
-
-the release itself was a fight too. linux didnt find the vulkan lib and stopped on warnings in glm, and the newest
-windows compiler made builds where a ball that gets hit by another one falls through the floor. so windows is built
-with the vs 2022 compiler for now
+all bcs jolts water only slows things down. So the water got its own flow, the broken waves carry the ball in now. More
+balls and moving them was next, i went with move arrows (imguizmo) instead of grabbing on a spring. With lots of balls
+the fps went down, mostly in debug. The water under every ball was calculated way too often, now its half the work and
+runs on multiple threads. The release itself was a fight too. Linux didnt find the vulkan lib and stopped on warnings in
+glm, and the newest windows compiler made builds where a ball that gets hit by another one falls through the floor. So
+windows is built with the vs 2022 compiler for now.
