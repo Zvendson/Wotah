@@ -88,8 +88,11 @@ jobs:
 
       - name: Configure
         shell: pwsh
-        # The C++ runtime linked into the program (static), so it runs without the Visual C++ Redistributable.
-        run: cmake --preset windows '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>'
+        # The C++ runtime linked into the program (static), so it runs without the Visual C++ Redistributable. Built
+        # with Visual Studio 2022's compiler (v143, MSVC 19.44), which the image also has: its newest, MSVC 19.52,
+        # breaks the physics in optimized builds (a ball another hits is pushed through the floor; its debug builds and
+        # MSVC 19.51 are fine). Back to the newest once a fixed one comes.
+        run: cmake --preset windows -T v143 '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>'
 
       - name: Build
         run: cmake --build --preset windows-release --parallel
