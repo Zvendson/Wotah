@@ -1,0 +1,235 @@
+/**
+ * @file app.hpp
+ * The application: owns the window and the Vulkan objects and drives their life.
+ *
+ *     Wotah::App app;
+ *     const bool ranCleanly = app.Create() && app.Run();
+ *     app.Destroy();
+ */
+#pragma once
+
+#include "input/camera_controller.hpp"
+#include "input/input_dispatcher.hpp"
+#include "input/scene_shortcuts.hpp"
+#include "platform/window.hpp"
+#include "render/camera.hpp"
+#include "render/device.hpp"
+#include "render/lighting.hpp"
+#include "ui/settings_window.hpp"
+#include "ui/user_interface.hpp"
+
+#include <glm/vec2.hpp>
+#include <glm/vec3.hpp>
+
+#include <atomic>
+#include <cstddef>
+#include <memory>
+#include <optional>
+#include <stop_token>
+#include <vector>
+
+namespace Wotah
+{
+    struct ControlBarClicks;
+
+    /**
+     * The window and everything Vulkan needs to draw into it.
+     * The steps run in order: Create, Run (which calls Start and Stop), Destroy. The destructor runs Stop and Destroy,
+     * so nothing leaks when a step fails part way.
+     *
+     * Two threads: Run handles the window's events on the main thread, and a drawing thread takes the input, moves the
+     * camera and draws, so moving or resizing the window never stops the picture.
+     */
+    class App final
+    {
+    public:
+        App();
+        ~App();
+
+        App(const App&)            = delete;
+        App& operator=(const App&) = delete;
+
+        /**
+         * Starts the log, opens the window (still hidden), starts the UI and creates every Vulkan object; false when
+         * one failed.
+         */
+        [[nodiscard]] bool Create();
+
+        /**
+         * Starts, draws frames on a drawing thread until the window is closed, and stops; false (and logged) when
+         * Vulkan failed. Call it from the main thread.
+         */
+        [[nodiscard]] bool Run();
+
+        /**
+         * Frees every Vulkan object, the UI and the window, then closes the log; safe to call more than once or after a
+         * failed Create.
+         */
+        void Destroy();
+
+        /**
+         * Adds a camera and returns its index for SelectCamera; the active camera stays the same. The camera as given
+         * becomes its focus view, which FocusActiveCamera (the F key) goes back to. Like everything below: before Run,
+         * or on the drawing thread while it runs.
+         */
+        std::size_t AddCamera(const Camera& camera);
+
+        /** Draws through the camera at index from the next frame on; false (and logged) for an unknown index. */
+        bool SelectCamera(std::size_t index);
+
+        /** The camera frames are drawn through; change it at any time on the drawing thread. There is always one. */
+        [[nodiscard]] Camera& GetActiveCamera() noexcept { return m_cameras[m_activeCamera]; }
+
+        /** Puts the active camera back to its focus view: how it was when it was added. */
+        void FocusActiveCamera();
+
+        /** The scene's lights (ambient, sun, moon, ...); change them on the drawing thread, shown the next frame. */
+        [[nodiscard]] SceneLights& GetLights() noexcept { return m_lights; }
+
+    private:
+        /** Shows the window; the first thing Run does. */
+        void Start();
+
+        /**
+         * The drawing thread: draws frames until stop is requested or Vulkan fails, then clears m_isDrawing and wakes
+         * the main thread.
+         */
+        void DrawFrames(const std::stop_token& stop);
+
+        /**
+         * One frame: hands out the input, moves camera and world on by frameSeconds, makes the swapchain again when
+         * needed, and draws the scene with the UI over it; false (and logged) when Vulkan failed.
+         */
+        [[nodiscard]] bool DrawFrame(float frameSeconds);
+
+        /**
+         * Hands this frame's input to the handlers, does what the keys and clicks asked for (F, R, Tab, B, picking a
+         * ball), and lets the camera fly by frameSeconds.
+         */
+        void HandleInput(float frameSeconds);
+
+        /**
+         * Picks the ball under cursor (in the window's cursor units), as the last frame showed it, for the move gizmo;
+         * a click on no ball drops the pick.
+         */
+        void PickBall(const glm::vec2& cursor);
+
+        /** Drops one more ball where the middle of the view points (logged when the scene is full). */
+        void AddBall();
+
+        /** Puts the scene back as it started (logged when that failed); a pick of a ball that is gone is dropped. */
+        void ResetScene();
+
+        /**
+         * Shows the move gizmo on the picked ball, in the UI frame; while its handle is held, the ball hangs where the
+         * drag puts it (the world steps before the UI, so it is put back each frame), and falls when let go.
+         */
+        void ShowBallGizmo();
+
+        /**
+         * Moves the world on by frameSeconds times the time speed, unless paused: the ball falls, bounces and rolls,
+         * and the day runs on. The sky's small movements go on in real time, paused or not.
+         */
+        void AdvanceWorld(float frameSeconds);
+
+        /**
+         * Puts this frame's UI together (the stats window, the controls' hints and the control bar), for a frame of
+         * frameSeconds, at the swapchain's size, and does what was clicked in it.
+         */
+        void ShowUi(float frameSeconds);
+
+        /** Does what was clicked in the control bar: pauses or resumes the world, resets the camera or the scene. */
+        void ApplyClicks(const ControlBarClicks& clicks);
+
+        /**
+         * Puts m_settings into the scene: ApplySkySettings, then gravity and the ball's bounce into the world (a
+         * failure is logged). Time speed and field of view need no call: each frame reads them.
+         */
+        void ApplySettings();
+
+        /**
+         * Puts the sky's settings into the lights (render/sky_lights.hpp): sun and moon where the time of day has
+         * them, with their light, the moon's disk for the sky, the sky's light, the haze and the light the ground
+         * throws back. Every frame while the day runs. (Shadows follow the camera; each frame sets them.)
+         */
+        void ApplySkySettings();
+
+        /**
+         * Waits until the GPU has finished the last frame, so nothing is destroyed while in use; the last thing Run
+         * does.
+         */
+        void Stop();
+
+        /** The Vulkan objects and the world; defined in app.cpp so this header stays free of Vulkan and physics. */
+        struct State;
+
+        // Order matters: members are destroyed in reverse, so the device goes before the window its surface is on, and
+        // the UI's renderer (in m_state) before the UI it is attached to.
+
+        /** The window everything is drawn into. */
+        Window m_window;
+
+        /** The Vulkan instance, surface, GPU, device and queue. */
+        Device m_device;
+
+        /** The windows drawn over the scene (Dear ImGui); the first to get the input. */
+        UserInterface m_ui;
+
+        std::unique_ptr<State> m_state;
+
+        /** Every camera; never empty, so there is always an active one. Create sets up the first. */
+        std::vector<Camera> m_cameras{Camera{}};
+
+        /** Each camera's focus view, at the same index as in m_cameras. */
+        std::vector<Camera> m_focusViews{Camera{}};
+
+        /** The index of the camera frames are drawn through; always inside m_cameras. */
+        std::size_t m_activeCamera = 0;
+
+        /**
+         * What lights the scene; the settings put a sun and a moon in (ApplySkySettings). It also holds the sky's sun
+         * and moon disks and its clock (real seconds, wrapped at SkyLoopSeconds), which the sky draws and the water
+         * mirrors.
+         */
+        SceneLights m_lights;
+
+        /** Hands the window's input to the handlers: the UI first, then the camera controller. */
+        InputDispatcher m_input;
+
+        /** Flies the active camera: W A S D, Space, Shift, the right mouse button to turn, the wheel, and F. */
+        CameraController m_cameraController;
+
+        /**
+         * The scene's keys and clicks: R resets the scene, Tab shows or hides the settings, B adds a ball, the left
+         * mouse button picks one.
+         */
+        SceneShortcuts m_sceneShortcuts;
+
+        /** The input the drawing thread took from the window this frame; kept, so it does not allocate again. */
+        std::vector<InputEvent> m_frameInput;
+
+        /** Whether the world stands still (the control bar's Pause); the camera still flies. Drawing thread only. */
+        bool m_isPaused = false;
+
+        /**
+         * The ball picked for the move gizmo, if any; whether its handle is held, and where the drag put the ball. Kept
+         * apart from the world's place while held, so the step before each UI frame (which lets the ball fall a
+         * little) never drags it down. Drawing thread only.
+         */
+        std::optional<std::size_t> m_pickedBall;
+        bool                       m_isHoldingBall = false;
+        glm::vec3                  m_heldPlace{0.0f};
+
+        /** What the settings window changes; Create fills in the scene's own values. Drawing thread only. */
+        SceneSettings m_settings;
+
+        /** Whether the settings window shows; Tab switches it. Hidden at the start. Drawing thread only. */
+        bool m_isSettingsOpen = false;
+
+        /** Whether the drawing thread still draws; it clears this when it ends, for whatever reason. */
+        std::atomic<bool> m_isDrawing = false;
+
+        /** Whether the drawing thread stopped because Vulkan failed; read by Run once the thread has ended. */
+        bool m_hasDrawingFailed = false;
+    };
+} // namespace Wotah

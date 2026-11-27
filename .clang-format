@@ -1,0 +1,78 @@
+---
+Language: Cpp
+BasedOnStyle: Microsoft
+Standard: Latest
+
+# Layout
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+AccessModifierOffset: -4
+NamespaceIndentation: All
+FixNamespaceComments: true
+IndentCaseLabels: true
+IndentPPDirectives: AfterHash
+
+# Braces stand on their own lines; only tiny accessors may stay on one line.
+BreakBeforeBraces: Allman
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortLambdasOnASingleLine: Inline
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+
+# Declarations
+PointerAlignment: Left
+ReferenceAlignment: Left
+BreakConstructorInitializers: BeforeComma
+PackConstructorInitializers: Never
+Cpp11BracedListStyle: true
+AlwaysBreakTemplateDeclarations: Yes
+SpaceBeforeParens: ControlStatements
+AlignTrailingComments: true
+# Types, names and "=" of consecutive lines each in one column; an empty line or a comment ends the block.
+AlignConsecutiveDeclarations:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+  AlignFunctionDeclarations: false
+AlignConsecutiveAssignments:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+AlignEscapedNewlines: Left
+SeparateDefinitionBlocks: Always
+EmptyLineBeforeAccessModifier: LogicalBlock
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+
+# Includes: own header, local, project, libraries, windows.h, system, standard library.
+SortIncludes: CaseInsensitive
+IncludeBlocks: Regroup
+MainIncludeChar: Any
+IncludeCategories:
+  - Regex: '^"'
+    Priority: 1
+  - Regex: '^<wotah/'
+    Priority: 2
+  # Jolt in its own block, Jolt.h first: every other Jolt header needs it included before (Jolt docs).
+  - Regex: '^<Jolt/Jolt\.h>'
+    Priority: 3
+    SortPriority: 3
+  - Regex: '^<Jolt/'
+    Priority: 3
+    SortPriority: 4
+  - Regex: '^<(doctest|GLFW|glm|imgui|nlohmann|spdlog|vulkan)'
+    Priority: 5
+    SortPriority: 5
+  # windows.h in a block before the other system headers, which need it.
+  - Regex: '^<windows\.h>'
+    Priority: 6
+  - Regex: '^<[A-Za-z0-9_]+\.h>'
+    Priority: 7
+  - Regex: '^<'
+    Priority: 8
+...

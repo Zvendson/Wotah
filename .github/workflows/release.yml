@@ -1,0 +1,203 @@
+# Release: when a version tag is pushed (v1.2.0, v0.1.0-alpha.1) on a commit of the main branch, builds Wotah for
+# Windows and Linux in release configuration, runs every test that needs no GPU (the runners have none), and publishes
+# a GitHub release of that tag with both packages; a version with a "-" part (alpha, beta) is marked as a pre-release.
+# A tag anywhere else is refused before anything is built: releases come from main only (push main before or with the
+# tag). So is a tag whose version is not the one in CMakeLists.txt (project's VERSION; a "-" part left aside), or has
+# no section in CHANGELOG.md ("## 0.1.0 - <date>"): that section becomes the release's notes. Started by hand (Actions
+# tab, "Run workflow") on any branch it only builds and tests, and keeps the packages as the run's artifacts: a trial
+# before tagging, never a release.
+#
+# Each package holds the one program file: shaders and data are compiled in, the C++ runtime is linked in. Players need
+# a graphics driver with Vulkan 1.3; on Linux also the Vulkan loader (libvulkan1) and a system about as new as Ubuntu
+# 24.04, which the Linux build is made on.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The Vulkan SDK the program is developed with: headers, loader and the glslc shader compiler.
+  VULKAN_SDK_VERSION: 1.4.363.0
+
+jobs:
+  main-only:
+    name: Tag on main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # every branch's history, main's too
+
+      - name: Check the tag (on main, the version in CMakeLists.txt, a section in CHANGELOG.md)
+        env:
+          TAG: ${{ github.ref_name }}
+        # Main's own commits: those on its first-parent line, where each release is merged in and tagged. A commit
+        # merged in from another branch is in main's history, yet not one of these, so a tag on it is refused too.
+        run: |
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            echo "A trial run on $GITHUB_REF_NAME: built and tested, never released."
+            exit 0
+          fi
+          commit=$(git rev-parse HEAD)
+          if ! git rev-list --first-parent origin/main | grep --quiet --line-regexp "$commit"; then
+            echo "::error::$TAG is not on the main branch: releases come from main only."
+            exit 1
+          fi
+          version="${TAG#v}"
+          project=$(sed -nE 's/^project\([^)]*VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt)
+          if [[ "${version%%-*}" != "$project" ]]; then
+            echo "::error::$TAG does not match the version in CMakeLists.txt ($project)."
+            exit 1
+          fi
+          if [[ -z "$(bash .github/scripts/changelog-section.sh "$version")" ]]; then
+            echo "::error::CHANGELOG.md has no section for $version."
+            exit 1
+          fi
+          echo "$TAG is on main, matches CMakeLists.txt and has its changelog section."
+
+  windows:
+    name: Windows
+    needs: main-only
+    runs-on: windows-2025 # Visual Studio 2026, as on the development machine
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the Vulkan SDK
+        shell: pwsh
+        run: |
+          # LunarG's installer, without questions (its command-line install).
+          $installer = Join-Path $env:RUNNER_TEMP "vulkansdk.exe"
+          $url       = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_SDK_VERSION.exe"
+          curl.exe --fail --silent --show-error --location --output $installer $url
+          if ($LASTEXITCODE -ne 0) { throw "Could not download the Vulkan SDK" }
+          $root      = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          $arguments = "--root `"$root`" --accept-licenses --default-answer --confirm-command install"
+          $install   = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "The Vulkan SDK installer failed ($($install.ExitCode))" }
+          if (-not (Test-Path "$root\Bin\glslc.exe")) { throw "The Vulkan SDK has no glslc" }
+          "VULKAN_SDK=$root" >> $env:GITHUB_ENV
+          "$root\Bin" >> $env:GITHUB_PATH
+
+      - name: Configure
+        shell: pwsh
+        # The C++ runtime linked into the program (static), so it runs without the Visual C++ Redistributable.
+        run: cmake --preset windows '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>'
+
+      - name: Build
+        run: cmake --build --preset windows-release --parallel
+
+      - name: Test
+        run: .\build\tests\Release\wotah_tests.exe --test-suite-exclude=gpu
+
+      - name: Package
+        shell: pwsh
+        env:
+          VERSION_NAME: ${{ github.ref_name }}
+        run: |
+          # Named after the tag (in a trial, after the branch, its "/" made "-").
+          $name = $env:VERSION_NAME -replace '[^A-Za-z0-9._-]', '-'
+          New-Item -ItemType Directory package | Out-Null
+          Copy-Item build\Release\square.exe package\Wotah.exe
+          Compress-Archive -Path package\* -DestinationPath "Wotah-$name-windows-x64.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: Wotah-*-windows-x64.zip
+          if-no-files-found: error
+
+  linux:
+    name: Linux
+    needs: main-only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the compiler and the window system libraries
+        # GCC 14 for C++23; GLFW builds for both X11 and Wayland (the packages its build guide names for Debian).
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes g++-14 libwayland-dev libxkbcommon-dev xorg-dev
+
+      - name: Install the Vulkan SDK
+        run: |
+          # LunarG's archive unpacks to <version>/x86_64 with bin, include and lib.
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/vulkansdk.tar.xz" \
+            "https://sdk.lunarg.com/sdk/download/$VULKAN_SDK_VERSION/linux/vulkansdk-linux-x86_64-$VULKAN_SDK_VERSION.tar.xz"
+          mkdir -p "$RUNNER_TEMP/vulkansdk"
+          tar --extract --xz --file "$RUNNER_TEMP/vulkansdk.tar.xz" --directory "$RUNNER_TEMP/vulkansdk"
+          sdk="$RUNNER_TEMP/vulkansdk/$VULKAN_SDK_VERSION/x86_64"
+          test -x "$sdk/bin/glslc" || { echo "The Vulkan SDK has no glslc"; exit 1; }
+          echo "VULKAN_SDK=$sdk" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$sdk/lib" >> "$GITHUB_ENV" # the tests load the Vulkan loader, which the runner lacks
+          echo "$sdk/bin" >> "$GITHUB_PATH"
+
+      - name: Configure
+        env:
+          CC: gcc-14
+          CXX: g++-14
+        # The C++ runtime linked into the program (static), so it runs on distributions with an older one.
+        run: cmake --preset linux-release "-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++ -static-libgcc"
+
+      - name: Build
+        run: cmake --build --preset linux-release --parallel
+
+      - name: Test
+        run: ./build/Release/tests/wotah_tests --test-suite-exclude=gpu
+
+      - name: Package
+        env:
+          VERSION_NAME: ${{ github.ref_name }}
+        run: |
+          # Named after the tag (in a trial, after the branch, its "/" made "-"); without the debug information the
+          # release build carries (CMakeLists.txt), which players do not need.
+          name="${VERSION_NAME//[^A-Za-z0-9._-]/-}"
+          mkdir package
+          cp build/Release/square package/wotah
+          strip package/wotah
+          tar --create --gzip --file "Wotah-$name-linux-x64.tar.gz" --directory package wotah
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: Wotah-*-linux-x64.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: [windows, linux]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # to publish the release
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        # Its notes are the version's section of the changelog.
+        run: |
+          version="${TAG#v}"
+          bash .github/scripts/changelog-section.sh "$version" > "$RUNNER_TEMP/notes.md"
+          options=(--title "Wotah $version" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag)
+          if [[ "$TAG" == *-* ]]; then
+            options+=(--prerelease)
+          fi
+          gh release create "$TAG" packages/* --repo "$GITHUB_REPOSITORY" "${options[@]}"

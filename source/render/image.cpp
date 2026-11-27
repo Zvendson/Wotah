@@ -1,0 +1,151 @@
+/**
+ * @file image.cpp
+ * Images on top of the Vulkan Memory Allocator, and picking a depth format the GPU supports.
+ */
+#include "render/image.hpp"
+
+#include "core/logger.hpp"
+#include "render/device.hpp"
+#include "render/vulkan_utils.hpp"
+
+#include <vulkan/vulkan.h>
+
+#include <vk_mem_alloc.h>
+
+#include <array>
+
+namespace
+{
+    /**
+     * The depth formats tried, most precise first. Vulkan requires D16_UNORM to work as a depth attachment and to be
+     * sampled (Vulkan spec, "Required Format Support"), so one always fits.
+     */
+    constexpr std::array<VkFormat, 3> DepthFormats{
+        VK_FORMAT_D32_SFLOAT,
+        VK_FORMAT_X8_D24_UNORM_PACK32,
+        VK_FORMAT_D16_UNORM,
+    };
+
+    /**
+     * What a depth format must allow: being drawn into, read by shaders (MirrorView), and copied (SceneBehind copies
+     * the frame's depth for the water).
+     */
+    constexpr VkFormatFeatureFlags DepthFeatures =
+        VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+
+    /** The part of an image a view of this format covers. */
+    VkImageAspectFlags GetAspectOf(VkFormat format)
+    {
+        for (const VkFormat depthFormat : DepthFormats)
+        {
+            if (format == depthFormat)
+            {
+                return VK_IMAGE_ASPECT_DEPTH_BIT;
+            }
+        }
+        return VK_IMAGE_ASPECT_COLOR_BIT;
+    }
+} // namespace
+
+std::optional<VkFormat> Wotah::FindDepthFormat(const Device& device)
+{
+    for (const VkFormat format : DepthFormats)
+    {
+        VkFormatProperties properties;
+        vkGetPhysicalDeviceFormatProperties(device.GetGpu(), format, &properties);
+        if ((properties.optimalTilingFeatures & DepthFeatures) == DepthFeatures)
+        {
+            return format;
+        }
+    }
+    Logger::Error("The GPU offers no depth format to draw into and read");
+    return std::nullopt;
+}
+
+Wotah::Image::~Image()
+{
+    Destroy();
+}
+
+uint32_t Wotah::GetMipLevelCountFor(VkExtent2D extent) noexcept
+{
+    uint32_t count = 1;
+    for (uint32_t side = std::max(extent.width, extent.height); side > 1; side /= 2)
+    {
+        ++count;
+    }
+    return count;
+}
+
+bool Wotah::Image::Create(const Device& device, VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
+                          uint32_t layerCount, uint32_t mipLevelCount)
+{
+    Destroy(); // a second Create replaces the first image instead of leaking it
+    if (extent.width == 0 || extent.height == 0 || layerCount == 0 || mipLevelCount == 0 ||
+        mipLevelCount > GetMipLevelCountFor(extent))
+    {
+        Logger::Error("An image needs a size, a layer count and a fitting mip level count above 0, not {}x{} with {} "
+                      "layers and {} mip levels",
+                      extent.width, extent.height, layerCount, mipLevelCount);
+        return false;
+    }
+    m_device        = device.GetHandle();
+    m_allocator     = device.GetAllocator();
+    m_format        = format;
+    m_extent        = extent;
+    m_aspect        = GetAspectOf(format);
+    m_layerCount    = layerCount;
+    m_mipLevelCount = mipLevelCount;
+
+    VkImageCreateInfo imageInfo = Wotah::MakeVulkanInfo<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+    imageInfo.imageType         = VK_IMAGE_TYPE_2D;
+    imageInfo.format            = format;
+    imageInfo.extent            = {extent.width, extent.height, 1};
+    imageInfo.mipLevels         = mipLevelCount;
+    imageInfo.arrayLayers       = layerCount;
+    imageInfo.samples           = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling            = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage             = usage;
+    imageInfo.sharingMode       = VK_SHARING_MODE_EXCLUSIVE; // one queue does everything
+    imageInfo.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo allocationInfo{};
+    allocationInfo.usage = VMA_MEMORY_USAGE_AUTO; // GPU-only memory, as the CPU never touches an image directly
+    if (!Succeeded(vmaCreateImage(m_allocator, &imageInfo, &allocationInfo, &m_image, &m_allocation, nullptr),
+                   "create an image"))
+    {
+        return false;
+    }
+
+    VkImageViewCreateInfo viewInfo =
+        Wotah::MakeVulkanInfo<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
+    viewInfo.image            = m_image;
+    viewInfo.viewType         = layerCount == 1 ? VK_IMAGE_VIEW_TYPE_2D : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    viewInfo.format           = format;
+    viewInfo.subresourceRange = {m_aspect, 0, mipLevelCount, 0, layerCount}; // the whole image
+    return Succeeded(vkCreateImageView(m_device, &viewInfo, nullptr, &m_view), "create an image view");
+}
+
+void Wotah::Image::Destroy()
+{
+    // The view before the image it shows; all of these accept null handles (Vulkan spec, VMA docs).
+    if (m_device != VK_NULL_HANDLE)
+    {
+        vkDestroyImageView(m_device, m_view, nullptr);
+    }
+    if (m_allocator != nullptr)
+    {
+        vmaDestroyImage(m_allocator, m_image, m_allocation);
+    }
+    m_device        = VK_NULL_HANDLE;
+    m_allocator     = nullptr;
+    m_image         = VK_NULL_HANDLE;
+    m_allocation    = nullptr;
+    m_view          = VK_NULL_HANDLE;
+    m_format        = VK_FORMAT_UNDEFINED;
+    m_extent        = {};
+    m_aspect        = 0;
+    m_layerCount    = 0;
+    m_mipLevelCount = 0;
+}
