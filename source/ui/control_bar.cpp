@@ -1,6 +1,6 @@
 /**
  * @file control_bar.cpp
- * The control bar: a card at the bottom middle with three buttons in a row.
+ * The control bar: a card at the bottom middle with four buttons in a row.
  */
 #include "ui/control_bar.hpp"
 
@@ -17,6 +17,7 @@ namespace
      * The buttons' labels. After "###" comes the name ImGui knows a button by, so the pause button stays one button
      * whichever label it shows (imgui.h, "About the ID Stack").
      */
+    constexpr const char* AddBallLabel     = "Add ball";
     constexpr const char* ResetSceneLabel  = "Reset scene";
     constexpr const char* PauseLabel       = "Pause###pause";
     constexpr const char* ResumeLabel      = "Resume###pause";
@@ -51,7 +52,7 @@ namespace
     }
 } // namespace
 
-Wotah::ControlBarClicks Wotah::ShowControlBar(bool isPaused)
+Wotah::ControlBarClicks Wotah::ShowControlBar(bool isPaused, bool canAddBall)
 {
     // The middle of the window's bottom edge, a card's margin up.
     const ImVec2    display = ImGui::GetIO().DisplaySize;
@@ -60,6 +61,10 @@ Wotah::ControlBarClicks Wotah::ShowControlBar(bool isPaused)
     ControlBarClicks clicks;
     if (BeginCard(ControlBarName, anchor, BottomMiddlePivot))
     {
+        ImGui::BeginDisabled(!canAddBall);
+        clicks.AddBall = ImGui::Button(AddBallLabel);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
         clicks.ResetScene = ImGui::Button(ResetSceneLabel);
         ImGui::SameLine();
         clicks.TogglePause = ShowPauseButton(isPaused);

@@ -1,15 +1,18 @@
 /**
  * @file camera_tests.cpp
- * Camera: its matrices against glm directly, rebuilding after changes, independent copies, refused settings, and
- * keeping its last view when position, target and up give none.
+ * Camera: its matrices against glm directly, rebuilding after changes, independent copies, refused settings, keeping
+ * its last view when position, target and up give none, and which way it sees each place in its picture.
  */
 #include "render/camera.hpp"
 
 #include <doctest/doctest.h>
+#include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/trigonometric.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 #include <cmath>
 #include <limits>
@@ -114,5 +117,33 @@ TEST_SUITE("camera")
         }
         CHECK(camera.GetView() == goodView);
         CHECK(IsFinite(camera.GetViewProjection()));
+    }
+
+    TEST_CASE("the picture's middle is straight ahead, and each place in the picture is seen where the camera draws it")
+    {
+        Wotah::Camera camera = MakeCornerCamera();
+        (void)camera.SetAspectRatio(16.0f / 9.0f); // a valid ratio
+        const glm::vec3 ahead = glm::normalize(camera.GetTarget() - camera.GetPosition());
+        CHECK(glm::length(camera.GetPictureDirection({0.5f, 0.5f}) - ahead) < 1.0e-5f);
+
+        // Points around the target, drawn somewhere in the picture (Vulkan's clip space: y down, so the top is -1):
+        // the direction through that place in the picture points at them.
+        const glm::vec3 points[] = {
+            {0.3f, 0.2f, -0.1f}, {-0.5f, 0.4f, 0.2f}, {0.1f, -0.3f, 0.6f}, {-0.6f, -0.2f, -0.4f}};
+        for (const glm::vec3& point : points)
+        {
+            const glm::vec4 clip  = camera.GetViewProjection() * glm::vec4(point, 1.0f);
+            const glm::vec2 place = (glm::vec2(clip) / clip.w + 1.0f) / 2.0f;
+            CAPTURE(place.x);
+            CAPTURE(place.y);
+            const glm::vec3 toPoint = glm::normalize(point - camera.GetPosition());
+            CHECK(glm::length(camera.GetPictureDirection(place) - toPoint) < 1.0e-5f);
+        }
+
+        // The top of the picture looks higher than its bottom, its left more to the left than its right.
+        CHECK(camera.GetPictureDirection({0.5f, 0.0f}).y > camera.GetPictureDirection({0.5f, 1.0f}).y);
+        const glm::vec3 right = glm::cross(ahead, camera.GetUp());
+        CHECK(glm::dot(camera.GetPictureDirection({0.0f, 0.5f}), right) < 0.0f);
+        CHECK(glm::dot(camera.GetPictureDirection({1.0f, 0.5f}), right) > 0.0f);
     }
 }

@@ -653,4 +653,47 @@ TEST_SUITE("physics")
         CHECK(east - west > 0.6f);
         CHECK(east - west < 3.0f); // with it, not thrown about
     }
+
+    TEST_CASE("many balls floating on a swell move exactly alike in two worlds: the water sampled on worker threads")
+    {
+        // 24 floating balls are enough to share their water out over the worker threads. Two worlds set up alike
+        // must end up alike to the last bit: each ball's water is sampled on its own, and all are lifted in order.
+        constexpr int BallCount = 24;
+        Wotah::Sea    sea       = Wotah::Testing::MakeStillSea(0.0f);
+        sea.Waves               = Wotah::MakeSeaWaves(2.0f, {1.0f, 0.3f});
+        std::array<Wotah::PhysicsWorld, 2>                  worlds;
+        std::array<std::array<Wotah::BodyId, BallCount>, 2> balls{};
+        for (std::size_t copy = 0; copy < worlds.size(); ++copy)
+        {
+            SetUpWorld(worlds[copy], false);
+            REQUIRE(worlds[copy].SetSea(sea));
+            for (int ball = 0; ball < BallCount; ++ball)
+            {
+                Wotah::BodySettings floating = MakeBall(
+                    {-9.0f + static_cast<float>(ball % 6) * 3.0f, 0.5f, -6.0f + static_cast<float>(ball / 6) * 3.0f});
+                floating.Buoyancy                        = 3.0f;
+                const std::optional<Wotah::BodyId> added = worlds[copy].AddSphere(BallRadius, floating);
+                REQUIRE(added.has_value());
+                balls[copy][static_cast<std::size_t>(ball)] = *added;
+            }
+        }
+        for (Wotah::PhysicsWorld& world : worlds)
+        {
+            Run(world, 3.0f);
+        }
+        bool  isAlike = true;
+        float sway    = 0.0f; // how far the balls moved from where they started, the most of them
+        for (std::size_t ball = 0; ball < static_cast<std::size_t>(BallCount); ++ball)
+        {
+            const glm::vec3 first  = GetPosition(worlds[0], balls[0][ball]);
+            const glm::vec3 second = GetPosition(worlds[1], balls[1][ball]);
+            isAlike                = isAlike && first == second;
+            const glm::vec3 start{-9.0f + static_cast<float>(ball % 6) * 3.0f, 0.5f,
+                                  -6.0f + static_cast<float>(ball / 6) * 3.0f};
+            sway = std::max(sway, glm::length(first - start));
+        }
+        CHECK(isAlike);
+        CAPTURE(sway);
+        CHECK(sway > 0.3f); // the waves moved them
+    }
 }

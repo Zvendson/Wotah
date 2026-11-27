@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 using Wotah::Testing::IsNear;
@@ -351,5 +352,41 @@ TEST_SUITE("input")
         ui.IsTyping = false;
         dispatcher.Dispatch(MakeKeyEvent(Wotah::KeyCode::Tab, true));
         CHECK(shortcuts.TakeSettingsRequest());
+    }
+
+    TEST_CASE("B asks once to add a ball, also when held; a left click asks to pick what lies under the cursor")
+    {
+        Wotah::SceneShortcuts shortcuts;
+        CHECK_FALSE(shortcuts.TakeAddBallRequest());
+        CHECK(shortcuts.OnInput(MakeKeyEvent(Wotah::KeyCode::B, true)));
+        CHECK(shortcuts.TakeAddBallRequest());
+        CHECK_FALSE(shortcuts.TakeAddBallRequest()); // answered once
+        Wotah::InputEvent repeated = MakeKeyEvent(Wotah::KeyCode::B, true);
+        repeated.IsRepeat          = true;
+        CHECK(shortcuts.OnInput(repeated));
+        CHECK_FALSE(shortcuts.TakeAddBallRequest());
+
+        // The left button's press, where the cursor was; the last of several counts. Letting go and the other buttons
+        // go on to the handlers after it.
+        CHECK_FALSE(shortcuts.TakePickRequest().has_value());
+        Wotah::InputEvent press = MakeButtonEvent(Wotah::MouseButton::Left, true);
+        press.CursorPosition    = {100.0f, 50.0f};
+        CHECK(shortcuts.OnInput(press));
+        press.CursorPosition = {300.0f, 200.0f};
+        CHECK(shortcuts.OnInput(press));
+        CHECK_FALSE(shortcuts.OnInput(MakeButtonEvent(Wotah::MouseButton::Left, false)));
+        CHECK_FALSE(shortcuts.OnInput(MakeButtonEvent(Wotah::MouseButton::Right, true)));
+        const std::optional<glm::vec2> pick = shortcuts.TakePickRequest();
+        REQUIRE(pick.has_value());
+        CHECK(*pick == glm::vec2(300.0f, 200.0f));
+        CHECK_FALSE(shortcuts.TakePickRequest().has_value()); // answered once
+
+        // In the program's order, a click the UI keeps (on a window, or on the move gizmo) picks nothing.
+        FakeUi                 ui;
+        Wotah::InputDispatcher dispatcher;
+        dispatcher.AddHandler(ui);
+        dispatcher.AddHandler(shortcuts);
+        dispatcher.Dispatch(press);
+        CHECK_FALSE(shortcuts.TakePickRequest().has_value());
     }
 }

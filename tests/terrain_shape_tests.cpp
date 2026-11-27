@@ -210,4 +210,25 @@ TEST_SUITE("terrain shape")
         broken.BumpWavelength = -1.0f;
         CHECK(Wotah::SampleTerrainPatch(broken, {}, 1.0f, 5).Heights.empty());
     }
+
+    TEST_CASE("a patch sampled in bands of rows, in any order, holds the very heights of one sampled whole")
+    {
+        // As the land collider samples a tile it waits for: bands of rows, each on its own thread.
+        const Wotah::TerrainShape beach;
+        const Wotah::TerrainPatch whole = Wotah::SampleTerrainPatch(beach, {-30.0f, 12.0f}, 1.0f, 9);
+        Wotah::TerrainPatch       parts = Wotah::MakeTerrainPatch(beach, {-30.0f, 12.0f}, 1.0f, 9);
+        REQUIRE(parts.Heights.size() == whole.Heights.size());
+        CHECK(parts.Corner == whole.Corner);
+        CHECK(std::ranges::all_of(parts.Heights, [](float height) { return height == 0.0f; })); // not sampled yet
+        Wotah::SampleTerrainRows(beach, parts, 6, 20); // the last band reaching past the patch
+        Wotah::SampleTerrainRows(beach, parts, 0, 3);
+        Wotah::SampleTerrainRows(beach, parts, 3, 6);
+        CHECK(parts.Heights == whole.Heights);
+
+        // A grid that cannot be is refused as by SampleTerrainPatch; sampling its rows does nothing.
+        Wotah::TerrainPatch none = Wotah::MakeTerrainPatch(beach, {}, 0.0f, 5);
+        CHECK(none.Heights.empty());
+        Wotah::SampleTerrainRows(beach, none, 0, 5);
+        CHECK(none.Heights.empty());
+    }
 }

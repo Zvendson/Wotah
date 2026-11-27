@@ -182,6 +182,14 @@ float Wotah::GetTerrainHeight(const TerrainShape& shape, const glm::vec2& place,
 Wotah::TerrainPatch Wotah::SampleTerrainPatch(const TerrainShape& shape, const glm::vec2& center, float spacing,
                                               uint32_t samplesPerSide)
 {
+    TerrainPatch patch = MakeTerrainPatch(shape, center, spacing, samplesPerSide);
+    SampleTerrainRows(shape, patch, 0, patch.SamplesPerSide);
+    return patch;
+}
+
+Wotah::TerrainPatch Wotah::MakeTerrainPatch(const TerrainShape& shape, const glm::vec2& center, float spacing,
+                                            uint32_t samplesPerSide)
+{
     if (!IsUsable(shape) || !(spacing > 0.0f) || !std::isfinite(spacing) || samplesPerSide < 2 ||
         samplesPerSide > MaxPatchSamples)
     {
@@ -196,14 +204,19 @@ Wotah::TerrainPatch Wotah::SampleTerrainPatch(const TerrainShape& shape, const g
     patch.SamplesPerSide = samplesPerSide;
     patch.Corner         = center - glm::vec2(0.5f * static_cast<float>(samplesPerSide - 1) * spacing);
     patch.Heights.resize(std::size_t{samplesPerSide} * samplesPerSide);
-    for (uint32_t row = 0; row < samplesPerSide; ++row)
+    return patch;
+}
+
+void Wotah::SampleTerrainRows(const TerrainShape& shape, TerrainPatch& patch, uint32_t firstRow, uint32_t endRow)
+{
+    const uint32_t samples = patch.SamplesPerSide;
+    for (uint32_t row = firstRow; row < std::min(endRow, samples); ++row)
     {
-        for (uint32_t column = 0; column < samplesPerSide; ++column)
+        for (uint32_t column = 0; column < samples; ++column)
         {
             const glm::vec2 place =
-                patch.Corner + glm::vec2(static_cast<float>(column), static_cast<float>(row)) * spacing;
-            patch.Heights[std::size_t{row} * samplesPerSide + column] = GetTerrainHeight(shape, place);
+                patch.Corner + glm::vec2(static_cast<float>(column), static_cast<float>(row)) * patch.Spacing;
+            patch.Heights[std::size_t{row} * samples + column] = GetTerrainHeight(shape, place);
         }
     }
-    return patch;
 }

@@ -26,6 +26,13 @@ namespace Wotah
     /** Whether every part of a vector is a number (none infinite or NaN). */
     [[nodiscard]] bool IsFinite(const glm::vec3& vector) noexcept;
 
+    /**
+     * How far along a ray, from origin along direction (of length 1), it first reaches a ball around center with
+     * radius; 0 when origin lies inside the ball; empty when the ray passes it or the ball lies behind origin.
+     */
+    [[nodiscard]] std::optional<float> FindRaySphereHit(const glm::vec3& origin, const glm::vec3& direction,
+                                                        const glm::vec3& center, float radius) noexcept;
+
     // ---- Noise: smooth randomness for landscapes and other natural shapes ----
     //
     // Every function here gives the same result as its twin in shaders/noise.glsl, to float rounding, so what the CPU

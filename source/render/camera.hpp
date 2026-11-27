@@ -15,6 +15,7 @@
 
 #include <glm/mat4x4.hpp>
 #include <glm/trigonometric.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 namespace Wotah
@@ -73,6 +74,13 @@ namespace Wotah
 
         /** World space to Vulkan clip space: GetProjection() * GetView(). */
         [[nodiscard]] const glm::mat4& GetViewProjection() const;
+
+        /**
+         * Which way the camera sees a place in its picture, as a direction of length 1 from its position:
+         * picturePlace's x runs from 0 at the picture's left edge to 1 at its right, y from 0 at the top to 1 at the
+         * bottom (as the cursor runs over the window, divided by its size); the middle (0.5, 0.5) is straight ahead.
+         */
+        [[nodiscard]] glm::vec3 GetPictureDirection(const glm::vec2& picturePlace) const;
 
     private:
         /** Rebuilds the matrices when a setting changed since the last time. */

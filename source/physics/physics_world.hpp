@@ -17,7 +17,8 @@
  *
  * The world runs in fixed steps (PhysicsStepSeconds), whatever the frame rate, so it behaves the same on every machine;
  * FindTransform blends between the last two steps, so what is drawn moves smoothly. Jolt stays inside
- * physics_world.cpp. One thread uses a world at a time.
+ * physics_world.cpp. One thread uses a world at a time; within a step, the world shares its work out over worker
+ * threads of its own (Jolt's, which also sample the water under floating bodies) and the result is the same as on one.
  */
 #pragma once
 

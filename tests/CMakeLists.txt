@@ -42,7 +42,7 @@ add_executable(wotah_tests
     vulkan_utils_tests.cpp
     ${TEST_SHADERS})
 target_include_directories(wotah_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${TEST_SHADER_OUT})
-target_link_libraries(wotah_tests PRIVATE wotah doctest imgui_null)
+target_link_libraries(wotah_tests PRIVATE wotah doctest imgui_null imguizmo) # ImGuizmo: to find the gizmo's arrows
 wotah_set_warnings(wotah_tests)
 
 add_test(NAME wotah_tests COMMAND wotah_tests)

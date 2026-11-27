@@ -25,6 +25,11 @@ namespace
 
 bool Wotah::SceneShortcuts::OnInput(const InputEvent& event)
 {
+    if (event.Type == InputEventType::MouseButtonPressed && event.Button == MouseButton::Left)
+    {
+        m_pickRequest = event.CursorPosition; // the last of a frame's clicks counts
+        return true;
+    }
     if (event.Type != InputEventType::KeyPressed)
     {
         return false;
@@ -36,6 +41,9 @@ bool Wotah::SceneShortcuts::OnInput(const InputEvent& event)
             return true;
         case KeyCode::Tab:
             m_isSettingsRequested = NotePress(event, m_isSettingsRequested);
+            return true;
+        case KeyCode::B:
+            m_isAddBallRequested = NotePress(event, m_isAddBallRequested);
             return true;
         default:
             return false;
@@ -50,4 +58,16 @@ bool Wotah::SceneShortcuts::TakeResetRequest() noexcept
 bool Wotah::SceneShortcuts::TakeSettingsRequest() noexcept
 {
     return Take(m_isSettingsRequested);
+}
+
+bool Wotah::SceneShortcuts::TakeAddBallRequest() noexcept
+{
+    return Take(m_isAddBallRequested);
+}
+
+std::optional<glm::vec2> Wotah::SceneShortcuts::TakePickRequest() noexcept
+{
+    const std::optional<glm::vec2> request = m_pickRequest;
+    m_pickRequest.reset();
+    return request;
 }

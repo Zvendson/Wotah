@@ -14,6 +14,7 @@
 #include <glm/trigonometric.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <numbers>
 
@@ -210,10 +211,10 @@ namespace
      */
     constexpr float RollerTrail = 0.15f;
 
-    /** How far to each side SampleWater looks for the way to the shore, in metres. */
-    constexpr float ShoreReach = 0.5f;
-
-    /** How far to each side SampleWater looks for the surface's slope, in metres, and in time for its speed. */
+    /**
+     * How far to each side SampleWater looks for the surface's slope (and the way to the shore), in metres, and in time
+     * for its speed.
+     */
     constexpr float  SlopeReach = 0.05f;
     constexpr double SpeedReach = 0.02;
 
@@ -227,23 +228,49 @@ namespace
         glm::vec3 Velocity{0.0f};
     };
 
-    /** The water that lies at rest at restPlace: where it is now, which way the surface faces there and how it moves.
+    /**
+     * What the wind waves are at one moment, the same at every place: each wave's wavenumber, angular frequency and
+     * phase. Worked out once for the many places one look at the water needs.
      */
-    WaveState GetWaveState(const Wotah::Sea& sea, const glm::vec2& restPlace)
+    struct WindMoment
     {
-        const float shoal = Wotah::GetShoalShare(sea, restPlace);
-        WaveState   state;
-        glm::vec3   tilt{0.0f};
+        std::array<float, Wotah::MaxSeaWaves> Number{};
+        std::array<float, Wotah::MaxSeaWaves> Frequency{};
+        std::array<float, Wotah::MaxSeaWaves> Phase{};
+    };
+
+    /** The wind waves of sea at its moment (its Seconds). */
+    WindMoment MakeWindMoment(const Wotah::Sea& sea)
+    {
+        WindMoment moment;
+        for (uint32_t index = 0; index < sea.Waves.Count; ++index)
+        {
+            const Wotah::SeaWave& wave = sea.Waves.Waves[index];
+            moment.Number[index]       = Wotah::GetWavenumber(wave);
+            moment.Frequency[index]    = Wotah::GetWaveFrequency(wave);
+            moment.Phase[index]        = Wotah::GetWavePhase(wave, sea.Seconds);
+        }
+        return moment;
+    }
+
+    /**
+     * The water that lies at rest at restPlace: where it is now, which way the surface faces there and how it moves;
+     * the waves at moment, shoal their share of full height there (GetShoalShare).
+     */
+    WaveState GetWaveState(const Wotah::Sea& sea, const WindMoment& moment, const glm::vec2& restPlace, float shoal)
+    {
+        WaveState state;
+        glm::vec3 tilt{0.0f};
         for (uint32_t index = 0; index < sea.Waves.Count; ++index)
         {
             const Wotah::SeaWave& wave      = sea.Waves.Waves[index];
-            const float           number    = Wotah::GetWavenumber(wave);
+            const float           number    = moment.Number[index];
             const float           amplitude = shoal * wave.Amplitude;
 
             // Whole wavelengths dropped first, so the sine's angle stays small and exact far from the origin (the
             // shader does the same: its sine is only exact for small angles).
             const float cycles = glm::dot(wave.Direction, restPlace) / wave.Wavelength;
-            const float angle  = TwoPi * (cycles - std::floor(cycles)) + Wotah::GetWavePhase(wave, sea.Seconds);
+            const float angle  = TwoPi * (cycles - std::floor(cycles)) + moment.Phase[index];
             const float along  = std::cos(angle);
             const float across = std::sin(angle);
 
@@ -255,7 +282,7 @@ namespace
             const float slope = number * amplitude;
             tilt += glm::vec3(wave.Direction.x * slope * along, wave.Steepness * slope * across,
                               wave.Direction.y * slope * along);
-            const float speed = amplitude * Wotah::GetWaveFrequency(wave);
+            const float speed = amplitude * moment.Frequency[index];
             state.Velocity += glm::vec3(wave.Direction.x * wave.Steepness * speed * across, -speed * along,
                                         wave.Direction.y * wave.Steepness * speed * across);
         }
@@ -399,26 +426,55 @@ namespace
         return cycle;
     }
 
-    SwashCycle GetSwashCycle(const Wotah::Sea& sea, float along, float clock, int waves)
+    /**
+     * What every wave's swash on one sea shares, wherever and whenever: a wave of the swell's own height (its swash
+     * starts and ends where every wave's does), the swell's phase across the coast where that one draws back to,
+     * the swell's wavenumber along the coast, and how far up a swash can run in the time a wave has. Worked out once
+     * for the many swashes one look at the water or the sand needs.
+     */
+    struct SwashBasis
     {
-        const Wotah::SeaSwell& swell       = sea.Waves.Swell;
-        const float            slope       = sea.Floor->BeachSlope;
-        const float            deep        = GetDeepNumber(swell);
-        const float            alongNumber = GetAlongNumber(sea, deep);
+        SwashCycle Usual;
+        float      DrawnPhase  = 0.0f;
+        float      AlongNumber = 0.0f;
+        float      Most        = 0.0f;
+    };
+
+    /** The swash basis of sea; empty without surf (HasSurf). */
+    SwashBasis MakeSwashBasis(const Wotah::Sea& sea)
+    {
+        SwashBasis basis;
+        if (!HasSurf(sea))
+        {
+            return basis;
+        }
+        const Wotah::SeaSwell& swell = sea.Waves.Swell;
+        const float            deep  = GetDeepNumber(swell);
+        basis.AlongNumber            = GetAlongNumber(sea, deep);
+        basis.Usual                  = GetSwashSize(swell.Height, swell.Period, sea.Floor->BeachSlope);
+        const float drawn            = std::max(basis.Usual.Shore + basis.Usual.Down, 0.0f);
+        basis.DrawnPhase             = GetPhaseAcross(sea, drawn, deep, basis.AlongNumber);
+        basis.Most                   = 0.5f * SwashSlowing * std::pow(0.5f * SwashShare * swell.Period, 2.0f);
+        return basis;
+    }
+
+    SwashCycle GetSwashCycle(const Wotah::Sea& sea, const SwashBasis& basis, float along, float clock, int waves)
+    {
+        const Wotah::SeaSwell& swell = sea.Waves.Swell;
+        const float            slope = sea.Floor->BeachSlope;
 
         // The clock: each wave's swash starts as its crest reaches the drawn-back waterline (of a wave of the swell's
         // own height, so every wave keeps to one clock), before it reaches the shore.
-        const SwashCycle usual   = GetSwashSize(swell.Height, swell.Period, slope);
-        const float      drawn   = std::max(usual.Shore + usual.Down, 0.0f);
-        const float      atDrawn = -alongNumber * along + clock + GetPhaseAcross(sea, drawn, deep, alongNumber);
-        const float      turns   = atDrawn / TwoPi - std::floor(atDrawn / TwoPi);
+        const SwashCycle& usual   = basis.Usual;
+        const float       atDrawn = -basis.AlongNumber * along + clock + basis.DrawnPhase;
+        const float       turns   = atDrawn / TwoPi - std::floor(atDrawn / TwoPi);
 
         // The wave waves back from the last one there: it starts and ends where every wave does (the usual mean and
         // drawn-back waterline, so the front never jumps from one wave to the next) and runs as far up as its own size
         // lets it (its crest's place in the set), within the time a wave has.
         const float      crest = GetLastCrest(atDrawn) - TwoPi * static_cast<float>(waves);
         const SwashCycle own   = GetSwashSize(swell.Height * GetSetShare(crest, along), swell.Period, slope);
-        const float      most  = 0.5f * SwashSlowing * std::pow(0.5f * SwashShare * swell.Period, 2.0f);
+        const float      most  = basis.Most;
         SwashCycle       cycle = usual;
         cycle.RunUp            = own.RunUp;
         cycle.Up               = std::min(own.Up, most - usual.Down);
@@ -445,6 +501,165 @@ namespace
         }
         const float early = seconds - cycle.PeakTime;
         return cycle.Up - 0.5f * SwashSlowing * early * early;
+    }
+
+    /** The swash at along, swell clock clock, on a sea with surf whose swash basis is basis (GetSwash's work). */
+    Wotah::Swash GetSwashFrom(const Wotah::Sea& sea, const SwashBasis& basis, float along, float clock)
+    {
+        const SwashCycle cycle = GetSwashCycle(sea, basis, along, clock, 0);
+        Wotah::Swash     swash;
+        swash.Front    = cycle.Shore - GetSwashReach(cycle, cycle.Since);
+        swash.Thinnest = SheetThinnest;
+        swash.Deeper   = SheetShare * cycle.RunUp * GetSheetFreshness(cycle);
+        swash.Speed    = cycle.Since < 2.0f * cycle.PeakTime ? SwashSlowing * (cycle.PeakTime - cycle.Since) : 0.0f;
+        return swash;
+    }
+
+    /**
+     * What the swell is at a distance seaward that does not change with time: the still water's depth, the swell's
+     * phase across the coast, its wavenumber there and how much it has grown; HasSwell says there is a swell rolling
+     * in at all (GetSurfPoint's first part).
+     */
+    struct SurfPlace
+    {
+        float Depth       = 0.0f;
+        float PhaseAcross = 0.0f;
+        float Local       = 0.0f;
+        float Shoaling    = 0.0f;
+        bool  HasSwell    = false;
+    };
+
+    SurfPlace GetSurfPlace(const Wotah::Sea& sea, float seaward)
+    {
+        SurfPlace              place;
+        const Wotah::SeaSwell& swell = sea.Waves.Swell;
+        place.Depth                  = GetSwellDepth(sea, seaward);
+        if (!(swell.Height > 0.0f) || (sea.Floor && !(swell.Direction.x > 0.0f)))
+        {
+            return place;
+        }
+        place.HasSwell    = true;
+        const float deep  = GetDeepNumber(swell);
+        place.PhaseAcross = GetPhaseAcross(sea, seaward, deep, GetAlongNumber(sea, deep));
+        if (place.Depth > 0.0f)
+        {
+            place.Local    = GetLocalNumber(deep, place.Depth);
+            place.Shoaling = GetShoaling(deep, place.Local, place.Depth, GetSwellFrequency(swell));
+        }
+        return place;
+    }
+
+    /** The swell at place along the coast, swell clock clock (GetSurfPoint's second part). */
+    Wotah::SurfPoint GetSurfPointAt(const Wotah::Sea& sea, const SurfPlace& place, float along, float clock)
+    {
+        Wotah::SurfPoint       point;
+        const Wotah::SeaSwell& swell = sea.Waves.Swell;
+        point.Depth                  = place.Depth;
+        if (!place.HasSwell)
+        {
+            return point;
+        }
+
+        // Where it stands: its crests crowd together and turn to the shore as it slows over the shallowing floor.
+        const float alongNumber = GetAlongNumber(sea, GetDeepNumber(swell));
+        point.Phase             = place.PhaseAcross - alongNumber * along + clock;
+        const float set         = GetSetShare(point.Phase, along);
+        if (!(point.Depth > 0.0f))
+        {
+            // On the beach: no wave, but the mean water raised by the broken waves (the swash runs from there).
+            point.Broken = 1.0f;
+            point.Setup  = SetupShare * swell.Height * set;
+            return point;
+        }
+
+        // How it grows, and breaks once the depth cannot hold it; then a bore, its height shrinking with the depth.
+        const float unbroken      = swell.Height * set * place.Shoaling;
+        const float breaking      = Wotah::BreakingDepthShare * point.Depth;
+        const float ratio         = unbroken / breaking;
+        point.Broken              = glm::smoothstep(BreakStart, BreakEnd, ratio);
+        point.Height              = glm::mix(unbroken, BrokenDepthShare * point.Depth, point.Broken);
+        const float unbrokenShare = 1.0f - point.Broken;
+        point.Peak                = 1.0f + PeakGrowth * glm::smoothstep(PeakStart, 1.0f, ratio) * unbrokenShare;
+        point.Lean  = MaxLean * glm::smoothstep(LeanStart, 1.0f, ratio) * unbrokenShare + BoreLean * point.Broken;
+        point.Setup = SetupShare * swell.Height * set * point.Broken;
+        return point;
+    }
+
+    /**
+     * What the swell's surface at a place needs that does not change with time: the place in the coast's frame, the
+     * swell's values there, and the sand's height, only where a swash can reach (else unused).
+     */
+    struct SwellSpot
+    {
+        glm::vec2 Frame{0.0f};
+        SurfPlace Surf;
+        float     Sand = -NoFloorDepth;
+    };
+
+    /** The swell spot of place; sand, where given, is the sand's height there instead of the land's own. */
+    SwellSpot MakeSwellSpot(const Wotah::Sea& sea, const glm::vec2& place, std::optional<float> sand = std::nullopt)
+    {
+        SwellSpot spot;
+        spot.Frame = Wotah::GetSurfFrame(sea, place);
+        spot.Surf  = GetSurfPlace(sea, spot.Frame.y);
+        if (sand)
+        {
+            spot.Sand = *sand;
+        }
+        else if (HasSurf(sea) && spot.Surf.Depth <= SwashDepth)
+        {
+            spot.Sand = Wotah::GetTerrainHeight(*sea.Floor, place);
+        }
+        return spot;
+    }
+
+    /** The surface with the swell at a spot and moment, and the swell's point and swash it came from. */
+    struct SwellState
+    {
+        float            Surface = 0.0f;
+        Wotah::SurfPoint Point;
+        Wotah::Swash     Swash;
+        bool             HasSwash = false;
+    };
+
+    /**
+     * The surface at spot when the swell's clock is clock, on top of surface (the still level and the wind's lift):
+     * GetSurfaceHeight's work for a sea with a swell, its swash basis basis.
+     */
+    SwellState GetSwellState(const Wotah::Sea& sea, const SwashBasis& basis, const SwellSpot& spot, float clock,
+                             float surface)
+    {
+        // The swell over the mean water.
+        SwellState state;
+        state.Point = GetSurfPointAt(sea, spot.Surf, spot.Frame.x, clock);
+        surface += state.Point.Setup + Wotah::GetSurfWave(state.Point);
+        state.Surface = surface;
+        if (!HasSurf(sea) || state.Point.Depth > SwashDepth)
+        {
+            return state;
+        }
+
+        // The swash: landward of its front the sand lies bare (the water just under it); seaward a sheet of water at
+        // least covers the sand, deeper behind the front.
+        state.Swash         = GetSwashFrom(sea, basis, spot.Frame.x, clock);
+        state.HasSwash      = true;
+        const float seaward = spot.Frame.y;
+        const float front   = state.Swash.Front;
+        if (seaward < front)
+        {
+            state.Surface = front - seaward < FrontMargin ? spot.Sand + state.Swash.Thinnest
+                                                          : std::min(surface, spot.Sand - SandCover);
+            return state;
+        }
+        const float behind = std::clamp((seaward - front) / SheetRamp, 0.0f, 1.0f);
+        state.Surface = std::max(surface, spot.Sand + state.Swash.Thinnest + state.Swash.Deeper * std::sqrt(behind));
+        return state;
+    }
+
+    /** The swell's lift over the still level at spot when its clock is clock (sea has a swell). */
+    float GetSwellLiftAt(const Wotah::Sea& sea, const SwashBasis& basis, const SwellSpot& spot, float clock)
+    {
+        return GetSwellState(sea, basis, spot, clock, sea.Level + 0.0f).Surface - sea.Level;
     }
 } // namespace
 
@@ -549,7 +764,7 @@ float Wotah::GetShoalShare(const Sea& sea, const glm::vec2& place)
 
 glm::vec3 Wotah::GetWaveOffset(const Sea& sea, const glm::vec2& restPlace)
 {
-    return GetWaveState(sea, restPlace).Offset;
+    return GetWaveState(sea, MakeWindMoment(sea), restPlace, GetShoalShare(sea, restPlace)).Offset;
 }
 
 float Wotah::GetSwellClock(const SeaSwell& swell, double seconds)
@@ -576,40 +791,7 @@ glm::vec2 Wotah::GetSurfFrame(const Sea& sea, const glm::vec2& place)
 
 Wotah::SurfPoint Wotah::GetSurfPoint(const Sea& sea, float seaward, float along, float clock)
 {
-    SurfPoint       point;
-    const SeaSwell& swell = sea.Waves.Swell;
-    point.Depth           = GetSwellDepth(sea, seaward);
-    if (!(swell.Height > 0.0f) || (sea.Floor && !(swell.Direction.x > 0.0f)))
-    {
-        return point;
-    }
-
-    // Where it stands: its crests crowd together and turn to the shore as it slows over the shallowing floor.
-    const float frequency   = GetSwellFrequency(swell);
-    const float deep        = GetDeepNumber(swell);
-    const float alongNumber = GetAlongNumber(sea, deep);
-    point.Phase             = GetPhaseAcross(sea, seaward, deep, alongNumber) - alongNumber * along + clock;
-    const float set         = GetSetShare(point.Phase, along);
-    if (!(point.Depth > 0.0f))
-    {
-        // On the beach: no wave, but the mean water raised by the broken waves (the swash runs from there).
-        point.Broken = 1.0f;
-        point.Setup  = SetupShare * swell.Height * set;
-        return point;
-    }
-
-    // How it grows, and breaks once the depth cannot hold it; then a bore, its height shrinking with the depth.
-    const float local         = GetLocalNumber(deep, point.Depth);
-    const float unbroken      = swell.Height * set * GetShoaling(deep, local, point.Depth, frequency);
-    const float breaking      = BreakingDepthShare * point.Depth;
-    const float ratio         = unbroken / breaking;
-    point.Broken              = glm::smoothstep(BreakStart, BreakEnd, ratio);
-    point.Height              = glm::mix(unbroken, BrokenDepthShare * point.Depth, point.Broken);
-    const float unbrokenShare = 1.0f - point.Broken;
-    point.Peak                = 1.0f + PeakGrowth * glm::smoothstep(PeakStart, 1.0f, ratio) * unbrokenShare;
-    point.Lean  = MaxLean * glm::smoothstep(LeanStart, 1.0f, ratio) * unbrokenShare + BoreLean * point.Broken;
-    point.Setup = SetupShare * swell.Height * set * point.Broken;
-    return point;
+    return GetSurfPointAt(sea, GetSurfPlace(sea, seaward), along, clock);
 }
 
 float Wotah::GetSurfWave(const SurfPoint& point)
@@ -636,12 +818,7 @@ Wotah::Swash Wotah::GetSwash(const Sea& sea, float along, float clock)
     {
         return swash;
     }
-    const SwashCycle cycle = GetSwashCycle(sea, along, clock, 0);
-    swash.Front            = cycle.Shore - GetSwashReach(cycle, cycle.Since);
-    swash.Thinnest         = SheetThinnest;
-    swash.Deeper           = SheetShare * cycle.RunUp * GetSheetFreshness(cycle);
-    swash.Speed            = cycle.Since < 2.0f * cycle.PeakTime ? SwashSlowing * (cycle.PeakTime - cycle.Since) : 0.0f;
-    return swash;
+    return GetSwashFrom(sea, MakeSwashBasis(sea), along, clock);
 }
 
 float Wotah::GetSurfaceHeight(const Sea& sea, const glm::vec2& place, float sand, float windLift)
@@ -652,25 +829,10 @@ float Wotah::GetSurfaceHeight(const Sea& sea, const glm::vec2& place, float sand
         return surface;
     }
 
-    // The swell over the mean water.
-    const glm::vec2 frame = GetSurfFrame(sea, place);
+    // The swell over the mean water, and the swash over the sand (GetSwellState).
+    const SwellSpot spot  = MakeSwellSpot(sea, place, sand);
     const float     clock = GetSwellClock(sea.Waves.Swell, sea.Seconds);
-    const SurfPoint point = GetSurfPoint(sea, frame.y, frame.x, clock);
-    surface += point.Setup + GetSurfWave(point);
-    if (!HasSurf(sea) || point.Depth > SwashDepth)
-    {
-        return surface;
-    }
-
-    // The swash: landward of its front the sand lies bare (the water just under it); seaward a sheet of water at least
-    // covers the sand, deeper behind the front.
-    const Swash swash = GetSwash(sea, frame.x, clock);
-    if (frame.y < swash.Front)
-    {
-        return swash.Front - frame.y < FrontMargin ? sand + swash.Thinnest : std::min(surface, sand - SandCover);
-    }
-    const float behind = std::clamp((frame.y - swash.Front) / SheetRamp, 0.0f, 1.0f);
-    return std::max(surface, sand + swash.Thinnest + swash.Deeper * std::sqrt(behind));
+    return GetSwellState(sea, MakeSwashBasis(sea), spot, clock, surface).Surface;
 }
 
 float Wotah::GetSandWetness(const Sea& sea, const glm::vec2& place, float& trace)
@@ -680,14 +842,15 @@ float Wotah::GetSandWetness(const Sea& sea, const glm::vec2& place, float& trace
     {
         return 0.0f;
     }
-    const glm::vec2 frame = GetSurfFrame(sea, place);
-    const float     clock = GetSwellClock(sea.Waves.Swell, sea.Seconds);
+    const glm::vec2  frame = GetSurfFrame(sea, place);
+    const float      clock = GetSwellClock(sea.Waves.Swell, sea.Seconds);
+    const SwashBasis basis = MakeSwashBasis(sea);
 
     // The last few waves' swash: when each last left this place, and where each stopped.
     float wetness = 0.0f;
     for (int waves = 0; waves < WetWaves; ++waves)
     {
-        const SwashCycle cycle = GetSwashCycle(sea, frame.x, clock, waves);
+        const SwashCycle cycle = GetSwashCycle(sea, basis, frame.x, clock, waves);
         const float      up    = cycle.Shore - frame.y; // how far up the beach from the mean waterline
         if (up <= -cycle.Down)
         {
@@ -728,44 +891,40 @@ namespace
 {
     /**
      * The water that moved to place by the wind waves: steps back to where it lies at rest, each step from the last
-     * guess's offset (it converges while no crest folds over), and its state there.
+     * guess's offset (it converges while no crest folds over), and its state there. The steps take the waves' height
+     * as the depth lets them stand where the water is now (GetShoalShare): within a wave's sway it barely changes, and
+     * each look up costs the land's whole formula; the state found is the true one at the rest place found.
      */
     WaveState FindWindWaves(const Wotah::Sea& sea, const glm::vec2& place)
     {
-        glm::vec2 rest = place;
-        for (int step = 0; step < RestPlaceSteps && sea.Waves.Count > 0; ++step)
+        const WindMoment moment = MakeWindMoment(sea);
+        if (sea.Waves.Count == 0)
         {
-            const glm::vec3 offset = Wotah::GetWaveOffset(sea, rest);
+            return GetWaveState(sea, moment, place, 1.0f); // still: the share of no wave matters
+        }
+        const float here = Wotah::GetShoalShare(sea, place);
+        glm::vec2   rest = place;
+        for (int step = 0; step < RestPlaceSteps; ++step)
+        {
+            const glm::vec3 offset = GetWaveState(sea, moment, rest, here).Offset;
             rest                   = place - glm::vec2(offset.x, offset.z);
         }
-        return GetWaveState(sea, rest);
+        return GetWaveState(sea, moment, rest, Wotah::GetShoalShare(sea, rest));
     }
 
     /**
-     * How the swell's water moves along the surface at place (x, z), in metres per second: on with its waves (linear
-     * waves: the wave's speed times its height over a depth's share), towards the shore under a crest and back under a
-     * trough, less back where the waves have broken (UndertowShare); on the swash's sheet as its front runs, up the
-     * beach and back down. Towards the shore means down the steepest fall of the swell frame's seaward distance (the
-     * swell turns to the shore); without a floor, the swell's own way.
+     * How the swell's water moves along the surface at spot, its state now: on with its waves (linear waves: the
+     * wave's speed times its height over a depth's share), towards the shore under a crest and back under a trough,
+     * less back where the waves have broken (UndertowShare); on the swash's sheet as its front runs, up the beach and
+     * back down; in metres per second, along shoreward (of length 1).
      */
-    glm::vec2 GetSwellFlow(const Wotah::Sea& sea, const glm::vec2& place)
+    glm::vec2 GetSwellFlow(const Wotah::Sea& sea, const SwellSpot& spot, const SwellState& now,
+                           const glm::vec2& shoreward)
     {
-        const Wotah::SeaSwell& swell = sea.Waves.Swell;
-        if (!(swell.Height > 0.0f))
-        {
-            return glm::vec2(0.0f);
-        }
-        const glm::vec2 frame     = Wotah::GetSurfFrame(sea, place);
-        const glm::vec2 across    = {Wotah::GetSurfFrame(sea, place + glm::vec2(ShoreReach, 0.0f)).y -
-                                         Wotah::GetSurfFrame(sea, place - glm::vec2(ShoreReach, 0.0f)).y,
-                                     Wotah::GetSurfFrame(sea, place + glm::vec2(0.0f, ShoreReach)).y -
-                                         Wotah::GetSurfFrame(sea, place - glm::vec2(0.0f, ShoreReach)).y};
-        const glm::vec2 shoreward = glm::dot(across, across) > 0.0f ? -glm::normalize(across) : swell.Direction;
-
-        const float            clock = Wotah::GetSwellClock(swell, sea.Seconds);
-        const Wotah::SurfPoint point = Wotah::GetSurfPoint(sea, frame.y, frame.x, clock);
-        const float            wave  = Wotah::GetSurfWave(point);
-        float                  speed = 0.0f;
+        const Wotah::SeaSwell&  swell = sea.Waves.Swell;
+        const Wotah::SurfPoint& point = now.Point;
+        const float             wave  = Wotah::GetSurfWave(point);
+        float                   speed = 0.0f;
         if (point.Depth > 0.0f)
         {
             const float local = GetLocalNumber(GetDeepNumber(swell), point.Depth);
@@ -781,13 +940,13 @@ namespace
         }
 
         // On the swash's sheet the water runs as its front does.
-        if (HasSurf(sea) && point.Depth <= SwashDepth)
+        if (now.HasSwash)
         {
-            const Wotah::Swash swash = Wotah::GetSwash(sea, frame.x, clock);
-            const float        sand  = Wotah::GetTerrainHeight(*sea.Floor, place);
-            const float sheet = sand + swash.Thinnest +
-                                swash.Deeper * std::sqrt(std::clamp((frame.y - swash.Front) / SheetRamp, 0.0f, 1.0f));
-            if (frame.y >= swash.Front && sheet > sea.Level + point.Setup + wave)
+            const Wotah::Swash& swash   = now.Swash;
+            const float         seaward = spot.Frame.y;
+            const float sheet = spot.Sand + swash.Thinnest +
+                                swash.Deeper * std::sqrt(std::clamp((seaward - swash.Front) / SheetRamp, 0.0f, 1.0f));
+            if (seaward >= swash.Front && sheet > sea.Level + point.Setup + wave)
             {
                 speed = std::clamp(swash.Speed, -MaxSurfSpeed, MaxSurfSpeed);
             }
@@ -795,11 +954,66 @@ namespace
         return shoreward * speed;
     }
 
+    /** The swell at a place: its lift over the still level, its slope, how fast it rises and how its water flows. */
+    struct SwellSample
+    {
+        float     Lift = 0.0f;
+        glm::vec2 Slope{0.0f};
+        float     Rising = 0.0f;
+        glm::vec2 Flow{0.0f};
+    };
+
+    /**
+     * The swell at place: its lift there, its slope from its lift SlopeReach to each side, how fast it rises from its
+     * lift SpeedReach before and after, and its water's flow. What does not change with time (the coast's frame, the
+     * sand) is worked out once for each place, what is the same everywhere (the swash's basis) once for all. The way
+     * to the shore, down the steepest fall of the swell frame's seaward distance (the swell turns to the shore), comes
+     * from the same four places around.
+     */
+    SwellSample SampleSwell(const Wotah::Sea& sea, const glm::vec2& place)
+    {
+        SwellSample            sample;
+        const Wotah::SeaSwell& swell = sea.Waves.Swell;
+        if (!(swell.Height > 0.0f))
+        {
+            return sample;
+        }
+        const SwashBasis basis  = MakeSwashBasis(sea);
+        const float      clock  = Wotah::GetSwellClock(swell, sea.Seconds);
+        const SwellSpot  center = MakeSwellSpot(sea, place);
+        const SwellState now    = GetSwellState(sea, basis, center, clock, sea.Level + 0.0f);
+        sample.Lift             = now.Surface - sea.Level;
+
+        // Compass names: x runs east, z south.
+        const SwellSpot east  = MakeSwellSpot(sea, place + glm::vec2(SlopeReach, 0.0f));
+        const SwellSpot west  = MakeSwellSpot(sea, place - glm::vec2(SlopeReach, 0.0f));
+        const SwellSpot south = MakeSwellSpot(sea, place + glm::vec2(0.0f, SlopeReach));
+        const SwellSpot north = MakeSwellSpot(sea, place - glm::vec2(0.0f, SlopeReach));
+        sample.Slope          = {(GetSwellLiftAt(sea, basis, east, clock) - GetSwellLiftAt(sea, basis, west, clock)) /
+                                     (2.0f * SlopeReach),
+                                 (GetSwellLiftAt(sea, basis, south, clock) - GetSwellLiftAt(sea, basis, north, clock)) /
+                                     (2.0f * SlopeReach)};
+
+        const float before = Wotah::GetSwellClock(swell, sea.Seconds - SpeedReach);
+        const float after  = Wotah::GetSwellClock(swell, sea.Seconds + SpeedReach);
+        sample.Rising      = (GetSwellLiftAt(sea, basis, center, after) - GetSwellLiftAt(sea, basis, center, before)) /
+                             static_cast<float>(2.0 * SpeedReach);
+
+        const glm::vec2 across{east.Frame.y - west.Frame.y, south.Frame.y - north.Frame.y};
+        const glm::vec2 shoreward = glm::dot(across, across) > 0.0f ? -glm::normalize(across) : swell.Direction;
+        sample.Flow               = GetSwellFlow(sea, center, now, shoreward);
+        return sample;
+    }
+
     /** The swell's part of the surface at place (its surf and swash over the sand there), over the still level. */
     float GetSwellLift(const Wotah::Sea& sea, const glm::vec2& place)
     {
-        const float sand = sea.Floor ? Wotah::GetTerrainHeight(*sea.Floor, place) : -NoFloorDepth;
-        return Wotah::GetSurfaceHeight(sea, place, sand, 0.0f) - sea.Level;
+        if (!(sea.Waves.Swell.Height > 0.0f))
+        {
+            return 0.0f;
+        }
+        const float clock = GetSwellClock(sea.Waves.Swell, sea.Seconds);
+        return GetSwellLiftAt(sea, MakeSwashBasis(sea), MakeSwellSpot(sea, place), clock);
     }
 } // namespace
 
@@ -809,35 +1023,17 @@ std::optional<Wotah::WaterSample> Wotah::SampleWater(const Sea& sea, float x, fl
     {
         return std::nullopt;
     }
-    const glm::vec2 place{x, z};
-    const WaveState wind = FindWindWaves(sea, place);
-
-    // The swell's part, and its slope a little to each side.
-    const auto swellAt = [](const glm::vec2& at, const Sea& when)
-    {
-        return GetSwellLift(when, at);
-    };
-    const float     swell = swellAt(place, sea);
-    const glm::vec2 slope{
-        (swellAt(place + glm::vec2(SlopeReach, 0.0f), sea) - swellAt(place - glm::vec2(SlopeReach, 0.0f), sea)) /
-            (2.0f * SlopeReach),
-        (swellAt(place + glm::vec2(0.0f, SlopeReach), sea) - swellAt(place - glm::vec2(0.0f, SlopeReach), sea)) /
-            (2.0f * SlopeReach)};
+    // The wind waves' part and the swell's (its surf and swash), each with its slope and its water's motion.
+    const glm::vec2   place{x, z};
+    const WaveState   wind  = FindWindWaves(sea, place);
+    const SwellSample swell = SampleSwell(sea, place);
 
     WaterSample sample;
-    sample.Height             = sea.Level + wind.Offset.y + swell;
+    sample.Height             = sea.Level + wind.Offset.y + swell.Lift;
     const glm::vec2 windSlope = -glm::vec2(wind.Normal.x, wind.Normal.z) / wind.Normal.y;
-    const glm::vec2 total     = windSlope + slope;
+    const glm::vec2 total     = windSlope + swell.Slope;
     sample.Normal             = glm::normalize(glm::vec3(-total.x, 1.0f, -total.y));
-
-    // The swell's water moves up and down as the surface does, and on with its waves.
-    Sea before = sea;
-    Sea after  = sea;
-    before.Seconds -= SpeedReach;
-    after.Seconds += SpeedReach;
-    const float     rising  = (swellAt(place, after) - swellAt(place, before)) / static_cast<float>(2.0 * SpeedReach);
-    const glm::vec2 onwards = GetSwellFlow(sea, place);
-    sample.Velocity         = wind.Velocity + glm::vec3(onwards.x, rising, onwards.y);
+    sample.Velocity           = wind.Velocity + glm::vec3(swell.Flow.x, swell.Rising, swell.Flow.y);
     return sample;
 }
 

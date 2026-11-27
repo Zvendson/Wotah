@@ -236,7 +236,8 @@ namespace Wotah
 
     /**
      * The water surface at world x, z (under the land too, where the land hides it): its height, which way it faces
-     * and how fast the water moves there. Empty for a place that is not a number.
+     * and how fast the water moves there. Empty for a place that is not a number. Safe to call from several threads at
+     * once (the physics does, for its floating bodies).
      */
     [[nodiscard]] std::optional<WaterSample> SampleWater(const Sea& sea, float x, float z);
 

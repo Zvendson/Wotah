@@ -144,4 +144,14 @@ namespace Wotah
      */
     [[nodiscard]] TerrainPatch SampleTerrainPatch(const TerrainShape& shape, const glm::vec2& center, float spacing,
                                                   uint32_t samplesPerSide);
+
+    /**
+     * SampleTerrainPatch in two parts, so parts of a patch can be sampled on several threads at once: MakeTerrainPatch
+     * lays the grid out (its heights all 0; empty and logged as SampleTerrainPatch), SampleTerrainRows samples the
+     * rows from firstRow up to endRow (not included; rows past the patch are skipped). Different rows of one patch may
+     * be sampled on different threads at the same time.
+     */
+    [[nodiscard]] TerrainPatch MakeTerrainPatch(const TerrainShape& shape, const glm::vec2& center, float spacing,
+                                                uint32_t samplesPerSide);
+    void SampleTerrainRows(const TerrainShape& shape, TerrainPatch& patch, uint32_t firstRow, uint32_t endRow);
 } // namespace Wotah

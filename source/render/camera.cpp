@@ -10,6 +10,8 @@
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <cmath>
+
 namespace
 {
     /** Below this squared length a direction counts as zero, so no view can be built from it. */
@@ -90,6 +92,19 @@ const glm::mat4& Wotah::Camera::GetViewProjection() const
 {
     UpdateMatrices();
     return m_viewProjection;
+}
+
+glm::vec3 Wotah::Camera::GetPictureDirection(const glm::vec2& picturePlace) const
+{
+    // The view's rows are the camera's right, up and backward directions (glm::lookAt). One unit ahead, the picture
+    // reaches tan(half the field of view) up and down, and the aspect ratio times that to each side (glm::perspective).
+    const glm::mat4& view     = GetView();
+    const glm::vec3  right    = {view[0][0], view[1][0], view[2][0]};
+    const glm::vec3  up       = {view[0][1], view[1][1], view[2][1]};
+    const glm::vec3  backward = {view[0][2], view[1][2], view[2][2]};
+    const float      reach    = std::tan(m_fieldOfView / 2.0f);
+    const glm::vec2  centered = {2.0f * picturePlace.x - 1.0f, 1.0f - 2.0f * picturePlace.y}; // y up, -1 to 1
+    return glm::normalize(-backward + centered.x * reach * m_aspectRatio * right + centered.y * reach * up);
 }
 
 void Wotah::Camera::UpdateMatrices() const

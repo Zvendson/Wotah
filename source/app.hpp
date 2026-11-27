@@ -18,9 +18,13 @@
 #include "ui/settings_window.hpp"
 #include "ui/user_interface.hpp"
 
+#include <glm/vec2.hpp>
+#include <glm/vec3.hpp>
+
 #include <atomic>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <stop_token>
 #include <vector>
 
@@ -99,10 +103,28 @@ namespace Wotah
         [[nodiscard]] bool DrawFrame(float frameSeconds);
 
         /**
-         * Hands this frame's input to the handlers, does what the keys asked for (F, R, Tab), and lets the camera fly
-         * by frameSeconds.
+         * Hands this frame's input to the handlers, does what the keys and clicks asked for (F, R, Tab, B, picking a
+         * ball), and lets the camera fly by frameSeconds.
          */
         void HandleInput(float frameSeconds);
+
+        /**
+         * Picks the ball under cursor (in the window's cursor units), as the last frame showed it, for the move gizmo;
+         * a click on no ball drops the pick.
+         */
+        void PickBall(const glm::vec2& cursor);
+
+        /** Drops one more ball where the middle of the view points (logged when the scene is full). */
+        void AddBall();
+
+        /** Puts the scene back as it started (logged when that failed); a pick of a ball that is gone is dropped. */
+        void ResetScene();
+
+        /**
+         * Shows the move gizmo on the picked ball, in the UI frame; while its handle is held, the ball hangs where the
+         * drag puts it (the world steps before the UI, so it is put back each frame), and falls when let go.
+         */
+        void ShowBallGizmo();
 
         /**
          * Moves the world on by frameSeconds times the time speed, unless paused: the ball falls, bounces and rolls,
@@ -177,7 +199,10 @@ namespace Wotah
         /** Flies the active camera: W A S D, Space, Shift, the right mouse button to turn, the wheel, and F. */
         CameraController m_cameraController;
 
-        /** The scene's keys: R resets the scene, Tab shows or hides the settings. */
+        /**
+         * The scene's keys and clicks: R resets the scene, Tab shows or hides the settings, B adds a ball, the left
+         * mouse button picks one.
+         */
         SceneShortcuts m_sceneShortcuts;
 
         /** The input the drawing thread took from the window this frame; kept, so it does not allocate again. */
@@ -185,6 +210,15 @@ namespace Wotah
 
         /** Whether the world stands still (the control bar's Pause); the camera still flies. Drawing thread only. */
         bool m_isPaused = false;
+
+        /**
+         * The ball picked for the move gizmo, if any; whether its handle is held, and where the drag put the ball. Kept
+         * apart from the world's place while held, so the step before each UI frame (which lets the ball fall a
+         * little) never drags it down. Drawing thread only.
+         */
+        std::optional<std::size_t> m_pickedBall;
+        bool                       m_isHoldingBall = false;
+        glm::vec3                  m_heldPlace{0.0f};
 
         /** What the settings window changes; Create fills in the scene's own values. Drawing thread only. */
         SceneSettings m_settings;

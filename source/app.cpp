@@ -2,9 +2,10 @@
  * @file app.cpp
  * The application: wires window, device, renderer, scene and UI together and runs the frames. The scene is the beach
  * (scene/beach.hpp): land and sea to the horizon, a blue ball dropped into the shallow water, a day that runs; the
- * scene renderer (render/scene_renderer.hpp) draws it, the ball is a mesh with its own look. Over the scene lie a small
- * stats window, a list of the controls and a control bar (Dear ImGui) that pauses the world and resets the scene or
- * the camera; R resets the scene too. Tab opens the settings window.
+ * scene renderer (render/scene_renderer.hpp) draws it, the balls are meshes with their own look. Over the scene lie a
+ * small stats window, a list of the controls and a control bar (Dear ImGui) that adds balls, pauses the world and
+ * resets the scene or the camera; R resets the scene too, B adds a ball. Tab opens the settings window. A left click
+ * picks a ball, and the move gizmo's arrows (ui/move_gizmo.hpp) carry it wherever they are dragged.
  */
 #include "app.hpp"
 
@@ -23,6 +24,7 @@
 #include "scene/beach.hpp"
 #include "ui/control_bar.hpp"
 #include "ui/hints_window.hpp"
+#include "ui/move_gizmo.hpp"
 #include "ui/settings_window.hpp"
 #include "ui/stats_window.hpp"
 
@@ -32,7 +34,6 @@
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -99,6 +100,9 @@ struct Wotah::App::State
     Wotah::MeshPipelines BallLook;
     Wotah::Mesh          Ball;
 
+    /** What each frame draws: every ball; room for all of them, so a frame never allocates. */
+    std::vector<Wotah::MeshObject> Objects;
+
     /** The beach's physics: the land solid around the ball and the camera, and the ball. */
     Wotah::BeachWorld World;
 
@@ -142,6 +146,7 @@ bool Wotah::App::Create()
     {
         return false;
     }
+    state.Objects.reserve(BeachMaxBalls);
 
     // The UI over the scene: ImGui first, then its renderer, which attaches to it and draws into the same frames.
     if (!m_ui.Create() || !state.UiRenderer.Create(m_device, colorFormat, depthFormat))
@@ -243,8 +248,18 @@ bool Wotah::App::DrawFrame(float frameSeconds)
         }
     }
 
+    // Whichever camera is active now, it sees the image's shape, also right after a resize; an unchanged ratio keeps
+    // its matrices. The image is never 0 wide or high (drawing waits while the window has no area), so the ratio is
+    // always valid. Before the UI, so the move gizmo is drawn through the very view the scene is.
+    const VkExtent2D extent = state.Swapchain.GetExtent();
+    Camera&          camera = GetActiveCamera();
+    (void)camera.SetAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
+    // And the settings' field of view, also after F put a camera back to its focus view; the slider's range lies well
+    // inside the 0 to 180 degrees a camera takes, so it always fits.
+    (void)camera.SetFieldOfView(glm::radians(m_settings.FieldOfViewDegrees));
+
     // The UI's windows for this frame, at the swapchain's size; only shapes on the CPU so far, drawn after the scene.
-    // What was clicked happens right away, so a reset scene is already drawn in this frame.
+    // What was clicked happens right away, so a reset scene (or a dragged ball) is already drawn in this frame.
     ShowUi(frameSeconds);
 
     const FrameStart start = renderer.BeginFrame();
@@ -253,21 +268,15 @@ bool Wotah::App::DrawFrame(float frameSeconds)
         return start == FrameStart::Skip; // a skipped frame is no failure
     }
 
-    // Whichever camera is active now, it sees the image's shape, also right after a resize; an unchanged ratio keeps
-    // its matrices. The image is never 0 wide or high (drawing waits while the window has no area), so the ratio is
-    // always valid.
-    const VkExtent2D extent = state.Swapchain.GetExtent();
-    Camera&          camera = GetActiveCamera();
-    (void)camera.SetAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
-    // And the settings' field of view, also after F put a camera back to its focus view; the slider's range lies well
-    // inside the 0 to 180 degrees a camera takes, so it always fits.
-    (void)camera.SetFieldOfView(glm::radians(m_settings.FieldOfViewDegrees));
-
-    // Shadow casters stand around the camera, wherever it goes; the ball stands where the physics has it, the waves
-    // where the ball sees them.
+    // Shadow casters stand around the camera, wherever it goes; the balls stand where the physics has them, the waves
+    // where the balls see them.
     m_lights.Shadows = m_settings.HasShadows ? ShadowArea{camera.GetPosition(), ShadowCasterRadius} : ShadowArea{};
-    const std::array<MeshObject, 1> objects{{{&state.BallLook, &state.Ball, state.World.GetBallTransform()}}};
-    state.Scene.Draw(renderer, camera, m_lights, state.World.GetSea(), objects);
+    state.Objects.clear();
+    for (std::size_t ball = 0; ball < state.World.GetBallCount(); ++ball)
+    {
+        state.Objects.push_back({&state.BallLook, &state.Ball, state.World.GetBallTransform(ball)});
+    }
+    state.Scene.Draw(renderer, camera, m_lights, state.World.GetSea(), state.Objects);
 
     // The UI last, so it lies over everything.
     return state.UiRenderer.Draw(renderer.GetCommandBuffer()) && renderer.EndFrame();
@@ -286,14 +295,72 @@ void Wotah::App::HandleInput(float frameSeconds)
     }
     if (m_sceneShortcuts.TakeResetRequest())
     {
-        (void)m_state->World.Reset(); // logged; paused or not stays as it was
+        ResetScene(); // paused or not stays as it was
     }
     if (m_sceneShortcuts.TakeSettingsRequest())
     {
         m_isSettingsOpen = !m_isSettingsOpen;
     }
+    if (m_sceneShortcuts.TakeAddBallRequest())
+    {
+        AddBall();
+    }
+    // Before the camera moves on: the click was on the picture the camera as it is drew.
+    if (const std::optional<glm::vec2> cursor = m_sceneShortcuts.TakePickRequest())
+    {
+        PickBall(*cursor);
+    }
     m_window.RequestCursorCaptured(m_cameraController.IsTurning());
     m_cameraController.Update(GetActiveCamera(), frameSeconds);
+}
+
+void Wotah::App::PickBall(const glm::vec2& cursor)
+{
+    // The cursor's share of the window is its share of the picture, which fills the window.
+    const WindowSize size = m_window.GetSize();
+    if (size.Width == 0 || size.Height == 0)
+    {
+        return;
+    }
+    const glm::vec2 place     = cursor / glm::vec2(static_cast<float>(size.Width), static_cast<float>(size.Height));
+    const Camera&   camera    = GetActiveCamera();
+    const glm::vec3 direction = camera.GetPictureDirection(place);
+    m_pickedBall              = m_state->World.FindBallAt(camera.GetPosition(), direction);
+    m_isHoldingBall           = false;
+}
+
+void Wotah::App::AddBall()
+{
+    const Camera& camera = GetActiveCamera();
+    (void)m_state->World.DropBall(camera.GetPosition(), camera.GetPictureDirection({0.5f, 0.5f})); // logged
+}
+
+void Wotah::App::ResetScene()
+{
+    (void)m_state->World.Reset(); // logged
+    if (m_pickedBall && *m_pickedBall >= m_state->World.GetBallCount())
+    {
+        m_pickedBall.reset();
+        m_isHoldingBall = false;
+    }
+}
+
+void Wotah::App::ShowBallGizmo()
+{
+    if (!m_pickedBall)
+    {
+        return;
+    }
+    // While held, the gizmo moves the place the drag left it at, not the world's (which the last step let fall).
+    BeachWorld&   world  = m_state->World;
+    const Camera& camera = GetActiveCamera();
+    glm::vec3     place  = m_isHoldingBall ? m_heldPlace : glm::vec3(world.GetBallTransform(*m_pickedBall)[3]);
+    m_isHoldingBall      = ShowMoveGizmo(camera.GetView(), camera.GetProjection(), place);
+    if (m_isHoldingBall)
+    {
+        m_heldPlace = place;
+        (void)world.PlaceBall(*m_pickedBall, place); // logged
+    }
 }
 
 void Wotah::App::AdvanceWorld(float frameSeconds)
@@ -325,6 +392,7 @@ void Wotah::App::ShowUi(float frameSeconds)
     stats.CameraPosition = GetActiveCamera().GetPosition();
 
     m_ui.BeginFrame(m_window.GetSize(), pictureSize, frameSeconds);
+    ShowBallGizmo(); // under the cards: ImGuizmo's window stays at the back
     ShowStatsWindow(stats);
     ShowHintsWindow();
     bool isSettingsChanged = false;
@@ -333,7 +401,8 @@ void Wotah::App::ShowUi(float frameSeconds)
         const SceneSettings defaults = MakeBeachSettings();
         isSettingsChanged            = ShowSettingsWindow(m_settings, defaults);
     }
-    const ControlBarClicks clicks = ShowControlBar(m_isPaused);
+    const bool             canAddBall = m_state->World.GetBallCount() < BeachMaxBalls;
+    const ControlBarClicks clicks     = ShowControlBar(m_isPaused, canAddBall);
     m_ui.EndFrame();
 
     ApplyClicks(clicks);
@@ -375,7 +444,11 @@ void Wotah::App::ApplyClicks(const ControlBarClicks& clicks)
     if (clicks.ResetScene)
     {
         // Paused or not stays as it was, so a paused scene can be reset and then watched again; the time of day stays.
-        (void)m_state->World.Reset(); // logged
+        ResetScene();
+    }
+    if (clicks.AddBall)
+    {
+        AddBall();
     }
 }
 

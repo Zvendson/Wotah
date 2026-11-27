@@ -3,31 +3,40 @@
  * The UI without a GPU: ImGui runs with its null renderer (backends/imgui_impl_null), which takes the font pictures
  * without drawing them, while made-up input events go through the UserInterface. Covers what the UI keeps and what
  * reaches the camera, the fixed cards, the control bar's buttons, the settings window, typing into a text field, the
- * sizes the UI lays out and draws in, and how readable the theme is.
+ * move gizmo's arrows, the sizes the UI lays out and draws in, and how readable the theme is.
  */
 #include "input/camera_controller.hpp"
 #include "input/input_dispatcher.hpp"
 #include "input/input_event.hpp"
 #include "platform/window.hpp"
+#include "render/camera.hpp"
 #include "test_utils.hpp"
 #include "ui/card.hpp"
 #include "ui/control_bar.hpp"
 #include "ui/hints_window.hpp"
+#include "ui/move_gizmo.hpp"
 #include "ui/settings_window.hpp"
 #include "ui/stats_window.hpp"
 #include "ui/theme.hpp"
 #include "ui/user_interface.hpp"
 
 #include <doctest/doctest.h>
+#include <glm/geometric.hpp>
 #include <glm/vec2.hpp>
+#include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 #include <imgui.h>
 #include <imgui_impl_null.h>
 #include <imgui_internal.h> // ImGui::FindWindowByName, to see where a card ended up
+
+// After imgui.h, which its header needs: ImGuizmo::IsOver finds the gizmo's arrows.
+#include <ImGuizmo.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <ostream> // doctest prints a failed string_view check through it, and MSVC needs it whole for that
 #include <string_view>
 
@@ -97,6 +106,24 @@ namespace
         ImGuiCol_TabHovered,        ImGuiCol_TabSelected,   ImGuiCol_TabDimmed,
         ImGuiCol_TabDimmedSelected, ImGuiCol_TableHeaderBg, ImGuiCol_TextSelectedBg,
     };
+
+    /** How far along an arrow's line on screen the tests look for its handle, in pixels. */
+    constexpr float ArrowSearchReach = 300.0f;
+
+    /** How far the drag tests pull a gizmo's arrow, in pixels, and in how many moves. */
+    constexpr float DragLength = 60.0f;
+    constexpr int   DragMoves  = 6;
+
+    /** Where a world point lands on the screen through camera: pixels from the top-left corner, as the cursor runs. */
+    glm::vec2 GetScreenPlace(const Wotah::Camera& camera, const glm::vec3& point)
+    {
+        // Vulkan's clip space runs y down, as the screen does.
+        const glm::vec4 clip   = camera.GetViewProjection() * glm::vec4(point, 1.0f);
+        const glm::vec2 unit   = (glm::vec2(clip) / clip.w + 1.0f) / 2.0f;
+        const float     width  = static_cast<float>(ScreenSize.Width);
+        const float     height = static_cast<float>(ScreenSize.Height);
+        return {unit.x * width, unit.y * height};
+    }
 
     /** The mouse moving to position. */
     Wotah::InputEvent MakeMouseMove(const glm::vec2& position)
@@ -192,9 +219,22 @@ namespace
         Wotah::SceneSettings Defaults;
         bool                 SettingsChanged = false;
 
-        /** Whether the frames show the control bar, whether it shows the world paused, and what was clicked in it. */
+        /**
+         * Whether the frames show the move gizmo, the camera it is seen through, the place it moves, and whether its
+         * handle was held in the last frame.
+         */
+        bool          HasGizmo = false;
+        Wotah::Camera GizmoCamera;
+        glm::vec3     GizmoPlace{0.0f};
+        bool          IsGizmoHeld = false;
+
+        /**
+         * Whether the frames show the control bar, whether it shows the world paused, whether a ball can be added, and
+         * what was clicked in it.
+         */
         bool                    HasControlBar = false;
         bool                    IsPaused      = false;
+        bool                    CanAddBall    = true;
         Wotah::ControlBarClicks Clicked;
 
         HeadlessUi() = default;
@@ -223,6 +263,10 @@ namespace
             for (int frame = 0; frame < count; ++frame)
             {
                 Ui.BeginFrame(ScreenSize, ScreenSize, FrameSeconds);
+                if (HasGizmo)
+                {
+                    IsGizmoHeld = Wotah::ShowMoveGizmo(GizmoCamera.GetView(), GizmoCamera.GetProjection(), GizmoPlace);
+                }
                 Wotah::ShowStatsWindow(stats);
                 if (HasHints)
                 {
@@ -235,7 +279,7 @@ namespace
                 }
                 if (HasControlBar)
                 {
-                    NoteClicks(Wotah::ShowControlBar(IsPaused));
+                    NoteClicks(Wotah::ShowControlBar(IsPaused, CanAddBall));
                 }
                 if (HasTextField)
                 {
@@ -249,9 +293,59 @@ namespace
         /** Adds a frame's control bar clicks to Clicked. */
         void NoteClicks(const Wotah::ControlBarClicks& clicks)
         {
+            Clicked.AddBall     = Clicked.AddBall || clicks.AddBall;
             Clicked.ResetScene  = Clicked.ResetScene || clicks.ResetScene;
             Clicked.TogglePause = Clicked.TogglePause || clicks.TogglePause;
             Clicked.ResetCamera = Clicked.ResetCamera || clicks.ResetCamera;
+        }
+
+        /**
+         * Where on the screen the gizmo's arrow along axis can be grabbed: the middle of where the mouse is over it,
+         * looked for outwards from the gizmo's middle along the axis's line on screen; empty when it is nowhere.
+         */
+        [[nodiscard]] std::optional<glm::vec2> FindGizmoArrow(const glm::vec3& axis, ImGuizmo::OPERATION operation)
+        {
+            const glm::vec2      middle = GetScreenPlace(GizmoCamera, GizmoPlace);
+            const glm::vec2      way    = glm::normalize(GetScreenPlace(GizmoCamera, GizmoPlace + axis) - middle);
+            std::optional<float> first;
+            float                last = 0.0f;
+            for (float along = ScanStep; along < ArrowSearchReach; along += ScanStep)
+            {
+                (void)Ui.OnInput(MakeMouseMove(middle + way * along));
+                RunFrames(1);
+                if (ImGuizmo::IsOver(operation))
+                {
+                    first = first.value_or(along);
+                    last  = along;
+                }
+            }
+            if (!first)
+            {
+                return std::nullopt;
+            }
+            return middle + way * ((*first + last) / 2.0f);
+        }
+
+        /**
+         * Grabs the gizmo at grab with the left button, drags it by offset pixels in a few moves and lets go; true
+         * when the UI kept the press (so it never reached the scene's clicks) and the gizmo was held during the drag.
+         */
+        bool DragGizmo(const glm::vec2& grab, const glm::vec2& offset)
+        {
+            (void)Ui.OnInput(MakeMouseMove(grab));
+            RunFrames();
+            const bool isKept = Ui.OnInput(MakeMouseButton(Wotah::MouseButton::Left, true, grab));
+            RunFrames();
+            bool wasHeld = true;
+            for (int move = 1; move <= DragMoves; ++move)
+            {
+                (void)Ui.OnInput(MakeMouseMove(grab + offset * (static_cast<float>(move) / DragMoves)));
+                RunFrames(1);
+                wasHeld = wasHeld && IsGizmoHeld;
+            }
+            (void)Ui.OnInput(MakeMouseButton(Wotah::MouseButton::Left, false, grab + offset));
+            RunFrames();
+            return isKept && wasHeld;
         }
 
         /** Moves the mouse to position and clicks the left button there. */
@@ -425,32 +519,34 @@ TEST_SUITE("ui")
         CHECK(std::abs(bar->Pos.x + bar->Size.x / 2.0f - width / 2.0f) <= PixelSlack);
         CHECK(std::abs(bar->Pos.y + bar->Size.y - (height - Wotah::CardMargin)) <= PixelSlack);
 
-        // Left to right: Reset scene, Pause, Reset camera. The outer ones are hit just inside the bar's padding.
-        const ImVec2&   padding = ImGui::GetStyle().WindowPadding;
-        const float     middleY = bar->Pos.y + bar->Size.y / 2.0f;
-        const glm::vec2 left{bar->Pos.x + padding.x + ButtonInset, middleY};
-        const glm::vec2 middle{bar->Pos.x + bar->Size.x / 2.0f, middleY};
-        const glm::vec2 right{bar->Pos.x + bar->Size.x - padding.x - ButtonInset, middleY};
-
-        headless.Click(left);
-        CHECK(headless.Clicked.ResetScene);
-        CHECK_FALSE(headless.Clicked.TogglePause);
-        CHECK_FALSE(headless.Clicked.ResetCamera);
-
-        headless.Clicked = {};
-        headless.Click(middle);
-        CHECK_FALSE(headless.Clicked.ResetScene);
-        CHECK(headless.Clicked.TogglePause);
-        CHECK_FALSE(headless.Clicked.ResetCamera);
-
-        headless.Clicked = {};
-        headless.Click(right);
-        CHECK_FALSE(headless.Clicked.ResetScene);
-        CHECK_FALSE(headless.Clicked.TogglePause);
-        CHECK(headless.Clicked.ResetCamera);
+        // Clicked across, left to right: Add ball, Reset scene, Pause, Reset camera; no click hits two of them.
+        // Each button's first hit, in the order the buttons are listed here: each must come after the one before.
+        const float          middleY = bar->Pos.y + bar->Size.y / 2.0f;
+        std::array<float, 4> firstHit{};
+        std::size_t          hitCount = 0;
+        for (float x = bar->Pos.x + ButtonInset; x < bar->Pos.x + bar->Size.x; x += ScanStep)
+        {
+            headless.Clicked = {};
+            headless.Click({x, middleY});
+            const Wotah::ControlBarClicks& hit = headless.Clicked;
+            const std::array<bool, 4>      buttons{hit.AddBall, hit.ResetScene, hit.TogglePause, hit.ResetCamera};
+            REQUIRE(std::count(buttons.begin(), buttons.end(), true) <= 1);
+            if (hitCount < buttons.size() && buttons[hitCount])
+            {
+                firstHit[hitCount] = x;
+                ++hitCount;
+            }
+        }
+        CHECK(hitCount == firstHit.size());
 
         // The bar keeps the mouse, so clicks on it never reach the camera.
-        CHECK(headless.Ui.OnInput(MakeWheelStep(middle)));
+        CHECK(headless.Ui.OnInput(MakeWheelStep({firstHit[2], middleY})));
+
+        // With the scene full, Add ball is greyed out: a click on it does nothing.
+        headless.CanAddBall = false;
+        headless.Clicked    = {};
+        headless.Click({firstHit[0] + ButtonInset, middleY});
+        CHECK_FALSE(headless.Clicked.AddBall);
     }
 
     TEST_CASE("the program's cards fit its window: stats, hints, settings and the bar, none overlapping")
@@ -605,10 +701,17 @@ TEST_SUITE("ui")
         headless.RunFrames();
         CHECK(IsNear(bar->Size.x, runningWidth));
 
-        // The same button under its other label: a click on it still asks to resume.
-        const glm::vec2 middle{bar->Pos.x + bar->Size.x / 2.0f, bar->Pos.y + bar->Size.y / 2.0f};
-        headless.Click(middle);
-        CHECK(headless.Clicked.TogglePause);
+        // The same button under its other label: a click on it still asks to resume. It is the third of four, past
+        // the bar's middle.
+        const float middleY = bar->Pos.y + bar->Size.y / 2.0f;
+        bool        isFound = false;
+        for (float x = bar->Pos.x + bar->Size.x / 2.0f; x < bar->Pos.x + bar->Size.x && !isFound; x += ScanStep)
+        {
+            headless.Clicked = {};
+            headless.Click({x, middleY});
+            isFound = headless.Clicked.TogglePause;
+        }
+        CHECK(isFound);
     }
 
     TEST_CASE("typing goes into a focused UI text field, not to the camera; without one, keys reach the camera")
@@ -727,5 +830,50 @@ TEST_SUITE("ui")
             CHECK(GetContrast(colors[ImGuiCol_CheckMark], field) >= MarkContrast);
             CHECK(GetContrast(colors[ImGuiCol_SliderGrab], field) >= MarkContrast);
         }
+    }
+
+    TEST_CASE(
+        "the move gizmo: dragging its x arrow moves the point along x only, its y arrow up along y; let go it stays")
+    {
+        // A camera off to the side and above, so every arrow shows; the gizmo on the origin in the picture's middle.
+        HeadlessUi headless;
+        REQUIRE(headless.Create());
+        headless.HasGizmo = true;
+        headless.GizmoCamera.SetPosition({4.0f, 3.0f, 10.0f});
+        headless.GizmoCamera.SetTarget({0.0f, 0.0f, 0.0f});
+        REQUIRE(headless.GizmoCamera.SetAspectRatio(static_cast<float>(ScreenSize.Width) /
+                                                    static_cast<float>(ScreenSize.Height)));
+        headless.RunFrames();
+        CHECK_FALSE(headless.IsGizmoHeld);
+
+        // The x arrow lies along where x runs on the screen; dragged that way, only x grows. The UI keeps the press, so
+        // the scene's clicks never see it.
+        const std::optional<glm::vec2> xArrow = headless.FindGizmoArrow({1.0f, 0.0f, 0.0f}, ImGuizmo::TRANSLATE_X);
+        REQUIRE(xArrow.has_value());
+        const glm::vec2 xWay = glm::normalize(GetScreenPlace(headless.GizmoCamera, {1.0f, 0.0f, 0.0f}) -
+                                              GetScreenPlace(headless.GizmoCamera, {0.0f, 0.0f, 0.0f}));
+        CHECK(headless.DragGizmo(*xArrow, xWay * DragLength));
+        const glm::vec3 movedX = headless.GizmoPlace;
+        CAPTURE(movedX.x);
+        CHECK(movedX.x > 0.2f);
+        CHECK(movedX.y == 0.0f);
+        CHECK(movedX.z == 0.0f);
+        CHECK_FALSE(headless.IsGizmoHeld);
+
+        // Let go, it stays where the drag left it, while the mouse moves on.
+        (void)headless.Ui.OnInput(MakeMouseMove(OverScene));
+        headless.RunFrames();
+        CHECK(headless.GizmoPlace == movedX);
+
+        // The y arrow points up on the screen (the camera's y-down clip space is turned for ImGuizmo); dragged up,
+        // only y grows.
+        const std::optional<glm::vec2> yArrow = headless.FindGizmoArrow({0.0f, 1.0f, 0.0f}, ImGuizmo::TRANSLATE_Y);
+        REQUIRE(yArrow.has_value());
+        CHECK(yArrow->y < GetScreenPlace(headless.GizmoCamera, headless.GizmoPlace).y);
+        CHECK(headless.DragGizmo(*yArrow, {0.0f, -DragLength}));
+        CAPTURE(headless.GizmoPlace.y);
+        CHECK(headless.GizmoPlace.x == movedX.x);
+        CHECK(headless.GizmoPlace.y > 0.2f);
+        CHECK(headless.GizmoPlace.z == 0.0f);
     }
 }

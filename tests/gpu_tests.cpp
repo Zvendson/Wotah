@@ -943,7 +943,7 @@ namespace
         ui.BeginFrame(size, size, FrameSeconds);
         Wotah::ShowStatsWindow(stats);
         Wotah::ShowHintsWindow();
-        (void)Wotah::ShowControlBar(false); // nothing is clicked in these tests
+        (void)Wotah::ShowControlBar(false, true); // nothing is clicked in these tests
         ui.EndFrame();
     }
 

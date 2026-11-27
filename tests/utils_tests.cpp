@@ -1,7 +1,7 @@
 /**
  * @file utils_tests.cpp
- * The helpers in core/utils.hpp: the executable's folder, and the noise (the same every time, zero on its grid, a slope
- * that matches its values, within its range, and smooth as detail is left out).
+ * The helpers in core/utils.hpp: the executable's folder, where a ray meets a ball, and the noise (the same every time,
+ * zero on its grid, a slope that matches its values, within its range, and smooth as detail is left out).
  */
 #include "core/utils.hpp"
 
@@ -99,5 +99,26 @@ TEST_SUITE("utils")
         CHECK(Wotah::GetLayerShare(2.0f, 1.0f) == 1.0f);
         CHECK(Wotah::GetLayerShare(0.1f, 0.0f) == 1.0f);
         CHECK(Wotah::GetLayerShare(0.1f, std::nanf("")) == 1.0f);
+    }
+
+    TEST_CASE("a ray meets a ball where it first enters it; from inside at once; past it or behind never")
+    {
+        const glm::vec3 center{0.0f, 0.0f, -10.0f};
+        const glm::vec3 ahead{0.0f, 0.0f, -1.0f};
+
+        // Straight at it: the near side, the radius short of the middle.
+        const std::optional<float> straight = Wotah::FindRaySphereHit({0.0f, 0.0f, 0.0f}, ahead, center, 2.0f);
+        REQUIRE(straight.has_value());
+        CHECK(std::abs(*straight - 8.0f) < 1.0e-5f);
+
+        // Half the radius aside: sqrt(2^2 - 1^2) = sqrt(3) short of the middle.
+        const std::optional<float> aside = Wotah::FindRaySphereHit({1.0f, 0.0f, 0.0f}, ahead, center, 2.0f);
+        REQUIRE(aside.has_value());
+        CHECK(std::abs(*aside - (10.0f - std::sqrt(3.0f))) < 1.0e-5f);
+
+        // From inside it, at once; passing beside it, or with the ball behind, not at all.
+        CHECK(Wotah::FindRaySphereHit({0.0f, 0.0f, -9.0f}, ahead, center, 2.0f) == 0.0f);
+        CHECK_FALSE(Wotah::FindRaySphereHit({2.5f, 0.0f, 0.0f}, ahead, center, 2.0f).has_value());
+        CHECK_FALSE(Wotah::FindRaySphereHit({0.0f, 0.0f, -13.0f}, ahead, center, 2.0f).has_value());
     }
 }

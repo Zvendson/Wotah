@@ -1,7 +1,8 @@
 /**
  * @file physics_world.cpp
  * The physics world on top of Jolt Physics 5.6: starting Jolt once for every world, the layers that say what collides
- * with what, adding, placing and changing bodies, gravity, fixed steps, and blending the last two steps for drawing.
+ * with what, adding, placing and changing bodies, gravity, fixed steps on Jolt's worker threads, floating bodies in the
+ * sea, and blending the last two steps for drawing.
  */
 #include "physics/physics_world.hpp"
 
@@ -11,7 +12,7 @@
 
 #include <Jolt/Jolt.h>
 #include <Jolt/Core/Factory.h>
-#include <Jolt/Core/JobSystemSingleThreaded.h>
+#include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
@@ -33,8 +34,10 @@
 #include <array>
 #include <cmath>
 #include <cstdarg>
+#include <cstddef>
 #include <cstdio>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace
@@ -54,6 +57,27 @@ namespace
     constexpr uint32_t ScratchBytes = 10 * 1024 * 1024;
     /** Collision checks per step: 1 is enough at 60 steps a second (Jolt docs, PhysicsSystem::Update). */
     constexpr int CollisionChecksPerStep = 1;
+
+    /**
+     * The most worker threads Jolt gets: they do Jolt's own work of a step and sample the water under floating bodies.
+     * Measured (an optimized build, 3 m waves, a step): with 7 workers 0.036 ms for 1 ball and 0.089 ms for 32, with 23
+     * 0.070 and 0.124 ms. 32 floating bodies make 8 shares (BodiesPerWorker), for 7 workers and the stepping thread;
+     * more threads only cost waking them.
+     */
+    constexpr int MaxWorkerThreads = 7;
+
+    /** How many worker threads Jolt gets: as many as the machine runs at once less the stepping thread, at most
+     * MaxWorkerThreads; none on a machine that runs one thread (or does not say). */
+    int CountWorkerThreads()
+    {
+        return std::clamp(static_cast<int>(std::thread::hardware_concurrency()) - 1, 0, MaxWorkerThreads);
+    }
+
+    /**
+     * The fewest floating bodies one worker is handed at a time: sampling the water under fewer takes less than handing
+     * them out (a few microseconds; one sample takes about 5 in an optimized build, measured).
+     */
+    constexpr std::size_t BodiesPerWorker = 4;
 
     // ---- What collides with what ----------------------------------------------------------------------------------
 
@@ -233,8 +257,17 @@ struct Wotah::PhysicsWorld::State
         glm::quat   Rotation{1.0f, 0.0f, 0.0f, 0.0f};
     };
 
-    JPH::TempAllocatorImpl       Scratch{ScratchBytes};
-    JPH::JobSystemSingleThreaded Jobs{JPH::cMaxPhysicsJobs};
+    /** A floating body as one step finds it: where its middle is, and the water there once sampled. */
+    struct FloatingBody
+    {
+        JPH::BodyID                Id;
+        float                      Buoyancy = 0.0f;
+        JPH::RVec3                 Middle;
+        std::optional<WaterSample> Water;
+    };
+
+    JPH::TempAllocatorImpl   Scratch{ScratchBytes};
+    JPH::JobSystemThreadPool Jobs{JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, CountWorkerThreads()};
 
     JPH::BroadPhaseLayerInterfaceTable                     BroadPhaseLayers{ObjectLayerCount, BroadPhaseLayerCount};
     JPH::ObjectLayerPairFilterTable                        LayerPairs{ObjectLayerCount};
@@ -254,8 +287,24 @@ struct Wotah::PhysicsWorld::State
     /** The sea floating bodies float in; none until SetSea. */
     std::optional<Sea> Water;
 
+    /**
+     * The floating bodies of the step about to run, and their sea at its start; kept, so a step allocates nothing once
+     * it has seen as many floating bodies.
+     */
+    std::vector<FloatingBody> Floating;
+    Sea                       FloatingSea;
+
     /** Lifts every floating body by the water it pushes aside, with the sea as it is at the step about to run. */
     void Float();
+
+    /**
+     * Samples the water under every body in Floating: on the worker threads when there are enough of them, each worker
+     * a share; waits until all are done.
+     */
+    void SampleFloatingWater();
+
+    /** Samples the water under the bodies in Floating at first, first + count, first + 2 count, and so on. */
+    void SampleFloatingShare(std::size_t first, std::size_t count);
 
     /** The body behind an id; null for an unknown one. */
     [[nodiscard]] TrackedBody* Find(BodyId body)
@@ -631,29 +680,67 @@ void Wotah::PhysicsWorld::State::Float()
         return;
     }
 
-    // The waves as they stand at the start of the step about to run. The body interface that locks wakes a body the
-    // water lifts, so a floating ball never falls asleep while the waves move under it.
-    Sea sea                  = *Water;
-    sea.Seconds              = SteppedSeconds;
-    JPH::BodyInterface& all  = System.GetBodyInterface();
-    const JPH::Vec3     pull = System.GetGravity();
+    // The waves as they stand at the start of the step about to run, and where each floating body is.
+    FloatingSea             = *Water;
+    FloatingSea.Seconds     = SteppedSeconds;
+    JPH::BodyInterface& all = System.GetBodyInterface();
+    Floating.clear();
     for (const TrackedBody& tracked : Bodies)
     {
-        if (tracked.Motion != BodyMotion::Dynamic || !(tracked.Buoyancy > 0.0f))
+        if (tracked.Motion == BodyMotion::Dynamic && tracked.Buoyancy > 0.0f)
         {
-            continue;
+            Floating.push_back({tracked.Id, tracked.Buoyancy, all.GetCenterOfMassPosition(tracked.Id), std::nullopt});
         }
-        const JPH::RVec3                 middle = all.GetCenterOfMassPosition(tracked.Id);
-        const std::optional<WaterSample> water =
-            SampleWater(sea, static_cast<float>(middle.GetX()), static_cast<float>(middle.GetZ()));
-        if (!water)
-        {
-            continue;
-        }
+    }
 
-        const JPH::RVec3 surface(middle.GetX(), static_cast<JPH::Real>(water->Height), middle.GetZ());
-        (void)all.ApplyBuoyancyImpulse(tracked.Id, surface, ToJolt(water->Normal), tracked.Buoyancy, WaterDrag,
-                                       WaterSpinDrag, ToJolt(water->Velocity), pull, PhysicsStepSeconds);
+    // The water under each (the costly part, each on its own), then each lifted by it here, in the bodies' order, so
+    // the world moves exactly as if it had all been done here. The body interface that locks wakes a body the water
+    // lifts, so a floating ball never falls asleep while the waves move under it.
+    SampleFloatingWater();
+    const JPH::Vec3 pull = System.GetGravity();
+    for (const FloatingBody& body : Floating)
+    {
+        if (!body.Water)
+        {
+            continue;
+        }
+        const JPH::RVec3 surface(body.Middle.GetX(), static_cast<JPH::Real>(body.Water->Height), body.Middle.GetZ());
+        (void)all.ApplyBuoyancyImpulse(body.Id, surface, ToJolt(body.Water->Normal), body.Buoyancy, WaterDrag,
+                                       WaterSpinDrag, ToJolt(body.Water->Velocity), pull, PhysicsStepSeconds);
+    }
+}
+
+void Wotah::PhysicsWorld::State::SampleFloatingWater()
+{
+    // Each worker takes every so-many-th body, so bodies close together (alike in cost) spread over the workers.
+    const std::size_t workers =
+        std::min(Floating.size() / BodiesPerWorker, static_cast<std::size_t>(Jobs.GetMaxConcurrency()));
+    if (workers <= 1)
+    {
+        SampleFloatingShare(0, 1);
+        return;
+    }
+    // Jolt's jobs hold a std::function; each captures a pointer and two numbers, which it keeps without allocating.
+    JPH::JobSystem::Barrier* barrier = Jobs.CreateBarrier();
+    for (std::size_t worker = 0; worker < workers; ++worker)
+    {
+        const auto     first = static_cast<uint32_t>(worker);
+        const auto     count = static_cast<uint32_t>(workers);
+        JPH::JobHandle job   = Jobs.CreateJob("Sample water", JPH::Color::sCyan,
+                                              [this, first, count] { SampleFloatingShare(first, count); });
+        barrier->AddJob(job);
+    }
+    Jobs.WaitForJobs(barrier);
+    Jobs.DestroyBarrier(barrier);
+}
+
+void Wotah::PhysicsWorld::State::SampleFloatingShare(std::size_t first, std::size_t count)
+{
+    for (std::size_t index = first; index < Floating.size(); index += count)
+    {
+        FloatingBody& body = Floating[index];
+        body.Water =
+            SampleWater(FloatingSea, static_cast<float>(body.Middle.GetX()), static_cast<float>(body.Middle.GetZ()));
     }
 }
 

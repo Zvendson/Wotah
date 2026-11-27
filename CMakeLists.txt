@@ -109,8 +109,20 @@ target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
 # Only today's names: what ImGui marks obsolete is left out, so nothing here starts to depend on it.
 target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
 
+# ImGuizmo for the arrows that move a picked ball (ui/move_gizmo.cpp), drawn with ImGui. Its last release tag (1.83,
+# 2021) predates ImGui's current names, so a commit is pinned: 2026-10-10, after its fixes for ImGui 1.92.8 and later.
+# Its own CMake file is skipped (SOURCE_SUBDIR has none): it would build its graph and curve editors too.
+FetchContent_Declare(imguizmo
+    GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
+    GIT_TAG        105e4fde45e4e74aae8973d98750820ef7aca7e2
+    SOURCE_SUBDIR  src)
+FetchContent_MakeAvailable(imguizmo)
+add_library(imguizmo STATIC ${imguizmo_SOURCE_DIR}/src/ImGuizmo.cpp)
+target_include_directories(imguizmo PUBLIC ${imguizmo_SOURCE_DIR}/src)
+target_link_libraries(imguizmo PUBLIC imgui)
+
 # Their headers are theirs: no warnings from inside them (Vulkan::Vulkan is imported, so already a system folder).
-foreach(third_party glfw spdlog glm VulkanMemoryAllocator Jolt imgui)
+foreach(third_party glfw spdlog glm VulkanMemoryAllocator Jolt imgui imguizmo)
     wotah_mark_system(${third_party})
 endforeach()
 
@@ -256,6 +268,8 @@ add_library(wotah STATIC
     source/ui/control_bar.cpp
     source/ui/hints_window.hpp
     source/ui/hints_window.cpp
+    source/ui/move_gizmo.hpp
+    source/ui/move_gizmo.cpp
     source/ui/settings_window.hpp
     source/ui/settings_window.cpp
     source/ui/stats_window.hpp
@@ -271,7 +285,7 @@ add_library(wotah STATIC
 target_include_directories(wotah PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/source ${SHADER_OUT})
 target_link_libraries(wotah PUBLIC Vulkan::Vulkan glfw spdlog::spdlog glm::glm GPUOpen::VulkanMemoryAllocator)
 target_link_libraries(wotah PRIVATE Jolt) # only physics/*.cpp see it
-target_link_libraries(wotah PRIVATE imgui) # only ui/*.cpp and render/ui_renderer.cpp see it
+target_link_libraries(wotah PRIVATE imgui imguizmo) # only ui/*.cpp and render/ui_renderer.cpp see them
 # glm's projections produce Vulkan's 0..1 depth range instead of OpenGL's -1..1.
 target_compile_definitions(wotah PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE
     WOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS} WOTAH_SHADOW_CASCADES=${WOTAH_SHADOW_CASCADES}

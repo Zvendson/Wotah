@@ -16,6 +16,7 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <system_error>
@@ -125,6 +126,27 @@ namespace
 bool Wotah::IsFinite(const glm::vec3& vector) noexcept
 {
     return std::isfinite(vector.x) && std::isfinite(vector.y) && std::isfinite(vector.z);
+}
+
+std::optional<float> Wotah::FindRaySphereHit(const glm::vec3& origin, const glm::vec3& direction,
+                                             const glm::vec3& center, float radius) noexcept
+{
+    // The ray comes closest to the middle along distance "along"; it is inside the ball for "half" to each side of
+    // that, where the closest approach is within the radius.
+    const glm::vec3 toCenter       = center - origin;
+    const float     along          = glm::dot(toCenter, direction);
+    const float     closestSquared = glm::dot(toCenter, toCenter) - along * along;
+    const float     radiusSquared  = radius * radius;
+    if (!(closestSquared <= radiusSquared))
+    {
+        return std::nullopt; // passes it (or not a number)
+    }
+    const float half = std::sqrt(radiusSquared - closestSquared);
+    if (along + half < 0.0f)
+    {
+        return std::nullopt; // behind
+    }
+    return std::max(along - half, 0.0f);
 }
 
 std::optional<std::filesystem::path> Wotah::FindExecutableDirectory()

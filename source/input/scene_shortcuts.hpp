@@ -1,7 +1,8 @@
 /**
  * @file scene_shortcuts.hpp
- * Keys that act on the scene rather than the camera: R resets the scene, Tab shows or hides its settings. Added after
- * the UI, so these keys typed into a UI text field never do anything else.
+ * Keys and clicks that act on the scene rather than the camera: R resets the scene, Tab shows or hides its settings, B
+ * adds a ball, the left mouse button picks what is under the cursor. Added after the UI, so these keys typed into a UI
+ * text field and clicks on a UI window (or on the move gizmo's handles) never do anything else.
  *
  *     Wotah::SceneShortcuts shortcuts;
  *     dispatcher.AddHandler(shortcuts);
@@ -14,20 +15,28 @@
  *     {
  *         // show the settings window, or hide it
  *     }
+ *     if (const std::optional<glm::vec2> cursor = shortcuts.TakePickRequest())
+ *     {
+ *         // pick what lies under *cursor
+ *     }
  */
 #pragma once
 
 #include "input/input_handler.hpp"
 
+#include <glm/vec2.hpp>
+
+#include <optional>
+
 namespace Wotah
 {
-    /** Turns the scene's keys into requests the program takes once per frame. */
+    /** Turns the scene's keys and clicks into requests the program takes once per frame. */
     class SceneShortcuts final : public InputHandler
     {
     public:
         /**
-         * Uses R and Tab; holding one asks once, as the system's repeats are not new presses. Other input goes on to
-         * the handlers after it.
+         * Uses R, Tab and B, holding one asks once, as the system's repeats are not new presses; and presses of the
+         * left mouse button. Other input goes on to the handlers after it.
          */
         bool OnInput(const InputEvent& event) override;
 
@@ -37,11 +46,26 @@ namespace Wotah
         /** Whether Tab was pressed since the last call; the caller shows the settings window, or hides it. */
         [[nodiscard]] bool TakeSettingsRequest() noexcept;
 
+        /** Whether B was pressed since the last call; the caller adds a ball. */
+        [[nodiscard]] bool TakeAddBallRequest() noexcept;
+
+        /**
+         * Where the cursor was, in the window's cursor units, when the left mouse button was last pressed since the
+         * last call; the caller picks what lies there. Empty without a press.
+         */
+        [[nodiscard]] std::optional<glm::vec2> TakePickRequest() noexcept;
+
     private:
         /** Whether R was pressed and TakeResetRequest has not answered it yet. */
         bool m_isResetRequested = false;
 
         /** Whether Tab was pressed and TakeSettingsRequest has not answered it yet. */
         bool m_isSettingsRequested = false;
+
+        /** Whether B was pressed and TakeAddBallRequest has not answered it yet. */
+        bool m_isAddBallRequested = false;
+
+        /** Where the last left click was that TakePickRequest has not answered yet. */
+        std::optional<glm::vec2> m_pickRequest;
     };
 } // namespace Wotah

@@ -59,9 +59,9 @@ namespace Wotah
         void Destroy();
 
         /**
-         * Hands the event to ImGui. True when the UI keeps it: mouse events while the mouse is over a UI window (or a
-         * drag started on one), key and text events while a UI field has the keyboard. As ImGui knows that only at the
-         * end of a frame, the answer comes from the last frame. False before Create.
+         * Hands the event to ImGui. True when the UI keeps it: mouse events while the mouse is over a UI window or a
+         * handle of the move gizmo (or a drag started on one), key and text events while a UI field has the keyboard.
+         * As ImGui knows that only at the end of a frame, the answer comes from the last frame. False before Create.
          */
         bool OnInput(const InputEvent& event) override;
 

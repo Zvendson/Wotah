@@ -4,7 +4,7 @@
  * (terrain/terrain_shape.hpp) as fixed height fields in a physics world, around a few places (the ball, the camera),
  * made as those places move and dropped once nothing is near them any more. A tile's heights are sampled on a worker
  * thread, so moving on never stalls a frame; only the tile under a place is waited for when it is missing, so nothing
- * falls through.
+ * falls through (sampled in bands of rows on several threads at once then, to keep the wait short).
  *
  *     Wotah::LandCollider land;
  *     land.Create(physics, shape, sand);
