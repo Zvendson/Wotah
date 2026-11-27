@@ -34,6 +34,7 @@ namespace Wotah
 {
     class Device;
     class Lighting;
+    class SeaState;
     struct TerrainShape;
 
     /**
@@ -60,11 +61,12 @@ namespace Wotah
 
         /**
          * Makes the shape's buffer and set, uploads the grid, and builds the pipelines for frames with these color and
-         * depth formats, reading the lights (and drawing into their shadow maps); false (and logged) when one fails.
-         * The land is flat at height 0 until SetShape. Device and lighting must outlive the renderer.
+         * depth formats, reading the lights (and drawing into their shadow maps) and the sea (where its swash wets the
+         * sand: their set layouts); false (and logged) when one fails. The land is flat at height 0 until SetShape.
+         * Device and lighting must outlive the renderer.
          */
         [[nodiscard]] bool Create(const Device& device, VkFormat colorFormat, VkFormat depthFormat,
-                                  const Lighting& lighting);
+                                  const Lighting& lighting, const SeaState& sea);
 
         /** Frees everything Create made; safe to call more than once or after a failed Create. */
         void Destroy();
@@ -78,21 +80,28 @@ namespace Wotah
         /** Moves the clipmap's levels around the viewer, for the draws that follow. */
         void FollowViewer(const glm::vec3& viewer);
 
-        /** Records the land, seen through viewProjection and lit by lighting, into the frame's scene. */
-        void Draw(VkCommandBuffer commandBuffer, const glm::mat4& viewProjection, const Lighting& lighting) const;
+        /**
+         * Records the land, seen through viewProjection and lit by lighting, its sand wet where sea's swash ran, into
+         * the frame's scene.
+         */
+        void Draw(VkCommandBuffer commandBuffer, const glm::mat4& viewProjection, const Lighting& lighting,
+                  const SeaState& sea) const;
 
         /**
          * Records the land into the mirror's picture (render/mirror_view.hpp), seen through the mirrored view
          * (MakeMirrorViewProjection), lit by lighting: as Draw, with the mirrored view's clockwise front faces.
          */
         void DrawMirrored(VkCommandBuffer commandBuffer, const glm::mat4& mirroredViewProjection,
-                          const Lighting& lighting) const;
+                          const Lighting& lighting, const SeaState& sea) const;
 
         /**
          * Records the land into a shadow map being drawn (between ShadowMaps::BeginLayer and EndLayer), as the light
          * sees it: the levels that reach within reach of the viewer, so far land does not cost shadow time.
          */
         void DrawShadow(VkCommandBuffer commandBuffer, const glm::mat4& lightViewProjection, float reach) const;
+
+        /** The shape's uniform buffer (terrain_shape.glsl's block), for other sets that read it, as the sea's. */
+        [[nodiscard]] const Buffer& GetShapeBuffer() const noexcept { return m_shapeBuffer; }
 
         /** The shape's set layout, for other pipelines that read the shape at TerrainShapeSet. */
         [[nodiscard]] VkDescriptorSetLayout GetShapeSetLayout() const noexcept { return m_shapeSet.GetLayout(); }
@@ -101,9 +110,12 @@ namespace Wotah
         void BindShape(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout) const;
 
     private:
-        /** Records every level with one of the lit pipelines (the scene's or the mirror's), its lights and shape. */
+        /**
+         * Records every level with one of the lit pipelines (the scene's or the mirror's), its lights, shape and the
+         * sea.
+         */
         void DrawLit(VkCommandBuffer commandBuffer, const Pipeline& pipeline, const glm::mat4& viewProjection,
-                     const Lighting& lighting) const;
+                     const Lighting& lighting, const SeaState& sea) const;
 
         Buffer           m_shapeBuffer;
         DescriptorSet    m_shapeSet;

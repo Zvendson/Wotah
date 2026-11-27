@@ -6,18 +6,18 @@
  * meshes, then the sea over them. The UI goes after it, then Renderer::EndFrame.
  *
  *     Wotah::SceneRenderer scene;
- *     scene.Create(device, colorFormat, renderer, landShape, sea);
+ *     scene.Create(device, colorFormat, renderer, landShape);
  *     // each frame, between Renderer::BeginFrame and EndFrame:
- *     scene.Draw(renderer, camera, lights, objects);
+ *     scene.Draw(renderer, camera, lights, sea, objects);
  */
 #pragma once
 
 #include "render/lighting.hpp"
 #include "render/mesh_pipelines.hpp"
 #include "render/pipeline.hpp"
+#include "render/sea_state.hpp"
 #include "render/sky.hpp"
 #include "render/terrain_renderer.hpp"
-#include "render/water.hpp"
 #include "render/water_renderer.hpp"
 
 #include <vulkan/vulkan_core.h>
@@ -29,6 +29,7 @@ namespace Wotah
     class Camera;
     class Device;
     class Renderer;
+    struct Sea;
     struct TerrainShape;
 
     /** The scene's lights, sky, land and sea on the GPU, and the recording of a frame of them. */
@@ -36,12 +37,12 @@ namespace Wotah
     {
     public:
         /**
-         * Builds everything for the renderer's frames (colorFormat: its swapchain's): the land of landShape, the sea
-         * at sea, reading the renderer's copy of the solid scene and its mirror; false (and logged) when a part fails.
-         * The device and the renderer must outlive it.
+         * Builds everything for the renderer's frames (colorFormat: its swapchain's): the land of landShape (the sea's
+         * floor too), the sea reading the renderer's copy of the solid scene and its mirror; false (and logged) when a
+         * part fails. The device and the renderer must outlive it.
          */
         [[nodiscard]] bool Create(const Device& device, VkFormat colorFormat, const Renderer& renderer,
-                                  const TerrainShape& landShape, const Sea& sea);
+                                  const TerrainShape& landShape);
 
         /** Frees everything; safe to call more than once or after a failed Create. */
         void Destroy();
@@ -51,11 +52,12 @@ namespace Wotah
 
         /**
          * Records the scene into the renderer's frame (after Renderer::BeginFrame): land and sea follow the camera,
-         * the lights are put on the GPU (bad ones logged, the last good ones kept), every light's shadow maps get the
-         * land within lights.Shadows and the objects, the sea's mirror what stands over the water, then the sky, the
-         * land and the objects, and last the sea. The renderer is left in its see-through part, ready for the UI.
+         * the lights and the sea's waves (as sea has them now; its floor must be the land) are put on the GPU (bad
+         * lights logged, the last good ones kept), every light's shadow maps get the land within lights.Shadows and
+         * the objects, the sea's mirror what stands over the water, then the sky, the land and the objects, and last
+         * the sea. The renderer is left in its see-through part, ready for the UI.
          */
-        void Draw(Renderer& renderer, const Camera& camera, const SceneLights& lights,
+        void Draw(Renderer& renderer, const Camera& camera, const SceneLights& lights, const Sea& sea,
                   std::span<const MeshObject> objects);
 
     private:
@@ -70,14 +72,12 @@ namespace Wotah
                           std::span<const MeshObject> objects) const;
 
         Lighting        m_lighting;
+        SeaState        m_seaState;
         Sky             m_sky;
         TerrainRenderer m_land;
-        WaterRenderer   m_sea;
+        WaterRenderer   m_water;
 
         /** Draws the meshes into the lights' shadow maps (the land draws itself). */
         Pipeline m_shadowPipeline;
-
-        /** Where the sea's surface lies. */
-        Sea m_seaSurface;
     };
 } // namespace Wotah

@@ -1,13 +1,22 @@
 // The shape of the land (#include "terrain_shape.glsl", after noise.glsl): GetTerrainHeight, from the numbers of a
 // TerrainShape (source/terrain/terrain_shape.hpp) that source/render/terrain_renderer.cpp writes into the uniform
-// buffer at set 1. It mirrors source/terrain/terrain_shape.cpp line by line; a change to one must go into the other
-// (tests/gpu_tests.cpp compares them).
+// buffer at set 1 (or WOTAH_TERRAIN_SHAPE_SET). It mirrors source/terrain/terrain_shape.cpp line by line; a change to
+// one must go into the other (tests/gpu_tests.cpp compares them).
 
 #ifndef WOTAH_TERRAIN_SHAPE_GLSL
 #define WOTAH_TERRAIN_SHAPE_GLSL
 
+// Where the shape's buffer is bound: set 1, binding 0 for the land's shaders; a shader that has those for something
+// else defines both before it includes this file (water.vert: the sea's set, binding 1).
+#ifndef WOTAH_TERRAIN_SHAPE_SET
+#define WOTAH_TERRAIN_SHAPE_SET 1
+#endif
+#ifndef WOTAH_TERRAIN_SHAPE_BINDING
+#define WOTAH_TERRAIN_SHAPE_BINDING 0
+#endif
+
 // Matches GpuTerrainShape in source/render/terrain_renderer.cpp (std140: vec4s only).
-layout(std140, set = 1, binding = 0) uniform TerrainShapeBlock
+layout(std140, set = WOTAH_TERRAIN_SHAPE_SET, binding = WOTAH_TERRAIN_SHAPE_BINDING) uniform TerrainShapeBlock
 {
     uvec4 seed;     // x: Seed
     vec4  sea;      // x: SeaLevel, y: BeachSlope, z: BeachTop, w: SeaDepth
@@ -69,8 +78,10 @@ vec2 FromCoastFrame(vec2 direction)
     return vec2(-direction.y, direction.x);
 }
 
-// The ground's height at a place (x, z), leaving out detail finer than smallest metres (0: all the shape has).
-float GetTerrainHeight(vec2 place, float smallest)
+// A place (x, z) in the coast's frame as the land's formula bends it (source/terrain/terrain_shape.hpp, CoastPlace):
+// xy the bent place (x along the coast, y seaward), z how far seaward of the wandering waterline it lies (negative
+// inland), leaving out detail finer than smallest metres.
+vec3 GetCoastPlace(vec2 place, float smallest)
 {
     float detail = max(smallest, terrainShape.bumps.z);
     vec2  coast  = ToCoastFrame(place);
@@ -87,9 +98,25 @@ float GetTerrainHeight(vec2 place, float smallest)
     vec2  coastPlace = vec2(bent.x / terrainShape.coast.y, 0.0);
     float shore      = terrainShape.coast.x * GetLayeredNoise(coastPlace, MixTerrainSeed(TerrainCoastSalt),
                                                               TerrainCoastLayers, detail / terrainShape.coast.y);
-    float seaward    = bent.y - shore;
-    float inland     = -seaward;
-    float height     = terrainShape.sea.x + GetBeachProfile(seaward);
+    return vec3(bent, bent.y - shore);
+}
+
+// How deep the still sea stands over the beach's broad profile seaward metres seaward of the waterline; negative
+// inland (source/terrain/terrain_shape.cpp, GetBeachDepth).
+float GetBeachDepth(float seaward)
+{
+    return -GetBeachProfile(seaward);
+}
+
+// The ground's height at a place (x, z), leaving out detail finer than smallest metres (0: all the shape has).
+float GetTerrainHeight(vec2 place, float smallest)
+{
+    float detail  = max(smallest, terrainShape.bumps.z);
+    vec3  frame   = GetCoastPlace(place, smallest);
+    vec2  bent    = frame.xy;
+    float seaward = frame.z;
+    float inland  = -seaward;
+    float height  = terrainShape.sea.x + GetBeachProfile(seaward);
 
     // Dunes behind the beach, giving way to the hills inland: long ridges along the coast, rounded on top (a crest from
     // 1 - |noise|, squared).

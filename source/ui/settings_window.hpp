@@ -1,9 +1,9 @@
 /**
  * @file settings_window.hpp
- * A window of sliders to change the scene while it runs, in three tabs: the sky (the time of day, whether and how fast
- * the day runs, how high the sun gets, how bright sun, moon and sky are, shadows), the physics (gravity, how fast time
- * runs, how bouncy the ball is) and the camera (its field of view). Hidden at the start; Tab shows or hides it
- * (input/scene_shortcuts.hpp).
+ * A window of sliders to change the scene while it runs, in four tabs: the sky (the time of day, whether and how fast
+ * the day runs, how high the sun gets, how bright sun, moon and sky are, shadows), the sea (how high its waves are),
+ * the physics (gravity, how fast time runs, how bouncy the ball is) and the camera (its field of view). Hidden at the
+ * start; Tab shows or hides it (input/scene_shortcuts.hpp).
  *
  *     if (isSettingsOpen && Wotah::ShowSettingsWindow(settings, defaults))
  *     {
@@ -54,6 +54,8 @@ namespace Wotah
 
         /** How much the ball bounces back: 0 not at all, 1 as high as it fell. */
         float BallBounciness = 0.0f;
+        /** How high the sea's waves are, trough to crest, in metres (their significant height); 0 is still water. */
+        float WaveHeight = 0.0f;
 
         /** The camera's vertical field of view, in degrees. */
         float FieldOfViewDegrees = 45.0f;

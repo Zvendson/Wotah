@@ -1,7 +1,8 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-// The sea's surface (source/render/water_renderer.hpp): flat, with fine ripples that drift with the wind. Looked at
+// The sea's surface (source/render/water_renderer.hpp): waves (water.vert moves the surface, the slopes come from the
+// same waves here, sea_waves.glsl), with fine ripples on them that drift with the wind. Looked at
 // straight down it is clear and shows the ground under it, bent where the view enters the water (Snell's law) and
 // tinted turquoise the deeper it lies (water takes red far more than blue); at a flat angle it mirrors what stands
 // above it, sky, land and shapes (the mirror's picture, render/mirror_view.hpp), its ripples breaking the mirror image
@@ -18,16 +19,20 @@
 #include "noise.glsl"
 #include "sky.glsl"
 #include "water.glsl"
+#include "sea_waves.glsl"
 
-layout(location = 0) in vec3  inWorldNormal;
+layout(location = 0) in vec2  inRestPlace;
+layout(location = 1) in float inShoal;
+layout(location = 2) in vec4  inSurf;
 layout(location = 3) in float inViewDepth;
 layout(location = 4) in vec3  inWorldPosition;
+layout(location = 5) in vec4  inSurfState;
 
 layout(push_constant) uniform PushConstants
 {
     mat4 viewProjection; // world space to clip space: the camera, to find where a bent view lands on the picture
     vec4 level;          // the clipmap level (water.vert)
-    vec4 surface;        // x: the surface's height
+    vec4 surface;        // x: the still surface's height (the mirror's plane); y: the surface's height at the camera
 } push;
 
 // The mirror's picture (render/mirror_view.hpp): what the flat surface mirrors at each place of the picture, and its
@@ -129,6 +134,62 @@ const float FoamSwash      = 0.35;
 const float SwashPeriod    = 7.5;
 const float SwashSpread    = 40.0;
 const uint  FoamSalt       = 0x6A09E667u;
+
+// ---- The surf's foam ----
+
+// Foam on the swell's breaking waves and bores, and on the wind's highest crests, by eye after photographs of surf:
+// - a breaking crest turns white over its top (from BreakingCrest of its height), most while it is half broken;
+// - a broken bore is white on its face and trails foam behind it over BoreTrail of its wavelength, leaving SurfFoam
+//   over the whole surf zone;
+// - the wind's waves get white caps where their crests grow sharp (their tilt's y from CapStart to CapFull: the share
+//   of their sideways motion that gathers there, 1 where a crest would fold over).
+// The foam is laced (GetFoamLace): from SurfLace of its white where the lace is thin, up to all of it.
+const float BreakingCrest = 0.7;
+const float BoreTrail     = 0.25;
+const float SurfFoam      = 0.25;
+const float CapStart      = 0.3;
+const float CapFull       = 0.55;
+const float SurfLace      = 0.5;
+
+// How high the swell's water stands within its wave at point: 0 in the trough, 1 on the crest (GetSurfWave's lift^p).
+float GetSurfLift(SurfPoint point)
+{
+    float rise;
+    float mean = 1.0 / sqrt(SeaPi * (point.peak + 0.25)); // GetSurfWave's: its waveform is lift^p - mean
+    return point.height > 0.0 ? GetSurfWave(point, rise) / point.height + mean : 0.0;
+}
+
+// How much foam the surf puts on the water at the swell's point (the waveform's place within the wave and its lift) and
+// where the wind waves' tilt is waveTilt; where the swell's waves are too fine for the pixels (shown 0) the bores' foam
+// is its average over a wave, BoreFoamMean.
+const float BoreFoamMean = 0.4;
+float GetSurfFoam(SurfPoint point, vec3 waveTilt, float shown)
+{
+    float turns  = point.phase / SeaTwoPi;
+    float place  = turns - floor(turns);
+    float front  = 0.5 * (1.0 - point.lean);
+    float back   = 1.0 - front;
+    float lift   = GetSurfLift(point);
+    float crest  = shown * smoothstep(BreakingCrest, 1.0, lift) * 4.0 * point.broken * (1.0 - point.broken);
+    float face   = smoothstep(back, 1.0, place);
+    float trail  = exp(-place / BoreTrail);
+    float bore   = point.broken * mix(BoreFoamMean, max(max(face, trail), SurfFoam), shown);
+    float caps   = smoothstep(CapStart, CapFull, waveTilt.y);
+    return clamp(max(max(crest, bore), caps), 0.0, 1.0);
+}
+
+// ---- Stirred water and crests the light shines through ----
+
+// Broken waves stir up sand and fill the water with bubbles: the surf zone is milky, hiding up to SurfMilkiness of
+// what lies under it behind SurfMilk's color, the more the deeper the water is (a thin sheet hides little, its foam is
+// what shows). A wave's thin crest lets the light through, glowing CrestColor (CrestGlow of it at the top, most
+// looking towards the sun through it) before it breaks. By eye after photographs of surf.
+const vec3  SurfMilk      = vec3(0.50, 0.58, 0.52);
+const float SurfMilkiness = 0.65;
+const float MilkDepth     = 0.5;
+const vec3  CrestColor    = vec3(0.10, 0.48, 0.42);
+const float CrestGlow     = 0.6;
+const float CrestStart    = 0.55;
 
 // ---- Caustics ----
 
@@ -271,15 +332,10 @@ vec3 GetGlints(vec3 surface, vec3 towardsCamera, vec3 position, float roughness)
 
 // ---- Foam ----
 
-// How much foam covers the water at position, where it is depth metres deep: the thin line where the swash ends and
-// lace out from it, breathing with the swash; finer than a pixel the lace blends into a faint band.
-float GetFoam(vec3 position, float depth, float seconds, float footprint)
+// How lacy foam is at position: thin bubbly threads (where noise of FoamWavelength metres crosses zero) that drift
+// slowly, fading from one stretch of noise to the next; finer than a pixel the lace blends into a faint even share.
+float GetFoamLace(vec3 position, float seconds, float footprint)
 {
-    float late  = GetGradientNoise(position.xz / SwashSpread, FoamSalt).x;
-    float swash = 1.0 + FoamSwash * sin(2.0 * Pi * (seconds / SwashPeriod + late));
-    float edge  = 1.0 - smoothstep(0.0, FoamEdgeDepth * swash, depth);
-    float band  = 1.0 - smoothstep(0.0, FoamDepth * swash, depth);
-
     vec2  first;
     vec2  second;
     float secondShare;
@@ -288,8 +344,34 @@ float GetFoam(vec3 position, float depth, float seconds, float footprint)
     float noise    = mix(GetLayeredNoise(first, FoamSalt, 4, smallest), GetLayeredNoise(second, FoamSalt, 4, smallest),
                          secondShare);
     float threads  = pow(1.0 - min(abs(noise) * 2.0, 1.0), FoamThreads);
-    float lace     = mix(0.25, threads, GetLayerShare(FoamWavelength, 2.0 * footprint));
+    return mix(0.25, threads, GetLayerShare(FoamWavelength, 2.0 * footprint));
+}
+
+// How much foam covers the water at position, where it is depth metres deep: the thin line where the swash ends and
+// lace out from it, breathing a little (with the swell's swash it moves with the water itself).
+float GetFoam(vec3 position, float depth, float seconds, float lace)
+{
+    float late  = GetGradientNoise(position.xz / SwashSpread, FoamSalt).x;
+    float swash = 1.0 + FoamSwash * sin(2.0 * Pi * (seconds / SwashPeriod + late));
+    float edge  = 1.0 - smoothstep(0.0, FoamEdgeDepth * swash, depth);
+    float band  = 1.0 - smoothstep(0.0, FoamDepth * swash, depth);
     return FoamCover * max(edge, band * lace);
+}
+
+// How the value changes over the water (x, z) at this pixel: from its change and the place's change to the pixel's
+// neighbours (a value smooth over the triangle, as the swell's phase).
+vec2 GetWaterGradient(float value)
+{
+    vec2  acrossX = dFdx(inWorldPosition.xz);
+    vec2  acrossY = dFdy(inWorldPosition.xz);
+    float changeX = dFdx(value);
+    float changeY = dFdy(value);
+    float area    = acrossX.x * acrossY.y - acrossX.y * acrossY.x;
+    if (abs(area) < 1.0e-12)
+    {
+        return vec2(0.0);
+    }
+    return vec2(changeX * acrossY.y - changeY * acrossX.y, changeY * acrossX.x - changeX * acrossY.x) / area;
 }
 
 // ---- Caustics ----
@@ -388,6 +470,10 @@ float GetDirectShare(vec3 position, float viewDepth)
 
 void main()
 {
+    // Landward of the swash's front the sand lies bare: the water ends there, pixel by pixel (cut off only once all is
+    // worked out, as the derivatives need every pixel of the quad).
+    bool isBare = inSurfState.w < 0.0;
+
     float     seconds   = sceneLights.skySun.w;
     vec3      ray       = normalize(inWorldPosition - sceneLights.cameraPosition.xyz);
     vec2      onPicture = gl_FragCoord.xy / vec2(textureSize(sceneColor, 0));
@@ -400,28 +486,51 @@ void main()
     vec3  under      = inWorldPosition + ray * min(path, FarestUnder);
     float underSlope = GetUnderSlope(onPicture, ray, under, dFdx(ray), dFdy(ray));
 
-    // The rippled surface: its normal, and how rough it looks where ripples are too fine for the pixel.
+    // The surface: the wind waves' slope (every wave the pixel can show, even where the grid could not move the water
+    // for it), the swell's (its waveform's rise times how its phase changes over the water; where the swash's sheet
+    // makes the surface, the sheet's own tilt over the sand), the ripples' on top, and how rough it looks where waves
+    // and ripples are too fine for the pixel.
+    vec3  waveTilt;
+    float waveLost;
+    GetWaveOffset(inRestPlace, inShoal, 2.0 * footprint, waveTilt, waveLost);
+    vec3      waveNormal = GetWaveNormal(waveTilt);
+    SurfPoint swell      = SurfPoint(inSurf.x, inSurf.y, inSurf.z, inSurf.w, inSurfState.x, 0.0, 0.0);
+    float     swellRise;
+    GetSurfWave(swell, swellRise);
+    // Where the swell's phase turns faster than the pixels can follow (far away), its slope fades out, not flickers.
+    vec2  phaseSlope = GetWaterGradient(inSurf.x);
+    float swellShown = 1.0 - smoothstep(0.5, 1.5, length(phaseSlope) * footprint);
+    phaseSlope *= swellShown;
+    vec2  swellSlope = swellRise * phaseSlope * (1.0 - clamp(inSurfState.y, 0.0, 1.0)); // the swash's sheet: flat
     float lostSpread;
-    vec2  slope     = GetRippleSlope(inWorldPosition.xz, seconds, footprint, lostSpread);
-    vec3  surface   = normalize(inWorldNormal + vec3(-slope.x, 0.0, -slope.y));
-    float roughness = sqrt(GlintRoughness * GlintRoughness + LostRippleRoughness * lostSpread);
+    vec2  ripples   = GetRippleSlope(inWorldPosition.xz, seconds, footprint, lostSpread);
+    vec2  slope     = ripples - waveNormal.xz / waveNormal.y + swellSlope;
+    vec3  surface   = normalize(vec3(-slope.x, 1.0, -slope.y));
+    float roughness = sqrt(GlintRoughness * GlintRoughness + LostRippleRoughness * (lostSpread + waveLost));
+    float lace      = GetFoamLace(inWorldPosition, seconds, footprint);
 
-    // The camera under the surface: within Snell's window the world above shows through, less what the surface mirrors;
-    // outside it the surface mirrors the water below entirely. On the way up to the surface the water takes its share,
-    // as underwater.frag does for everything else the camera sees.
+    // The camera under the surface (it sees the surface's underside: the grid's back faces, as the land's grid faces up
+    // with its front): within Snell's window, measured from the surface's normal, the world above shows through, less
+    // what the surface mirrors; outside it the surface mirrors the water below entirely. On the way up to the surface
+    // the water takes its share, as underwater.frag does for everything else the camera sees.
     vec3 body = Light(WaterColor, surface, inWorldPosition, inViewDepth);
-    if (ray.y > 0.0)
+    if (!gl_FrontFacing)
     {
         vec3  camera  = sceneLights.cameraPosition.xyz;
         vec3  above   = texture(sceneColor, onPicture).rgb;
-        float window  = smoothstep(CriticalCosine - WindowEdge, CriticalCosine + WindowEdge, ray.y);
-        float through = window * (1.0 - GetFresnel(ray.y, StraightReflectance));
+        float upward  = max(dot(ray, surface), 0.0);
+        float window  = smoothstep(CriticalCosine - WindowEdge, CriticalCosine + WindowEdge, upward);
+        float through = window * (1.0 - GetFresnel(upward, StraightReflectance));
         float way     = inViewDepth / max(dot(ray, sceneLights.cameraForward.xyz), 1.0e-4);
         vec3  kept    = exp(-Absorption * way);
         vec3  mirrors = GetInsideGlow(inWorldPosition, inViewDepth, 0.0);
         vec3  seen    = mix(mirrors, above, through);
-        vec3  glow    = GetInsideGlow(camera, 0.0, push.surface.x - camera.y);
+        vec3  glow    = GetInsideGlow(camera, 0.0, push.surface.y - camera.y);
         outColor      = vec4(kept * seen + (1.0 - kept) * glow + GetDither(gl_FragCoord.xy) * ColorStep, 1.0);
+        if (isBare)
+        {
+            discard;
+        }
         return;
     }
 
@@ -441,22 +550,41 @@ void main()
     vec3  groundPoint;
     vec2  inScene     = FindBentGround(ray, surface, path, onPicture, groundPoint);
     vec3  kept        = exp(-Absorption * (path + depthBelow));
-    float groundDepth = max(push.surface.x - groundPoint.y, 0.0);
-    float litShare    = GetDirectShare(groundPoint, GetSolidViewDepth(inScene)) * GetGentleShare(underSlope);
+    float groundDepth = max(inWorldPosition.y - groundPoint.y, 0.0);
+    float stirred  = SurfMilkiness * clamp(max(swell.broken, inSurfState.z), 0.0, 1.0) *
+                    smoothstep(0.0, MilkDepth, depthBelow);
+    float litShare = GetDirectShare(groundPoint, GetSolidViewDepth(inScene)) * GetGentleShare(underSlope) *
+                     (1.0 - stirred);
     vec3  ground      = texture(sceneColor, inScene).rgb *
                    GetCaustics(groundPoint, groundDepth, seconds, footprint, litShare);
 
     // Into the water goes what is not mirrored: the ground as much as the water keeps of it, the water's own color for
-    // the rest. Then the glints, built up towards white (they are far brighter than the screen can show).
-    vec3 color = reflected * mirror + (1.0 - reflected) * (kept * ground + (1.0 - kept) * body);
+    // the rest; where the surf stirs it, milky. Then the glints, built up towards white (they are far brighter than the
+    // screen can show).
+    vec3 water = kept * ground + (1.0 - kept) * body;
+    water      = mix(water, Light(SurfMilk, surface, inWorldPosition, inViewDepth), stirred);
+    vec3 color = reflected * mirror + (1.0 - reflected) * water;
     vec3 glints = GlintExposure * skyMirrored * GetGlints(surface, towardsCamera, inWorldPosition, roughness);
     color       = AddLight(color, glints);
 
-    // Foam where the water runs shallow over gently sloping ground, lit like the ground.
-    float foam = GetFoam(inWorldPosition, depthBelow, seconds, footprint) * GetGentleShare(underSlope);
+    // A swell's thin crest glows with the light coming through it, before it breaks.
+    vec3  sun   = sceneLights.directional[0].towardsLight.xyz;
+    float glow  = CrestGlow * swellShown * smoothstep(CrestStart, 1.0, GetSurfLift(swell)) * (1.0 - swell.broken) *
+                 swell.lean * (0.4 + 0.6 * max(dot(ray, sun), 0.0));
+    color       = AddLight(color, glow * Light(CrestColor, vec3(0.0, 1.0, 0.0), inWorldPosition, inViewDepth));
+
+    // Foam where the water runs shallow over gently sloping ground, where the surf breaks, the swash runs up and the
+    // wind's crests turn white, lit like the ground.
+    float foam = GetFoam(inWorldPosition, depthBelow, seconds, lace) * GetGentleShare(underSlope);
+    float surf = max(GetSurfFoam(swell, waveTilt, swellShown), inSurfState.z);
+    foam       = max(foam, FoamCover * surf * mix(SurfLace, 1.0, lace));
     color      = mix(color, Light(FoamColor, vec3(0.0, 1.0, 0.0), inWorldPosition, inViewDepth), foam);
 
     // Far away the water fades into the haze; the ground seen through it had its own haze already.
     color    = ApplyHaze(color, inViewDepth, sceneLights.hazeColor.rgb);
     outColor = vec4(color + GetDither(gl_FragCoord.xy) * ColorStep, 1.0);
+    if (isBare)
+    {
+        discard;
+    }
 }

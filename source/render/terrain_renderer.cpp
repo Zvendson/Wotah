@@ -8,6 +8,7 @@
 #include "render/device.hpp"
 #include "render/lighting.hpp"
 #include "render/mesh_data.hpp"
+#include "render/sea_state.hpp"
 #include "render/shadow_maps.hpp"
 #include "terrain/terrain_shape.hpp"
 
@@ -88,7 +89,7 @@ Wotah::TerrainRenderer::~TerrainRenderer()
 }
 
 bool Wotah::TerrainRenderer::Create(const Device& device, VkFormat colorFormat, VkFormat depthFormat,
-                                    const Lighting& lighting)
+                                    const Lighting& lighting, const SeaState& sea)
 {
     Destroy(); // a second Create replaces the first instead of leaking it
 
@@ -111,11 +112,12 @@ bool Wotah::TerrainRenderer::Create(const Device& device, VkFormat colorFormat, 
     }
 
     // Every pipeline sees the lights at set 0 and the shape at set 1 (only the lit fragment shader reads the lights),
-    // the lit ones the ground's textures at set 2. The land is seen from above, so back faces are skipped; in the
-    // mirror its front faces wind clockwise; into shadow maps both sides go, as for shapes.
+    // the lit ones the ground's textures at set 2 and the sea at set 3 (where its swash wet the sand). The land is seen
+    // from above, so back faces are skipped; in the mirror its front faces wind clockwise; into shadow maps both sides
+    // go, as for shapes.
     const std::array<VkDescriptorSetLayout, 2> setLayouts{lighting.GetSetLayout(), m_shapeSet.GetLayout()};
-    const std::array<VkDescriptorSetLayout, 3> litSetLayouts{lighting.GetSetLayout(), m_shapeSet.GetLayout(),
-                                                             m_materials.GetSetLayout()};
+    const std::array<VkDescriptorSetLayout, 4> litSetLayouts{lighting.GetSetLayout(), m_shapeSet.GetLayout(),
+                                                             m_materials.GetSetLayout(), sea.GetSetLayout()};
     PipelineSettings                           scene;
     scene.VertexShader         = TerrainVertexShader;
     scene.FragmentShader       = TerrainFragmentShader;
@@ -176,15 +178,15 @@ void Wotah::TerrainRenderer::FollowViewer(const glm::vec3& viewer)
 }
 
 void Wotah::TerrainRenderer::Draw(VkCommandBuffer commandBuffer, const glm::mat4& viewProjection,
-                                  const Lighting& lighting) const
+                                  const Lighting& lighting, const SeaState& sea) const
 {
-    DrawLit(commandBuffer, m_pipeline, viewProjection, lighting);
+    DrawLit(commandBuffer, m_pipeline, viewProjection, lighting, sea);
 }
 
 void Wotah::TerrainRenderer::DrawMirrored(VkCommandBuffer commandBuffer, const glm::mat4& mirroredViewProjection,
-                                          const Lighting& lighting) const
+                                          const Lighting& lighting, const SeaState& sea) const
 {
-    DrawLit(commandBuffer, m_mirrorPipeline, mirroredViewProjection, lighting);
+    DrawLit(commandBuffer, m_mirrorPipeline, mirroredViewProjection, lighting, sea);
 }
 
 void Wotah::TerrainRenderer::DrawShadow(VkCommandBuffer commandBuffer, const glm::mat4& lightViewProjection,
@@ -209,11 +211,13 @@ void Wotah::TerrainRenderer::BindShape(VkCommandBuffer commandBuffer, VkPipeline
 }
 
 void Wotah::TerrainRenderer::DrawLit(VkCommandBuffer commandBuffer, const Pipeline& pipeline,
-                                     const glm::mat4& viewProjection, const Lighting& lighting) const
+                                     const glm::mat4& viewProjection, const Lighting& lighting,
+                                     const SeaState& sea) const
 {
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
     lighting.Bind(commandBuffer, pipeline.GetLayout());
     m_shapeSet.Bind(commandBuffer, pipeline.GetLayout(), TerrainShapeSet);
     m_materials.Bind(commandBuffer, pipeline.GetLayout(), TerrainMaterialsSet);
+    sea.Bind(commandBuffer, pipeline.GetLayout());
     m_levels.Draw(commandBuffer, pipeline.GetLayout(), TerrainPushStages, viewProjection);
 }

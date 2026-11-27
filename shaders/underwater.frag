@@ -16,7 +16,7 @@
 
 layout(push_constant) uniform PushConstants
 {
-    vec4 surface; // x: the surface's height
+    vec4 surface; // x: the surface's height over the camera (the waves' too)
 } push;
 
 layout(location = 0) out vec4 outColor;

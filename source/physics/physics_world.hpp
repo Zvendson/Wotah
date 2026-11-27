@@ -32,6 +32,8 @@
 
 namespace Wotah
 {
+    struct Sea;
+
     /** The pull of gravity in metres per second squared: standard gravity, 9.80665 (ISO 80000-3). */
     inline constexpr float StandardGravity = 9.80665f;
 
@@ -82,6 +84,11 @@ namespace Wotah
          */
         float MoveDamping = 0.0f;
         float SpinDamping = 0.05f;
+        /**
+         * How it floats in the sea (SetSea): water as dense as Buoyancy times the body would be (Jolt's buoyancy: 1
+         * hovers, below 1 sinks, 3 floats with a third under the water); 0 leaves it untouched by the water.
+         */
+        float Buoyancy = 0.0f;
     };
 
     /** Names a body of a PhysicsWorld. */
@@ -187,6 +194,19 @@ namespace Wotah
 
         /** How fast the body moves, in world units per second, as of the last step; empty for an unknown body. */
         [[nodiscard]] std::optional<glm::vec3> FindVelocity(BodyId body) const;
+
+        /**
+         * Lets bodies with a Buoyancy float in sea from the next step on: each step lifts them by the water they push
+         * aside where the surface is at that step (water/sea.hpp, its waves at the world's clock, GetSeconds; the
+         * sea's own Seconds is not used), and the water drags them along with it. False (and logged) before Create.
+         */
+        bool SetSea(const Sea& sea);
+
+        /**
+         * The world's clock as FindTransform shows it: the seconds of every step so far, less the part of the last step
+         * the blend has not reached yet. 0 before the first step.
+         */
+        [[nodiscard]] double GetSeconds() const;
 
         /** The most fixed steps one Step call runs: half a second of physics at 60 steps a second. */
         static constexpr int MaxStepsPerCall = 30;

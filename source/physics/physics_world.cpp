@@ -7,6 +7,7 @@
 
 #include "core/logger.hpp"
 #include "core/utils.hpp"
+#include "water/sea.hpp"
 
 #include <Jolt/Jolt.h>
 #include <Jolt/Core/Factory.h>
@@ -185,6 +186,13 @@ namespace
         return JPH::EMotionType::Static;
     }
 
+    /**
+     * How much the water holds back a body moving through it, and its spinning: Jolt's suggested factors for
+     * Body::ApplyBuoyancyImpulse (about 0.5 and 0.01); a floating ball stops rocking after a few swings.
+     */
+    constexpr float WaterDrag     = 0.5f;
+    constexpr float WaterSpinDrag = 0.01f;
+
     // ---- Checks ----------------------------------------------------------------------------------------------------
 
     /** Whether a place and a rotation are numbers, and the rotation names one (it is not a zero quaternion). */
@@ -217,7 +225,8 @@ struct Wotah::PhysicsWorld::State
     struct TrackedBody
     {
         JPH::BodyID Id;
-        BodyMotion  Motion = BodyMotion::Static;
+        BodyMotion  Motion   = BodyMotion::Static;
+        float       Buoyancy = 0.0f;
         glm::vec3   PreviousPosition{0.0f};
         glm::quat   PreviousRotation{1.0f, 0.0f, 0.0f, 0.0f};
         glm::vec3   Position{0.0f};
@@ -238,6 +247,15 @@ struct Wotah::PhysicsWorld::State
 
     /** Time handed to Step that did not fill a whole step yet. */
     float CarriedSeconds = 0.0f;
+
+    /** The seconds of every step run so far: the world's clock, which the sea's waves follow. */
+    double SteppedSeconds = 0.0;
+
+    /** The sea floating bodies float in; none until SetSea. */
+    std::optional<Sea> Water;
+
+    /** Lifts every floating body by the water it pushes aside, with the sea as it is at the step about to run. */
+    void Float();
 
     /** The body behind an id; null for an unknown one. */
     [[nodiscard]] TrackedBody* Find(BodyId body)
@@ -286,6 +304,7 @@ std::optional<Wotah::BodyId> Wotah::PhysicsWorld::State::AddBody(const JPH::Shap
     TrackedBody tracked;
     tracked.Id               = id;
     tracked.Motion           = settings.Motion;
+    tracked.Buoyancy         = settings.Buoyancy;
     tracked.PreviousPosition = settings.Position;
     tracked.PreviousRotation = rotation;
     tracked.Position         = settings.Position;
@@ -543,8 +562,10 @@ void Wotah::PhysicsWorld::Step(float seconds)
             break;
         }
 
+        state.Float();
         const JPH::EPhysicsUpdateError errors =
             state.System.Update(PhysicsStepSeconds, CollisionChecksPerStep, &state.Scratch, &state.Jobs);
+        state.SteppedSeconds += static_cast<double>(PhysicsStepSeconds);
         if (errors != JPH::EPhysicsUpdateError::None)
         {
             Logger::Warning("A physics step ran out of room (Jolt error bits {})", static_cast<uint32_t>(errors));
@@ -578,6 +599,62 @@ std::optional<glm::mat4> Wotah::PhysicsWorld::FindTransform(BodyId body) const
     const glm::vec3 position = glm::mix(tracked->PreviousPosition, tracked->Position, between);
     const glm::quat rotation = glm::slerp(tracked->PreviousRotation, tracked->Rotation, between);
     return glm::translate(glm::mat4(1.0f), position) * glm::mat4_cast(rotation);
+}
+
+bool Wotah::PhysicsWorld::SetSea(const Sea& sea)
+{
+    if (!m_state)
+    {
+        Logger::Error("A sea needs a physics world: call Create first");
+        return false;
+    }
+    m_state->Water = sea;
+    return true;
+}
+
+double Wotah::PhysicsWorld::GetSeconds() const
+{
+    if (!m_state)
+    {
+        return 0.0;
+    }
+    // FindTransform shows the step before the last one blended towards the last by the carried time.
+    const double shown = m_state->SteppedSeconds - static_cast<double>(PhysicsStepSeconds) +
+                         static_cast<double>(std::clamp(m_state->CarriedSeconds, 0.0f, PhysicsStepSeconds));
+    return std::max(shown, 0.0);
+}
+
+void Wotah::PhysicsWorld::State::Float()
+{
+    if (!Water)
+    {
+        return;
+    }
+
+    // The waves as they stand at the start of the step about to run. The body interface that locks wakes a body the
+    // water lifts, so a floating ball never falls asleep while the waves move under it.
+    Sea sea                  = *Water;
+    sea.Seconds              = SteppedSeconds;
+    JPH::BodyInterface& all  = System.GetBodyInterface();
+    const JPH::Vec3     pull = System.GetGravity();
+    for (const TrackedBody& tracked : Bodies)
+    {
+        if (tracked.Motion != BodyMotion::Dynamic || !(tracked.Buoyancy > 0.0f))
+        {
+            continue;
+        }
+        const JPH::RVec3                 middle = all.GetCenterOfMassPosition(tracked.Id);
+        const std::optional<WaterSample> water =
+            SampleWater(sea, static_cast<float>(middle.GetX()), static_cast<float>(middle.GetZ()));
+        if (!water)
+        {
+            continue;
+        }
+
+        const JPH::RVec3 surface(middle.GetX(), static_cast<JPH::Real>(water->Height), middle.GetZ());
+        (void)all.ApplyBuoyancyImpulse(tracked.Id, surface, ToJolt(water->Normal), tracked.Buoyancy, WaterDrag,
+                                       WaterSpinDrag, ToJolt(water->Velocity), pull, PhysicsStepSeconds);
+    }
 }
 
 std::optional<glm::vec3> Wotah::PhysicsWorld::FindVelocity(BodyId body) const

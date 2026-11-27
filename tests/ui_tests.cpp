@@ -530,7 +530,7 @@ TEST_SUITE("ui")
         CHECK(headless.Ui.OnInput(MakeWheelStep({sliderX, bottom - padding.y - ButtonInset})));
     }
 
-    TEST_CASE("the settings window's tabs: Physics shows the physics' sliders, the window staying in its corner")
+    TEST_CASE("the settings window's tabs: Sea shows the waves' slider, the window staying in its corner")
     {
         HeadlessUi headless;
         REQUIRE(headless.Create());
@@ -547,7 +547,7 @@ TEST_SUITE("ui")
         const float   skyHeight = window->Size.y;
 
         // Row by row from the top, left to right: the header and its line take no clicks, the Sky tab is open already,
-        // so the first click that changes the window is on the Physics tab, which has fewer rows. No setting changes.
+        // so the first click that changes the window is on the Sea tab, which has fewer rows. No setting changes.
         bool isSwitched = false;
         for (float y = window->Pos.y + padding.y; y < window->Pos.y + skyHeight && !isSwitched; y += ScanStep)
         {
@@ -565,7 +565,7 @@ TEST_SUITE("ui")
         const float height = static_cast<float>(ScreenSize.Height);
         CHECK(std::abs(window->Pos.y + window->Size.y - (height - Wotah::CardMargin)) <= PixelSlack);
 
-        // Its first slider is gravity: a click at its right end sets nearly the most; the sky's settings stay.
+        // Its slider is the waves' height: a click at its right end sets nearly the most (3 m); the others stay.
         const float sliderX = window->Pos.x + window->Size.x - padding.x - ButtonInset;
         for (float y = window->Pos.y + padding.y; y < window->Pos.y + window->Size.y && !headless.SettingsChanged;
              y += ScanStep)
@@ -573,7 +573,8 @@ TEST_SUITE("ui")
             headless.Click({sliderX, y});
         }
         REQUIRE(headless.SettingsChanged);
-        CHECK(headless.Settings.Gravity > 20.0f);
+        CHECK(headless.Settings.WaveHeight > 2.5f);
+        CHECK(IsNear(headless.Settings.Gravity, headless.Defaults.Gravity));
         CHECK(IsNear(headless.Settings.TimeOfDayHours, headless.Defaults.TimeOfDayHours));
     }
 

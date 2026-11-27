@@ -26,9 +26,13 @@ namespace
         VK_FORMAT_D16_UNORM,
     };
 
-    /** What a depth format must allow: being drawn into, and being read by shaders (SceneBehind, MirrorView). */
+    /**
+     * What a depth format must allow: being drawn into, read by shaders (MirrorView), and copied (SceneBehind copies
+     * the frame's depth for the water).
+     */
     constexpr VkFormatFeatureFlags DepthFeatures =
-        VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+        VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 
     /** The part of an image a view of this format covers. */
     VkImageAspectFlags GetAspectOf(VkFormat format)

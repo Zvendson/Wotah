@@ -136,7 +136,7 @@ bool Wotah::App::Create()
     // (Create waits until it is there). The world drops the ball and makes the land under it solid.
     const VkFormat colorFormat = state.Swapchain.GetFormat();
     const VkFormat depthFormat = state.Renderer.GetDepthFormat();
-    if (!state.Scene.Create(m_device, colorFormat, state.Renderer, BeachLand, BeachSea) ||
+    if (!state.Scene.Create(m_device, colorFormat, state.Renderer, BeachLand) ||
         !state.BallLook.Create(m_device, BallFragmentShader, colorFormat, depthFormat, state.Scene.GetLighting()) ||
         !state.Ball.Create(m_device, MakeSphere(BeachBallRadius, BallSegments, BallRings)) || !state.World.Create())
     {
@@ -263,10 +263,11 @@ bool Wotah::App::DrawFrame(float frameSeconds)
     // inside the 0 to 180 degrees a camera takes, so it always fits.
     (void)camera.SetFieldOfView(glm::radians(m_settings.FieldOfViewDegrees));
 
-    // Shadow casters stand around the camera, wherever it goes; the ball stands where the physics has it.
+    // Shadow casters stand around the camera, wherever it goes; the ball stands where the physics has it, the waves
+    // where the ball sees them.
     m_lights.Shadows = m_settings.HasShadows ? ShadowArea{camera.GetPosition(), ShadowCasterRadius} : ShadowArea{};
     const std::array<MeshObject, 1> objects{{{&state.BallLook, &state.Ball, state.World.GetBallTransform()}}};
-    state.Scene.Draw(renderer, camera, m_lights, objects);
+    state.Scene.Draw(renderer, camera, m_lights, state.World.GetSea(), objects);
 
     // The UI last, so it lies over everything.
     return state.UiRenderer.Draw(renderer.GetCommandBuffer()) && renderer.EndFrame();

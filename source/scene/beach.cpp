@@ -29,10 +29,12 @@ namespace
 
     /**
      * Where the ball is dropped: from 4 units above the sea (its lowest point) 16 units out from the waterline, where
-     * the water is about a unit deep, in front of the start camera.
+     * the water is about a unit deep, in front of the start camera. It floats like a hollow rubber ball, a third of it
+     * under the water (BodySettings::Buoyancy).
      */
     constexpr glm::vec2 BallSpot{-16.0f, 0.0f};
     constexpr float     BallDropHeight = 4.0f;
+    constexpr float     BallBuoyancy   = 3.0f;
 
     /**
      * The surfaces, chosen by eye: sand grips and hardly bounces, the ball is like rubber. Two bodies in contact bounce
@@ -47,6 +49,13 @@ namespace
      */
     constexpr float BallSpinDamping = 1.0f;
     constexpr float BallMoveDamping = 0.2f;
+
+    /**
+     * The waves: rolling in from the open sea in the west-south-west onto the beach, 0.5 m high (significant height,
+     * trough to crest) as the scene starts: a calm day's swell. By eye.
+     */
+    constexpr glm::vec2 WaveHeading{1.0f, -0.2f};
+    constexpr float     StartWaveHeight = 0.5f;
 
     /** How bright the sun is as the scene starts (the Sun brightness setting); chosen by eye. */
     constexpr float SunIntensity = 0.9f;
@@ -94,6 +103,7 @@ Wotah::SceneSettings Wotah::MakeBeachSettings()
     settings.Gravity              = StandardGravity;
     settings.TimeSpeed            = RealTimeSpeed;
     settings.BallBounciness       = RubberSurface.Bounciness;
+    settings.WaveHeight           = StartWaveHeight;
     settings.FieldOfViewDegrees   = glm::degrees(Camera{}.GetFieldOfView()); // every camera's default
     return settings;
 }
@@ -102,8 +112,10 @@ bool Wotah::BeachWorld::Create()
 {
     Destroy(); // a second Create replaces the first
 
-    // The land collides where it is drawn, from the same formula, wherever the ball and the camera go (Step).
-    if (!m_physics.Create() || !m_solidLand.Create(m_physics, BeachLand, SandSurface))
+    // The land collides where it is drawn, from the same formula, wherever the ball and the camera go (Step); the sea
+    // lies still until the settings bring its waves.
+    m_sea = BeachSea;
+    if (!m_physics.Create() || !m_solidLand.Create(m_physics, BeachLand, SandSurface) || !m_physics.SetSea(m_sea))
     {
         return false;
     }
@@ -120,6 +132,7 @@ bool Wotah::BeachWorld::Create()
     ball.Surface     = RubberSurface;
     ball.SpinDamping = BallSpinDamping;
     ball.MoveDamping = BallMoveDamping;
+    ball.Buoyancy    = BallBuoyancy;
 
     const std::optional<BodyId> ballBody = m_physics.AddSphere(BeachBallRadius, ball);
     if (!ballBody)
@@ -139,6 +152,7 @@ void Wotah::BeachWorld::Destroy()
     m_physics.Destroy();
     m_ball      = BodyId{};
     m_ballStart = BodySettings{};
+    m_sea       = BeachSea;
 }
 
 void Wotah::BeachWorld::Step(float seconds, const glm::vec3& viewer)
@@ -165,7 +179,9 @@ bool Wotah::BeachWorld::ApplySettings(const SceneSettings& settings)
 {
     BodySurface ballSurface = RubberSurface;
     ballSurface.Bounciness  = settings.BallBounciness;
-    if (!m_physics.SetGravity(settings.Gravity) || !m_physics.SetSurface(m_ball, ballSurface))
+    m_sea.Waves             = MakeSeaWaves(settings.WaveHeight, WaveHeading);
+    if (!m_physics.SetGravity(settings.Gravity) || !m_physics.SetSurface(m_ball, ballSurface) ||
+        !m_physics.SetSea(m_sea))
     {
         Logger::Error("Could not put the settings into the physics");
         return false;
@@ -177,4 +193,12 @@ glm::mat4 Wotah::BeachWorld::GetBallTransform() const
 {
     // Always found once Create added the ball; identity before.
     return m_physics.FindTransform(m_ball).value_or(glm::mat4(1.0f));
+}
+
+Wotah::Sea Wotah::BeachWorld::GetSea() const
+{
+    // The waves at the world's clock as drawn, so the ball floats on the very surface that is drawn.
+    Sea sea     = m_sea;
+    sea.Seconds = m_physics.GetSeconds();
+    return sea;
 }

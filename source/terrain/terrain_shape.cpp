@@ -116,7 +116,7 @@ Wotah::TerrainShape Wotah::MakeFlatTerrainShape(float height)
     return flat;
 }
 
-float Wotah::GetTerrainHeight(const TerrainShape& shape, const glm::vec2& place, float smallest)
+Wotah::CoastPlace Wotah::GetCoastPlace(const TerrainShape& shape, const glm::vec2& place, float smallest)
 {
     const float     detail = std::max(smallest, shape.FinestWavelength);
     const glm::vec2 coast  = ToCoastFrame(place);
@@ -128,15 +128,30 @@ float Wotah::GetTerrainHeight(const TerrainShape& shape, const glm::vec2& place,
         glm::vec2(GetLayeredNoise(bendPlace, MixSeed(shape.Seed, BendXSalt), BendLayers, bendDetail),
                   GetLayeredNoise(bendPlace, MixSeed(shape.Seed, BendZSalt), BendLayers, bendDetail)) *
         shape.BendStrength;
-    const glm::vec2 bent = coast + bend;
+    CoastPlace frame;
+    frame.Bent = coast + bend;
 
     // The waterline wanders to and fro along the coast; how far seaward of it the place lies.
-    const glm::vec2 coastPlace(bent.x / shape.CoastWavelength, 0.0f);
+    const glm::vec2 coastPlace(frame.Bent.x / shape.CoastWavelength, 0.0f);
     const float     shore = shape.CoastWander * GetLayeredNoise(coastPlace, MixSeed(shape.Seed, CoastSalt), CoastLayers,
                                                                 detail / shape.CoastWavelength);
-    const float     seaward = bent.y - shore;
-    const float     inland  = -seaward;
-    float           height  = shape.SeaLevel + GetBeachProfile(shape, seaward);
+    frame.Seaward         = frame.Bent.y - shore;
+    return frame;
+}
+
+float Wotah::GetBeachDepth(const TerrainShape& shape, float seaward)
+{
+    return -GetBeachProfile(shape, seaward);
+}
+
+float Wotah::GetTerrainHeight(const TerrainShape& shape, const glm::vec2& place, float smallest)
+{
+    const float      detail  = std::max(smallest, shape.FinestWavelength);
+    const CoastPlace frame   = GetCoastPlace(shape, place, smallest);
+    const glm::vec2  bent    = frame.Bent;
+    const float      seaward = frame.Seaward;
+    const float      inland  = -seaward;
+    float            height  = shape.SeaLevel + GetBeachProfile(shape, seaward);
 
     // Dunes behind the beach, giving way to the hills inland: long ridges along the coast, rounded on top (a crest from
     // 1 - |noise|, squared).

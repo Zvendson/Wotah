@@ -8,6 +8,7 @@
 #include "input/input_event.hpp"
 #include "platform/window.hpp"
 #include "render/device.hpp"
+#include "water/sea.hpp"
 
 #include <glm/geometric.hpp>
 #include <glm/vec3.hpp>
@@ -16,6 +17,17 @@
 
 namespace Wotah::Testing
 {
+    /**
+     * Still water at level: a sea without waves or floor. Sea{level} says the same, but leaves fields out, which GCC
+     * and Clang warn about (-Wmissing-field-initializers).
+     */
+    constexpr Sea MakeStillSea(float level)
+    {
+        Sea sea;
+        sea.Level = level;
+        return sea;
+    }
+
     /** How far apart two floats may be and still count as equal: well below anything a test measures. */
     inline constexpr float Tolerance = 1.0e-4f;
 

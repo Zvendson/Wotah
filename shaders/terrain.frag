@@ -8,7 +8,9 @@
 // hexagons each shifted (and turned, where the pattern allows) at random and blended where they meet, so no repeat
 // shows (Mikkelsen 2022, "Practical Real-Time Hex-Tiling"). Where layers meet, whichever stands higher in its texture
 // shows (sand settles between grass blades). Broad patches of color on top keep large areas from looking alike. Wet
-// sand shines a little. Lit like everything else, fading into the haze far away.
+// sand shines a little: where the sea's swash runs up and back (sea_waves.glsl), the sand it left is wet and dries over
+// half a minute, and where the last run-ups stopped they left a line of foam; on a still sea a band at the waterline
+// is wet. Lit like everything else, fading into the haze far away.
 //
 // shortcut: the layers' weights come from rules; painted weights (a paint mode) would adjust GetLayerWeights.
 
@@ -17,6 +19,7 @@
 #include "noise.glsl"
 #include "terrain_shape.glsl"
 #include "ground.glsl"
+#include "sea_waves.glsl"
 
 layout(location = 0) in vec3  inWorldNormal;
 layout(location = 3) in float inViewDepth;
@@ -54,10 +57,26 @@ const float PatchEdge       = 0.1;
 // The patch noise's own salt.
 const uint PatchSalt = 0x51ED270Bu;
 
+// The swash's foam left on the sand: as the water's lace, but finer and sparser, by eye.
+const vec3  TraceColor      = vec3(0.92, 0.94, 0.93);
+const float TraceWavelength = 0.5;
+const float TraceCover      = 0.75;
+const uint  TraceSalt       = 0xBB67AE85u;
+
+// How wet the sand is at position: the swash's (sea_waves.glsl) when the sea has surf, else a band at the waterline;
+// never on top of sand seen through the water (it is seen through the water, not wet on top). Out: the swash's foam.
+float GetWetness(vec3 position, out float trace)
+{
+    trace       = 0.0;
+    float above = position.y - terrainShape.sea.x;
+    float wet   = HasSurf() ? GetSandWetness(position.xz, trace) : 1.0 - smoothstep(WetTop - WetFade, WetTop, above);
+    return wet * smoothstep(SubmergedDry - SubmergedFade, SubmergedDry, above);
+}
+
 // How much of the layers there is at a point: rock where it is steep, grass on what rock leaves, sand on the rest,
-// split into wet (in a band at the waterline) and dry (above it, and the sea floor) by height; they add up to 1.
-// footprint is the ground one pixel covers, in metres: detail finer than that is left out, so it does not flicker.
-vec4 GetLayerWeights(vec3 position, vec3 normal, float footprint)
+// split into wet (by wet, GetWetness) and dry; they add up to 1. footprint is the ground one pixel covers, in metres:
+// detail finer than that is left out, so it does not flicker.
+vec4 GetLayerWeights(vec3 position, vec3 normal, float footprint, float wet)
 {
     float above = position.y - terrainShape.sea.x;
     float steep = 1.0 - normal.y;
@@ -70,8 +89,6 @@ vec4 GetLayerWeights(vec3 position, vec3 normal, float footprint)
                   smoothstep(GrassLine - GrassLineFade, GrassLine + GrassLineFade, above) *
                   (1.0 - smoothstep(GrassSteepStart, GrassSteepEnd, steep));
 
-    float wet  = (1.0 - smoothstep(WetTop - WetFade, WetTop, above)) *
-                smoothstep(SubmergedDry - SubmergedFade, SubmergedDry, above);
     float sand = (1.0 - rock) * (1.0 - grass);
     return vec4(sand * wet, sand * (1.0 - wet), (1.0 - rock) * grass, rock);
 }
@@ -219,7 +236,9 @@ void main()
     vec3  normal    = normalize(inWorldNormal);
 
     // Every layer that is there, from its textures, blended by weight and height; each tinted by the broad patches.
-    vec4   weights = GetLayerWeights(inWorldPosition, normal, footprint);
+    float  trace;
+    float  wet     = GetWetness(inWorldPosition, trace);
+    vec4   weights = GetLayerWeights(inWorldPosition, normal, footprint, wet);
     Ground layers[GroundLayerCount];
     vec4   heights = vec4(0.0);
     for (int layer = 0; layer < GroundLayerCount; ++layer)
@@ -247,6 +266,12 @@ void main()
         tilt += blend[layer] * Relief[layer] * layers[layer].slope;
         roughness += blend[layer] * layers[layer].roughness;
     }
+
+    // The swash's foam on the sand: thin bubbly threads, a faint even share where they are finer than the pixel.
+    float threads = pow(1.0 - min(abs(GetLayeredNoise(place / TraceWavelength, TraceSalt, 3,
+                                                      2.0 * footprint / TraceWavelength)) * 2.0, 1.0), 4.0);
+    float lace    = mix(0.3, threads, GetLayerShare(TraceWavelength, 2.0 * footprint));
+    color         = mix(color, TraceColor, TraceCover * trace * lace * blend.x);
 
     // The relief tilts the normal against its slope, as a bump in the ground would; wet sand's film shines.
     vec3 shading       = normalize(normal - vec3(tilt.x, 0.0, tilt.y));

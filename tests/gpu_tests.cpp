@@ -21,6 +21,7 @@
 #include "render/renderer.hpp"
 #include "render/scene_behind.hpp"
 #include "render/scene_renderer.hpp"
+#include "render/sea_state.hpp"
 #include "render/shadow_maps.hpp"
 #include "render/sky.hpp"
 #include "render/sky_lights.hpp"
@@ -28,7 +29,6 @@
 #include "render/terrain_renderer.hpp"
 #include "render/ui_renderer.hpp"
 #include "render/vulkan_utils.hpp"
-#include "render/water.hpp"
 #include "render/water_renderer.hpp"
 #include "scene/beach.hpp"
 #include "terrain/terrain_shape.hpp"
@@ -37,6 +37,7 @@
 #include "ui/hints_window.hpp"
 #include "ui/stats_window.hpp"
 #include "ui/user_interface.hpp"
+#include "water/sea.hpp"
 
 #include <doctest/doctest.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -91,6 +92,18 @@ namespace
     constexpr uint32_t TerrainProbeFragmentShader[] = {
 #include "terrain_probe.frag.inc"
     };
+    constexpr uint32_t SeaProbeFragmentShader[] = {
+#include "sea_probe.frag.inc"
+    };
+
+    /** What sea_probe.frag gets: which number of the waves to write (x). */
+    struct SeaProbePushConstants
+    {
+        std::array<uint32_t, 4> Part{};
+    };
+
+    constexpr std::array<VkPushConstantRange, 1> SeaProbeRanges{
+        {{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SeaProbePushConstants)}}};
     constexpr uint32_t WaterTestVertexShader[] = {
 #include "water_test.vert.inc"
     };
@@ -103,7 +116,7 @@ namespace
     constexpr uint32_t GroundCells = 128;
 
     /** The tests' sea: 3 units above that ground, so a water test sees the ground 3 units down. */
-    constexpr Wotah::Sea TestSea{3.0f};
+    constexpr Wotah::Sea TestSea = Wotah::Testing::MakeStillSea(3.0f);
 
     /** Where the land's shadow casters can stand, as in the program (app.cpp, ShadowCasterRadius). */
     constexpr float LandShadowReach = 150.0f;
@@ -140,6 +153,7 @@ namespace
         bool                HasGround         = false;
         bool                HasLand           = false;
         bool                IsLandProbe       = false;
+        int                 SeaProbePart      = -1;
         Wotah::TerrainShape Land              = Wotah::MakeFlatTerrainShape(0.0f);
         bool                HasShapes         = true;
         bool                HasWater          = false;
@@ -165,12 +179,14 @@ namespace
     struct Scene
     {
         Wotah::Lighting        Lighting;
+        Wotah::SeaState        SeaState;
         Wotah::Sky             Sky;
         Wotah::MeshPipelines   GroundLook;
         Wotah::MeshPipelines   CubeLook;
         Wotah::MeshPipelines   BallLook;
         Wotah::Pipeline        ShadowPipeline;
         Wotah::Pipeline        LandProbePipeline;
+        Wotah::Pipeline        SeaProbePipeline;
         Wotah::Mesh            Ground;
         Wotah::Mesh            Cube;
         Wotah::Mesh            Ball;
@@ -186,7 +202,7 @@ namespace
                                   const Wotah::MirrorView&   mirror,
                                   const Wotah::TerrainShape& landShape = Wotah::MakeFlatTerrainShape(0.0f))
         {
-            if (!Lighting.Create(device) || !Lighting.Update(lights, Wotah::Camera{}))
+            if (!Lighting.Create(device) || !Lighting.Update(lights, Wotah::Camera{}) || !SeaState.Create(device))
             {
                 return false;
             }
@@ -199,8 +215,12 @@ namespace
                 !BallLook.Create(device, BallFragmentShader, colorFormat, depthFormat, Lighting) ||
                 !Cube.Create(device, Wotah::MakeCube()) ||
                 !Ball.Create(device, Wotah::MakeSphere(BallRadius, BallSegments, BallRings)) ||
-                !Land.Create(device, colorFormat, depthFormat, Lighting) || !Land.SetShape(landShape) ||
-                !Sea.Create(device, colorFormat, depthFormat, Lighting, behind, mirror))
+                !Land.Create(device, colorFormat, depthFormat, Lighting, SeaState) || !Land.SetShape(landShape))
+            {
+                return false;
+            }
+            SeaState.SetFloor(Land.GetShapeBuffer());
+            if (!Sea.Create(device, colorFormat, depthFormat, Lighting, behind, mirror, SeaState))
             {
                 return false;
             }
@@ -210,14 +230,27 @@ namespace
             Wotah::PipelineSettings                    probe =
                 Wotah::MakeFullscreenSettings(TerrainProbeFragmentShader, colorFormat, depthFormat);
             probe.DescriptorSetLayouts = probeLayouts;
-            return LandProbePipeline.Create(device, probe);
+
+            // The sea's probe the same way, reading the sea's set (its waves and floor) at set 3, after the water's
+            // other sets.
+            const std::array<VkDescriptorSetLayout, 4> seaProbeLayouts{Lighting.GetSetLayout(), behind.GetSetLayout(),
+                                                                       mirror.GetSetLayout(), SeaState.GetSetLayout()};
+            Wotah::PipelineSettings                    seaProbe =
+                Wotah::MakeFullscreenSettings(SeaProbeFragmentShader, colorFormat, depthFormat);
+            seaProbe.DescriptorSetLayouts = seaProbeLayouts;
+            seaProbe.PushConstants        = SeaProbeRanges;
+            return LandProbePipeline.Create(device, probe) && SeaProbePipeline.Create(device, seaProbe);
         }
 
-        /** Moves land and sea around the viewer, as the scene renderer does every frame. */
-        void FollowViewer(const glm::vec3& viewer)
+        /**
+         * Moves land and sea around the viewer and puts the sea's waves on the GPU, as the scene renderer does every
+         * frame; the sea's floor must be the land's shape, if it has one.
+         */
+        void FollowViewer(const glm::vec3& viewer, const Wotah::Sea& sea)
         {
             Land.FollowViewer(viewer);
             Sea.FollowViewer(viewer);
+            REQUIRE(SeaState.Update(sea));
         }
 
         /**
@@ -234,13 +267,24 @@ namespace
                 vkCmdDraw(commands, 3, 1, 0, 0); // fullscreen.vert's one triangle
                 return;
             }
+            if (what.SeaProbePart >= 0)
+            {
+                vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, SeaProbePipeline.GetHandle());
+                SeaState.Bind(commands, SeaProbePipeline.GetLayout());
+                SeaProbePushConstants part;
+                part.Part[0] = static_cast<uint32_t>(what.SeaProbePart);
+                vkCmdPushConstants(commands, SeaProbePipeline.GetLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                   sizeof(part), &part);
+                vkCmdDraw(commands, 3, 1, 0, 0);
+                return;
+            }
             if (what.HasSky && !what.Lights.DirectionalLights.empty())
             {
                 Sky.Draw(commands, viewProjection, what.Lights.DirectionalLights.front(), what.Moon, what.SkySeconds);
             }
             if (what.HasLand)
             {
-                Land.Draw(commands, viewProjection, Lighting);
+                Land.Draw(commands, viewProjection, Lighting, SeaState);
             }
             if (what.HasGround && !what.IsGroundLast)
             {
@@ -262,7 +306,7 @@ namespace
         {
             if (what.HasWater)
             {
-                Sea.Draw(commands, viewProjection, Lighting, behind, mirror, what.Sea);
+                Sea.Draw(commands, viewProjection, Lighting, behind, mirror, SeaState, what.Sea);
             }
         }
 
@@ -286,7 +330,7 @@ namespace
             }
             if (what.HasLand)
             {
-                Land.DrawMirrored(commands, *mirrored, Lighting);
+                Land.DrawMirrored(commands, *mirrored, Lighting, SeaState);
             }
             if (what.HasShapes)
             {
@@ -378,11 +422,40 @@ namespace
     }
 
     /**
+     * The view depth (distance along the camera's view) a depth image's texel holds, from its bytes in the depth format
+     * (FindDepthFormat's: 32-bit float, 24 bits in 32, or 16 bits), as glm's perspective with depth 0 to 1 wrote it.
+     */
+    float ReadViewDepth(const std::byte* texel, VkFormat format, const Wotah::Camera& camera)
+    {
+        float depth = 1.0f;
+        if (format == VK_FORMAT_D32_SFLOAT)
+        {
+            std::memcpy(&depth, texel, sizeof(depth));
+        }
+        else if (format == VK_FORMAT_X8_D24_UNORM_PACK32)
+        {
+            uint32_t bits = 0;
+            std::memcpy(&bits, texel, sizeof(bits));
+            depth = static_cast<float>(bits & 0xFFFFFFu) / static_cast<float>(0xFFFFFFu);
+        }
+        else
+        {
+            uint16_t bits = 0;
+            std::memcpy(&bits, texel, sizeof(bits));
+            depth = static_cast<float>(bits) / 65535.0f;
+        }
+        const float near = camera.GetNearDistance();
+        const float far  = camera.GetFarDistance();
+        return near * far / (far - depth * (far - near));
+    }
+
+    /**
      * Draws the program's scene (cube and ball, with a depth image) through the camera into a hidden 600 x 600 RGBA8
-     * image, exactly with the program's settings, and returns its pixels (4 bytes each, rows top to bottom).
+     * image, exactly with the program's settings, and returns its pixels (4 bytes each, rows top to bottom). With
+     * viewDepths, also every pixel's view depth once all is drawn (the water's own, as it writes its depth).
      */
     std::vector<uint8_t> DrawSceneOffscreen(const Wotah::Device& device, const Wotah::Camera& camera,
-                                            const OffscreenScene& what)
+                                            const OffscreenScene& what, std::vector<float>* viewDepths = nullptr)
     {
         constexpr VkExtent2D Size        = OffscreenSize;
         constexpr VkFormat   ColorFormat = OffscreenColorFormat;
@@ -395,7 +468,7 @@ namespace
         REQUIRE(depthFormat.has_value());
         Wotah::Image depth;
         REQUIRE(depth.Create(device, Size, *depthFormat,
-                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT));
         Wotah::SceneBehind behind;
         REQUIRE(behind.Create(device, depth, ColorFormat));
         Wotah::MirrorView mirror;
@@ -408,7 +481,7 @@ namespace
         Scene scene;
         REQUIRE(scene.Create(device, ColorFormat, *depthFormat, what.Lights, behind, mirror, what.Land));
         REQUIRE(scene.Lighting.Update(what.Lights, camera)); // the shadow cascades follow the camera
-        scene.FollowViewer(camera.GetPosition());
+        scene.FollowViewer(camera.GetPosition(), what.Sea);
 
         // ---- Record: clear, draw, copy to the buffer ----
         Wotah::OneTimeCommands recording;
@@ -446,14 +519,13 @@ namespace
         Wotah::RecordBeginDrawing(commands, Size, colorTarget, depthTarget);
         scene.Record(commands, camera.GetViewProjection(), what);
 
-        // The see-through part, as Renderer::BeginSeeThrough makes it: the same images, the depth only read now, the
-        // colors drawn so far copied for the water to read.
+        // The see-through part, as Renderer::BeginSeeThrough makes it: the same images, the depth and the colors drawn
+        // so far copied for the water to read, the depth tested and written on.
         vkCmdEndRendering(commands);
         behind.Record(commands, color.GetHandle(), depth);
         colorTarget.IsCleared = false;
-        depthTarget.Layout    = Wotah::ReadableDepthLayout;
         depthTarget.IsCleared = false;
-        depthTarget.IsKept    = false;
+        depthTarget.IsKept    = viewDepths != nullptr;
         Wotah::RecordBeginDrawing(commands, Size, colorTarget, depthTarget);
         scene.RecordSeeThrough(commands, camera.GetViewProjection(), what, behind, mirror);
         if (what.Ui != nullptr)
@@ -475,6 +547,31 @@ namespace
         region.imageExtent      = {Size.width, Size.height, 1};
         vkCmdCopyImageToBuffer(commands, color.GetHandle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.GetHandle(),
                                1, &region);
+
+        // The depth too, if asked for: after everything drawn into it.
+        const VkDeviceSize depthTexelBytes = *depthFormat == VK_FORMAT_D16_UNORM ? 2 : 4;
+        const VkDeviceSize depthBytes      = VkDeviceSize{Size.width} * Size.height * depthTexelBytes;
+        Wotah::Buffer      depthReadback;
+        if (viewDepths != nullptr)
+        {
+            REQUIRE(depthReadback.Create(device, depthBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                         Wotah::BufferMemory::GpuToCpu));
+            Wotah::LayoutChange depthToCopy;
+            depthToCopy.From         = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthToCopy.To           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            depthToCopy.SourceStage  = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+            depthToCopy.SourceAccess = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            depthToCopy.TargetStage  = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            depthToCopy.TargetAccess = VK_ACCESS_TRANSFER_READ_BIT;
+            depthToCopy.Aspect       = depth.GetAspect();
+            Wotah::RecordLayoutChange(commands, depth.GetHandle(), depthToCopy);
+            VkBufferImageCopy depthRegion{};
+            depthRegion.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+            depthRegion.imageExtent      = {Size.width, Size.height, 1};
+            vkCmdCopyImageToBuffer(commands, depth.GetHandle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   depthReadback.GetHandle(), 1, &depthRegion);
+        }
+
         VkMemoryBarrier toHost = Wotah::MakeVulkanInfo<VkMemoryBarrier>(VK_STRUCTURE_TYPE_MEMORY_BARRIER);
         toHost.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
         toHost.dstAccessMask   = VK_ACCESS_HOST_READ_BIT;
@@ -484,6 +581,16 @@ namespace
 
         std::vector<uint8_t> pixels(static_cast<std::size_t>(ByteCount));
         REQUIRE(readback.Read(std::as_writable_bytes(std::span(pixels))));
+        if (viewDepths != nullptr)
+        {
+            std::vector<std::byte> texels(static_cast<std::size_t>(depthBytes));
+            REQUIRE(depthReadback.Read(texels));
+            viewDepths->resize(static_cast<std::size_t>(Size.width) * Size.height);
+            for (std::size_t index = 0; index < viewDepths->size(); ++index)
+            {
+                (*viewDepths)[index] = ReadViewDepth(texels.data() + index * depthTexelBytes, *depthFormat, camera);
+            }
+        }
         return pixels;
     }
 
@@ -1027,17 +1134,21 @@ TEST_SUITE("gpu")
         {
             Wotah::Image depth;
             REQUIRE(depth.Create(gpu.Device, {64, 64}, *depthFormat,
-                                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+                                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT));
             Wotah::SceneBehind behind;
             REQUIRE(behind.Create(gpu.Device, depth, colorFormat));
             Wotah::MirrorView mirror;
             REQUIRE(mirror.Create(gpu.Device, {64, 64}, colorFormat, *depthFormat));
             CHECK(mirror.GetExtent().width == 32); // MirrorScale of the frame
-            Wotah::WaterRenderer sea;
-            CHECK(sea.Create(gpu.Device, colorFormat, *depthFormat, lighting, behind, mirror));
+            Wotah::SeaState seaState;
+            REQUIRE(seaState.Create(gpu.Device));
+            CHECK(seaState.GetSetLayout() != VK_NULL_HANDLE);
             Wotah::TerrainRenderer land;
-            CHECK(land.Create(gpu.Device, colorFormat, *depthFormat, lighting));
+            CHECK(land.Create(gpu.Device, colorFormat, *depthFormat, lighting, seaState));
             CHECK(land.GetShapeSetLayout() != VK_NULL_HANDLE);
+            seaState.SetFloor(land.GetShapeBuffer()); // the land's shape is the sea's floor
+            Wotah::WaterRenderer sea;
+            CHECK(sea.Create(gpu.Device, colorFormat, *depthFormat, lighting, behind, mirror, seaState));
             CHECK(land.SetShape(Wotah::TerrainShape{}));
             Wotah::TerrainShape broken;
             broken.HillWavelength = 0.0f;
@@ -1158,7 +1269,7 @@ TEST_SUITE("gpu")
             Wotah::SceneRenderer neverCreated; // destroyed without Create: safe
         }
         Wotah::SceneRenderer scene;
-        REQUIRE(scene.Create(gpu.Device, swapchain.GetFormat(), renderer, Wotah::BeachLand, Wotah::BeachSea));
+        REQUIRE(scene.Create(gpu.Device, swapchain.GetFormat(), renderer, Wotah::BeachLand));
         Wotah::MeshPipelines ballLook;
         REQUIRE(ballLook.Create(gpu.Device, BallFragmentShader, swapchain.GetFormat(), renderer.GetDepthFormat(),
                                 scene.GetLighting()));
@@ -1174,6 +1285,10 @@ TEST_SUITE("gpu")
         const glm::mat4 place =
             glm::translate(glm::mat4(1.0f), glm::vec3(-16.0f, floor + Wotah::BeachBallRadius, 0.0f));
         const std::array<Wotah::MeshObject, 1> objects{{{&ballLook, &ball, place}}};
+
+        // The beach's sea with waves, moving on a little every frame.
+        Wotah::Sea sea = Wotah::BeachSea;
+        sea.Waves      = Wotah::MakeSeaWaves(0.5f, {1.0f, 0.0f});
 
         // Every other frame from under the water, which adds the underwater pass and leaves the mirror empty.
         const Wotah::Camera above      = Wotah::MakeBeachCamera();
@@ -1201,7 +1316,8 @@ TEST_SUITE("gpu")
             const VkExtent2D extent = swapchain.GetExtent();
             (void)camera.SetAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
             lights.Shadows = {camera.GetPosition(), LandShadowReach};
-            scene.Draw(renderer, camera, lights, objects);
+            sea.Seconds    = 0.1 * frame;
+            scene.Draw(renderer, camera, lights, sea, objects);
             REQUIRE(renderer.EndFrame());
             ++drawn;
         }
@@ -1744,6 +1860,151 @@ TEST_SUITE("gpu")
         }
     }
 
+    TEST_CASE("the sea on the GPU is the CPU's, to float rounding: wind waves, surf, swash and wet sand, sea to land")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+
+        // sea_probe.frag writes each number of the sea at a grid of places 300 units across around the waterline
+        // (sea_waves.glsl with every wave kept, the floor's depth felt): the same as water/sea.cpp within a millimetre,
+        // on high waves at a late hour (their phases a long way round). Where the swash's front or a run-up's edge
+        // falls between the two's rounding, one says covered (or wet) and the other not: a few places may differ there.
+        OffscreenScene probe;
+        probe.Land = Wotah::TerrainShape{};
+        probe.Sea  = Wotah::Sea{probe.Land.SeaLevel, Wotah::MakeSeaWaves(1.5f, {1.0f, -0.2f}), 86400.5, probe.Land};
+        for (int part = 0; part < 6; ++part)
+        {
+            CAPTURE(part);
+            probe.SeaProbePart                = part;
+            const std::vector<uint8_t> pixels = DrawSceneOffscreen(gpu.Device, Wotah::Camera{}, probe);
+            int                        apart  = 0;
+            int                        count  = 0;
+            float                      spread = 0.0f;
+            for (uint32_t row = 0; row < OffscreenSize.height; row += 7)
+            {
+                for (uint32_t column = 0; column < OffscreenSize.width; column += 7)
+                {
+                    const glm::vec2 place =
+                        ProbeCorner + glm::vec2(static_cast<float>(column), static_cast<float>(row)) * ProbeSpacing;
+                    float onCpu = 0.0f;
+                    if (part < 3)
+                    {
+                        onCpu = Wotah::GetWaveOffset(probe.Sea, place)[part];
+                    }
+                    else if (part == 3)
+                    {
+                        onCpu = Wotah::GetShoalShare(probe.Sea, place);
+                    }
+                    else if (part == 4)
+                    {
+                        const float sand = Wotah::GetTerrainHeight(probe.Land, place);
+                        onCpu            = Wotah::GetSurfaceHeight(probe.Sea, place, sand, 0.0f) - probe.Sea.Level;
+                    }
+                    else
+                    {
+                        float trace = 0.0f;
+                        onCpu       = Wotah::GetSandWetness(probe.Sea, place, trace);
+                    }
+                    apart += std::abs(ReadProbedHeight(pixels, column, row) - onCpu) > 1.0e-3f ? 1 : 0;
+                    ++count;
+                    spread = std::max(spread, std::abs(onCpu));
+                }
+            }
+            CAPTURE(apart);
+            CAPTURE(count);
+            CAPTURE(spread);
+            CHECK(apart * 500 < count); // under 0.2 %
+            CHECK(spread > 0.1f);       // the numbers compared are real waves, not zeros
+        }
+    }
+
+    TEST_CASE("a wave's crest hides the water behind it: every pixel of the sea is the nearest water along its view")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        OffscreenScene sea;
+        sea.Lights    = MakeDayLight();
+        sea.HasWater  = true;
+        sea.HasShapes = false;
+        sea.Sea       = Wotah::Sea{0.0f, Wotah::MakeSeaWaves(2.0f, {1.0f, -0.2f}), 10.0, std::nullopt};
+
+        // Low over high waves, looking along them: farther slopes lie behind nearer crests on the picture. Each pixel
+        // of the middle column below the horizon must hold the depth of the first water its view meets (walked along
+        // the view on the CPU's surface, water/sea.hpp), out to 60 m, where the grid still follows the waves closely.
+        // Once the water wrote no depth, so whichever water was drawn last showed, the crests cut by the slopes behind
+        // them.
+        const glm::vec3     eye{0.0f, 2.5f, 0.0f};
+        const Wotah::Camera camera = MakeLandCamera(eye, eye + glm::vec3(-1.0f, -0.08f, 0.1f));
+        std::vector<float>  viewDepths;
+        (void)DrawSceneOffscreen(gpu.Device, camera, sea, &viewDepths);
+
+        const glm::mat4 toWorld  = glm::inverse(camera.GetViewProjection());
+        const glm::vec3 forward  = glm::normalize(camera.GetTarget() - eye);
+        const uint32_t  column   = OffscreenSize.width / 2;
+        int             compared = 0;
+        int             wrong    = 0;
+        for (uint32_t row = 0; row < OffscreenSize.height; ++row)
+        {
+            const glm::vec2 onPicture{(static_cast<float>(column) + 0.5f) / static_cast<float>(OffscreenSize.width),
+                                      (static_cast<float>(row) + 0.5f) / static_cast<float>(OffscreenSize.height)};
+            const glm::vec4 far = toWorld * glm::vec4(onPicture * 2.0f - 1.0f, 1.0f, 1.0f);
+            const glm::vec3 ray = glm::normalize(glm::vec3(far) / far.w - eye);
+
+            // The first place along the view under the surface, to a centimetre.
+            float along = -1.0f;
+            for (float step = 0.1f; step < 60.0f; step += 0.05f)
+            {
+                const glm::vec3 point = eye + ray * step;
+                if (point.y < Wotah::FindWaterHeight(sea.Sea, point.x, point.z).value_or(0.0f))
+                {
+                    along = step;
+                    break;
+                }
+            }
+            if (along < 0.0f)
+            {
+                continue; // sky, or water farther than 60 m
+            }
+            const float expected = along * glm::dot(ray, forward);
+            const float drawn    = viewDepths[static_cast<std::size_t>(row) * OffscreenSize.width + column];
+            ++compared;
+            wrong += std::abs(drawn - expected) > 0.05f * expected + 0.1f ? 1 : 0;
+        }
+        CAPTURE(compared);
+        CAPTURE(wrong);
+        CHECK(compared > 100);
+        CHECK(wrong * 20 < compared); // all but where the grid's straight edges cut a crest's curve
+    }
+
+    TEST_CASE("the wavy sea reaches the horizon without cracks where its levels meet")
+    {
+        HiddenGpu gpu;
+        REQUIRE(gpu.Create());
+        OffscreenScene sea;
+        sea.Lights    = MakeOldLight();
+        sea.HasWater  = true;
+        sea.HasShapes = false;
+        sea.Sea       = Wotah::Sea{0.0f, Wotah::MakeSeaWaves(2.0f, {1.0f, 0.3f}), 3.0, std::nullopt};
+
+        // As for the land: straight down from 400 units, four levels' edges cross the picture, and along the water
+        // from 30 units up, its lower part is water to the horizon; no pixel may show the background through a crack
+        // between levels that moved their water differently.
+        for (const float x : {0.0f, 1.1f, 5.3f, -9.9f})
+        {
+            CAPTURE(x);
+            const glm::vec3            above{x, 400.0f, 0.7f * x};
+            const std::vector<uint8_t> down =
+                DrawSceneOffscreen(gpu.Device, MakeLandCamera(above, above - glm::vec3(-0.01f, 400.0f, 0.0f)), sea);
+            CHECK(CountPixels(down, 0x1A, 0x1A, 0x1A) == 0);
+
+            const glm::vec3            low{x, 30.0f, -60.0f + x};
+            const std::vector<uint8_t> along =
+                DrawSceneOffscreen(gpu.Device, MakeLandCamera(low, low + glm::vec3(0.0f, -0.15f, -1.0f)), sea);
+            const std::vector<uint8_t> lowerPart(along.begin() + (along.size() * 6 / 10 / 4) * 4, along.end());
+            CHECK(CountPixels(lowerPart, 0x1A, 0x1A, 0x1A) == 0);
+        }
+    }
+
     TEST_CASE("the land reaches the horizon without cracks where its levels meet, wherever the viewer stands")
     {
         HiddenGpu gpu;
@@ -1785,7 +2046,7 @@ TEST_SUITE("gpu")
         beach.HasWater  = true;
         beach.HasShapes = false;
         beach.Land      = Wotah::TerrainShape{};
-        beach.Sea       = Wotah::Sea{beach.Land.SeaLevel};
+        beach.Sea       = Wotah::Testing::MakeStillSea(beach.Land.SeaLevel);
 
         // Standing on the beach looking east (inland), across the dry sand to the dunes and hills: plenty of sand
         // (warm: red well above blue) and some green.
@@ -1829,7 +2090,7 @@ TEST_SUITE("gpu")
         beach.HasWater     = true;
         beach.HasShapes    = false;
         beach.Land         = Wotah::TerrainShape{};
-        beach.Sea          = Wotah::Sea{beach.Land.SeaLevel};
+        beach.Sea          = Wotah::Testing::MakeStillSea(beach.Land.SeaLevel);
         OffscreenScene dry = beach;
         dry.HasWater       = false;
 
@@ -1884,7 +2145,7 @@ TEST_SUITE("gpu")
         withShapes.HasGround                = true;
         withShapes.HasWater                 = true;
         withShapes.HasShapes                = true;
-        withShapes.Sea                      = Wotah::Sea{1.0f};
+        withShapes.Sea                      = Wotah::Testing::MakeStillSea(1.0f);
         OffscreenScene noShapes             = withShapes;
         noShapes.HasShapes                  = false;
 
@@ -1907,7 +2168,7 @@ TEST_SUITE("gpu")
         // goes on away from the camera; the cube lies nearer and is not on it, though the bent view lands on it on the
         // picture (an orange ghost showed there once, a few rows high). Looking straight through instead, the water
         // there is a little deeper and less red than the bent view without the cube; never redder.
-        withShapes.Sea                      = Wotah::Sea{1.05f};
+        withShapes.Sea                      = Wotah::Testing::MakeStillSea(1.05f);
         noShapes.Sea                        = withShapes.Sea;
         withShapes.BallPlace                = {40.0f, -10.0f, 40.0f};
         const float                sea      = withShapes.Sea.Level;
@@ -1940,7 +2201,7 @@ TEST_SUITE("gpu")
         beach.HasWater  = true;
         beach.HasShapes = true;
         beach.Land      = Wotah::TerrainShape{};
-        beach.Sea       = Wotah::Sea{beach.Land.SeaLevel};
+        beach.Sea       = Wotah::Testing::MakeStillSea(beach.Land.SeaLevel);
 
         // The ball resting on the sea floor some 16 units out, about a metre deep, nearly all of it under the water;
         // the camera a little over the water close to it. Its middle shows through the water as the blue ball, not as
@@ -1990,7 +2251,7 @@ TEST_SUITE("gpu")
         beach.HasWater  = true;
         beach.HasShapes = false;
         beach.Land      = Wotah::TerrainShape{};
-        beach.Sea       = Wotah::Sea{beach.Land.SeaLevel};
+        beach.Sea       = Wotah::Testing::MakeStillSea(beach.Land.SeaLevel);
 
         // From 70 units up over the land, looking out across the sea from its shallows to where it is some 15 units
         // deep: down the picture the water's green changes smoothly, up and down by little more than its change from

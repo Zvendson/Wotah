@@ -124,11 +124,13 @@ set(WOTAH_MAX_DIRECTIONAL_LIGHTS 8)
 # How many shadow maps (cascades) each light has, nearest stretch of the view first: for C++ (render/shadow_maps.hpp)
 # and the shaders (shaders/lighting.glsl).
 set(WOTAH_SHADOW_CASCADES 4)
+# The most waves the sea has at once: for C++ (water/sea.hpp) and the shaders (shaders/sea_waves.glsl).
+set(WOTAH_MAX_SEA_WAVES 8)
 set(WOTAH_SHADER_INCLUDES ${WOTAH_SHADER_INCLUDE_DIR}/atmosphere.glsl ${WOTAH_SHADER_INCLUDE_DIR}/lighting.glsl
     ${WOTAH_SHADER_INCLUDE_DIR}/sky.glsl ${WOTAH_SHADER_INCLUDE_DIR}/noise.glsl
     ${WOTAH_SHADER_INCLUDE_DIR}/clipmap.glsl ${WOTAH_SHADER_INCLUDE_DIR}/terrain_shape.glsl
     ${WOTAH_SHADER_INCLUDE_DIR}/tile_noise.glsl ${WOTAH_SHADER_INCLUDE_DIR}/ground.glsl
-    ${WOTAH_SHADER_INCLUDE_DIR}/water.glsl)
+    ${WOTAH_SHADER_INCLUDE_DIR}/water.glsl ${WOTAH_SHADER_INCLUDE_DIR}/sea_waves.glsl)
 function(wotah_compile_shaders out_var output_dir)
     set(outputs "")
     foreach(source ${ARGN})
@@ -139,7 +141,8 @@ function(wotah_compile_shaders out_var output_dir)
             COMMAND ${CMAKE_COMMAND} -E make_directory ${output_dir}
             COMMAND ${Vulkan_GLSLC_EXECUTABLE} -mfmt=num -I ${WOTAH_SHADER_INCLUDE_DIR}
                     -DWOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS}
-                    -DWOTAH_SHADOW_CASCADES=${WOTAH_SHADOW_CASCADES} ${source} -o ${output}
+                    -DWOTAH_SHADOW_CASCADES=${WOTAH_SHADOW_CASCADES} -DWOTAH_MAX_SEA_WAVES=${WOTAH_MAX_SEA_WAVES}
+                    ${source} -o ${output}
             DEPENDS ${source} ${WOTAH_SHADER_INCLUDES}
             COMMENT "Compiling ${name}")
         list(APPEND outputs ${output})
@@ -219,6 +222,8 @@ add_library(wotah STATIC
     source/render/scene_behind.cpp
     source/render/scene_renderer.hpp
     source/render/scene_renderer.cpp
+    source/render/sea_state.hpp
+    source/render/sea_state.cpp
     source/render/shadow_maps.hpp
     source/render/shadow_maps.cpp
     source/render/sky.hpp
@@ -239,8 +244,6 @@ add_library(wotah STATIC
     source/render/vulkan_memory_allocator.cpp
     source/render/vulkan_utils.hpp
     source/render/vulkan_utils.cpp
-    source/render/water.hpp
-    source/render/water.cpp
     source/render/water_renderer.hpp
     source/render/water_renderer.cpp
     source/scene/beach.hpp
@@ -261,6 +264,8 @@ add_library(wotah STATIC
     source/ui/theme.cpp
     source/ui/user_interface.hpp
     source/ui/user_interface.cpp
+    source/water/sea.hpp
+    source/water/sea.cpp
     ${SHADERS})
 # Project headers are included by their path from source/, e.g. "core/logger.hpp".
 target_include_directories(wotah PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/source ${SHADER_OUT})
@@ -269,7 +274,8 @@ target_link_libraries(wotah PRIVATE Jolt) # only physics/*.cpp see it
 target_link_libraries(wotah PRIVATE imgui) # only ui/*.cpp and render/ui_renderer.cpp see it
 # glm's projections produce Vulkan's 0..1 depth range instead of OpenGL's -1..1.
 target_compile_definitions(wotah PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE
-    WOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS} WOTAH_SHADOW_CASCADES=${WOTAH_SHADOW_CASCADES})
+    WOTAH_MAX_DIRECTIONAL_LIGHTS=${WOTAH_MAX_DIRECTIONAL_LIGHTS} WOTAH_SHADOW_CASCADES=${WOTAH_SHADOW_CASCADES}
+    WOTAH_MAX_SEA_WAVES=${WOTAH_MAX_SEA_WAVES})
 
 wotah_set_warnings(wotah)
 

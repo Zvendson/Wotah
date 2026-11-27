@@ -62,7 +62,8 @@ namespace
     };
 
     /** The depth image's uses: drawn into, and read by shaders after BeginSeeThrough (SceneBehind). */
-    constexpr VkImageUsageFlags DepthUsage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    constexpr VkImageUsageFlags DepthUsage =
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // copied for the water
 
     /** Depth cleared to the far plane (1.0 in Vulkan's 0..1 range), so every first fragment passes the LESS test. */
     constexpr float FarDepth = 1.0f;
@@ -274,12 +275,13 @@ void Wotah::Renderer::BeginRendering(bool isSeeThrough)
     color.IsCleared   = !isSeeThrough;
     color.Clear.color = m_clearColor;
 
-    // The scene clears the depth and keeps what it drew, for the see-through part, which only reads it (storing
-    // nothing, as nothing changed; a store would count as a write).
+    // The scene clears the depth and keeps what it drew, for the see-through part (SceneBehind copied it for the
+    // water's shaders), which tests and writes it too, so a wave's crest hides the water behind it; nothing reads it
+    // after that, so it is not kept.
     DrawTarget depth;
-    depth.View      = m_depth.GetView();
-    depth.Layout    = isSeeThrough ? ReadableDepthLayout : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depth.IsCleared = !isSeeThrough;
+    depth.View                     = m_depth.GetView();
+    depth.Layout                   = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth.IsCleared                = !isSeeThrough;
     depth.Clear.depthStencil.depth = FarDepth;
     depth.IsKept                   = !isSeeThrough;
     RecordBeginDrawing(m_commandBuffer, m_swapchain->GetExtent(), color, depth);

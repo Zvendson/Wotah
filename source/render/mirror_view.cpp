@@ -6,7 +6,6 @@
 
 #include "render/camera.hpp"
 #include "render/device.hpp"
-#include "render/scene_behind.hpp"
 #include "render/vulkan_utils.hpp"
 
 #include <glm/geometric.hpp>
@@ -20,6 +19,9 @@
 
 namespace
 {
+    /** The layout the mirror's depth is in while the water's shaders read it (nothing writes it then). */
+    constexpr VkImageLayout MirrorDepthLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
     /** How far above the surface the camera must be for a mirrored view: a centimetre. */
     constexpr float MirrorClearance = 0.01f;
 
@@ -68,7 +70,7 @@ namespace
     };
     constexpr Wotah::LayoutChange DepthToReadable{
         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        Wotah::ReadableDepthLayout,
+        MirrorDepthLayout,
         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
         VK_ACCESS_SHADER_READ_BIT,
         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
@@ -153,7 +155,7 @@ bool Wotah::MirrorView::Create(const Device& device, VkExtent2D frameExtent, VkF
         return false;
     }
     m_set.WriteImage(MirrorColorBinding, m_color.GetView(), m_colorSampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    m_set.WriteImage(MirrorDepthBinding, m_depth.GetView(), m_depthSampler, ReadableDepthLayout);
+    m_set.WriteImage(MirrorDepthBinding, m_depth.GetView(), m_depthSampler, MirrorDepthLayout);
     return true;
 }
 

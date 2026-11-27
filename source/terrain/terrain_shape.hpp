@@ -105,6 +105,27 @@ namespace Wotah
     [[nodiscard]] float GetTerrainHeight(const TerrainShape& shape, const glm::vec2& place, float smallest = 0.0f);
 
     /**
+     * A place in the coast's own frame, which the land's formula works in: bent a little sideways (so nothing runs in
+     * straight lines); x of Bent runs along the coast (towards the south), y seaward (towards the west); Seaward is how
+     * far seaward of the wandering waterline the place lies, in metres (negative inland). The sea's waves feel the
+     * beach by it.
+     */
+    struct CoastPlace
+    {
+        glm::vec2 Bent{0.0f};
+        float     Seaward = 0.0f;
+    };
+
+    /** Where a place (x, z) lies in the coast's frame, leaving out detail finer than smallest metres. */
+    [[nodiscard]] CoastPlace GetCoastPlace(const TerrainShape& shape, const glm::vec2& place, float smallest = 0.0f);
+
+    /**
+     * How deep the still sea stands over the beach's broad profile (no dunes, hills or bumps) seaward metres seaward of
+     * the waterline; negative inland: the beach's height over the sea there.
+     */
+    [[nodiscard]] float GetBeachDepth(const TerrainShape& shape, float seaward);
+
+    /**
      * Heights on a square grid: SamplesPerSide x SamplesPerSide of them, Spacing apart, the first at Corner (x, z),
      * row by row from -z to +z, each row from -x to +x.
      */

@@ -6,6 +6,8 @@
  * gravity and surfaces changed, and refused input. No GPU needed.
  */
 #include "physics/physics_world.hpp"
+#include "test_utils.hpp"
+#include "water/sea.hpp"
 
 #include <doctest/doctest.h>
 #include <glm/geometric.hpp>
@@ -549,5 +551,106 @@ TEST_SUITE("physics")
         REQUIRE(other.has_value());
         Run(second, 0.5f);
         CHECK(GetPosition(second, *other).y < 5.0f);
+    }
+
+    TEST_CASE("in the sea a buoyant ball floats a third under, a heavy one sinks to the floor; the world keeps a clock")
+    {
+        // The floor at 0, the sea 3 deep over it, still. Three balls dropped from a metre over the water: one that
+        // floats (buoyancy 3), one as heavy as water three times over (buoyancy 1/3) and one the water leaves alone.
+        Wotah::PhysicsWorld world;
+        CHECK_FALSE(world.SetSea(Wotah::Testing::MakeStillSea(3.0f))); // refused (logged) before Create
+        CHECK(world.GetSeconds() == 0.0);
+        SetUpWorld(world, true);
+        CHECK(world.SetSea(Wotah::Testing::MakeStillSea(3.0f)));
+        Wotah::BodySettings floating               = MakeBall({-4.0f, 4.5f, 0.0f});
+        floating.Buoyancy                          = 3.0f;
+        Wotah::BodySettings heavy                  = MakeBall({0.0f, 4.5f, 0.0f});
+        heavy.Buoyancy                             = 1.0f / 3.0f;
+        const Wotah::BodySettings          dry     = MakeBall({4.0f, 4.5f, 0.0f});
+        const std::optional<Wotah::BodyId> floater = world.AddSphere(BallRadius, floating);
+        const std::optional<Wotah::BodyId> sinker  = world.AddSphere(BallRadius, heavy);
+        const std::optional<Wotah::BodyId> stone   = world.AddSphere(BallRadius, dry);
+        REQUIRE(floater.has_value());
+        REQUIRE(sinker.has_value());
+        REQUIRE(stone.has_value());
+        Run(world, 10.0f);
+
+        // A third of a ball's volume is a cap 0.387 of its width deep (h^2 (3r - h) = 4r^3 / 3): its middle rests
+        // 0.113 over the water. The others lie on the floor.
+        const glm::vec3 afloat = GetPosition(world, *floater);
+        CAPTURE(afloat.y);
+        CHECK(std::abs(afloat.y - (3.0f + BallRadius - 0.387f * 2.0f * BallRadius)) < 0.03f);
+        CHECK(std::abs(GetPosition(world, *sinker).y - BallRadius) < RestingSlack);
+        CHECK(std::abs(GetPosition(world, *stone).y - BallRadius) < RestingSlack);
+
+        // The clock: 10 seconds of steps, as drawn one step behind.
+        CHECK(world.GetSeconds() ==
+              doctest::Approx(10.0 - static_cast<double>(Wotah::PhysicsStepSeconds)).epsilon(1e-6));
+    }
+
+    TEST_CASE("on waves a floating ball rides up and down with the surface, moved by its water")
+    {
+        Wotah::PhysicsWorld world;
+        SetUpWorld(world, true);
+        Wotah::Sea sea = Wotah::Testing::MakeStillSea(3.0f);
+        sea.Waves      = Wotah::MakeSeaWaves(0.8f, {1.0f, 0.0f});
+        REQUIRE(world.SetSea(sea));
+        Wotah::BodySettings floating            = MakeBall({0.0f, 3.2f, 0.0f});
+        floating.Buoyancy                       = 3.0f;
+        const std::optional<Wotah::BodyId> ball = world.AddSphere(BallRadius, floating);
+        REQUIRE(ball.has_value());
+        Run(world, 4.0f);
+
+        // Over ten seconds its middle stays near its still-water height over the surface under it (0.113), while the
+        // surface lifts and drops it; and it moves, back and forth with the water.
+        float lowest   = 1.0e9f;
+        float highest  = -1.0e9f;
+        float farthest = 0.0f;
+        for (int sample = 0; sample < 40; ++sample)
+        {
+            Run(world, 0.25f);
+            const glm::vec3 place = GetPosition(world, *ball);
+            sea.Seconds           = world.GetSeconds();
+            const float surface   = Wotah::FindWaterHeight(sea, place.x, place.z).value_or(0.0f);
+            lowest                = std::min(lowest, place.y);
+            highest               = std::max(highest, place.y);
+            farthest              = std::max(farthest, std::abs(place.y - surface - 0.113f));
+        }
+        CAPTURE(lowest);
+        CAPTURE(highest);
+        CAPTURE(farthest);
+        CHECK(highest - lowest > 0.2f);
+        CHECK(farthest < 0.25f);
+    }
+
+    TEST_CASE("a floating ball is carried back and forth by the water under a long swell, not only lifted")
+    {
+        // A swell 1.6 m high, 8 s long, over deep water: the water at the surface runs back and forth with each wave,
+        // about its height's half each way. A floating ball goes with it (Jolt's drag towards the water's speed).
+        Wotah::PhysicsWorld world;
+        SetUpWorld(world, false);
+        Wotah::Sea sea         = Wotah::Testing::MakeStillSea(0.0f);
+        sea.Waves.Swell.Height = 1.6f;
+        sea.Waves.Swell.Period = 8.0f;
+        REQUIRE(world.SetSea(sea));
+        REQUIRE(world.SetGravity(Wotah::StandardGravity));
+        Wotah::BodySettings floating            = MakeBall({0.0f, 0.2f, 0.0f});
+        floating.Buoyancy                       = 3.0f;
+        const std::optional<Wotah::BodyId> ball = world.AddSphere(BallRadius, floating);
+        REQUIRE(ball.has_value());
+        Run(world, 8.0f);
+        float west = 1.0e9f;
+        float east = -1.0e9f;
+        for (int sample = 0; sample < 64; ++sample)
+        {
+            Run(world, 0.25f);
+            const float x = GetPosition(world, *ball).x;
+            west          = std::min(west, x);
+            east          = std::max(east, x);
+        }
+        CAPTURE(west);
+        CAPTURE(east);
+        CHECK(east - west > 0.6f);
+        CHECK(east - west < 3.0f); // with it, not thrown about
     }
 }

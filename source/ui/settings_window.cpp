@@ -31,6 +31,7 @@ namespace
     constexpr SliderRange GravityRange{0.0f, 25.0f, "%.2f m/s\xC2\xB2"};   // floating to Jupiter's 24.8
     constexpr SliderRange TimeSpeedRange{0.1f, 2.0f, "%.2f\xC3\x97"};      // slow motion to twice as fast
     constexpr SliderRange BouncinessRange{0.0f, 1.0f, "%.2f"};             // dead to bouncing back as high
+    constexpr SliderRange WaveHeightRange{0.0f, 3.0f, "%.2f m"};           // still water to a rough sea
     constexpr SliderRange FieldOfViewRange{20.0f, 110.0f, "%.0f\xC2\xB0"}; // a telephoto lens to a wide angle
 
     /** The time of day's slider: midnight to midnight; its text comes from MakeClockText. */
@@ -114,6 +115,12 @@ namespace
         return isChanged;
     }
 
+    /** The sea: how high its waves are. True when it changed. */
+    bool ShowSeaRows(Wotah::SceneSettings& settings)
+    {
+        return ShowSlider("Wave height", settings.WaveHeight, WaveHeightRange);
+    }
+
     /** The physics: gravity, how fast time runs, the ball's bounce. True when one changed. */
     bool ShowPhysicsRows(Wotah::SceneSettings& settings)
     {
@@ -180,6 +187,7 @@ bool Wotah::ShowSettingsWindow(SceneSettings& settings, const SceneSettings& def
         if (ImGui::BeginTabBar("groups"))
         {
             isChanged = ShowTab("Sky", ShowSkyRows, settings);
+            isChanged = ShowTab("Sea", ShowSeaRows, settings) || isChanged;
             isChanged = ShowTab("Physics", ShowPhysicsRows, settings) || isChanged;
             isChanged = ShowTab("Camera", ShowCameraRows, settings) || isChanged;
             ImGui::EndTabBar();
