@@ -27,30 +27,40 @@ The first release: an endless beach by the sea, to look at and to play in.
 
 ### the journey so far
 
-the plan was a beach where i can just stand and look at the sea. endless land, endless sea to the west where the sun
-goes down, and water that acts like real water, waves that build up, break and run up the sand. all in vulkan from
-scratch so it can turn into a game engine later
+the plan was a beach where i can just stand and look at the sea, with water that acts like real water. waves that build
+up, break and run up the sand. all in vulkan from scratch so it can turn into a game engine later
 
-started with a vulkan window and a square. then a lit cube i could fly around with wasd and the mouse, depth, a ball
-next to it, colored lights with a sun and a moon
+i didnt start with the water tho. water is basically a mirror, it shows the sky, the sun and whatever is around it. on
+day 1 there would be nothing to reflect and it would look like a flat blue plate. and something has to float in it, so
+i need physics first, and things need light and shadows or they look fake. so the order was: window, objects, light,
+sky, shadows, physics, and only then water
 
-then a sky, ground and shadows from every light. the picture froze when i dragged the window bcs windows blocks the
-main thread while doing that, so drawing got its own thread
+started with a vulkan window and a square, glfw for the window bcs it runs on windows and linux. then a lit cube i can
+fly around with wasd and the mouse. glm for the math bcs it works like the shader math. vulkans own memory handling is
+a pain so i took vma for that, and spdlog to log into a file without slowing the frames down
 
-a ball that drops and bounces, a small ui to pause and reset, and a real day where the sun goes up and down and at
-night the moon and stars come out
+the picture froze every time i dragged the window, windows blocks the main thread while you do that. so drawing got
+its own thread and the main thread only handles the window
 
-then the cube had to go for water and after that the beach. sand, dunes, hills, a coast that winds a bit, land and sea
-going to the horizon. the water got reflections, refraction, these light patterns on the ground, foam, glints and you
-can look from under water too. the reflection was broken when the sun was low, took a while to fix
+for physics i took jolt. its fast, uses all cores and has buoyancy built in, which i needed for the ball later. for the
+ui i took dear imgui, stats and settings and buttons without building a ui system myself
 
-waves were the hardest part. the swell builds up when it gets shallow, breaks, runs up the sand and pulls back into
-the next wave, the sand stays wet with foam lines. first it was shaky bcs every wave started from a slightly different
-line and the ball didnt care about the surf at all. now the waves carry it to the beach
+after the sky and a day and night cycle with sun, moon and stars the cube had to go and the water came in. the first
+ground was a fixed plate and you could see where the world ends, looked bad. so land and sea are endless now, grids
+that follow the camera and get coarser far away. the land and the waves are the same formula on the cpu and the gpu,
+so the physics feels exactly what you see, tests check that both stay equal
 
-added more balls and you can move them with arrows. with lots of balls the fps went down, mostly in debug, so the water
-under each ball is calculated twice as fast now and on multiple threads
+the reflection was broken when the sun was low and the ball in the water looked weird, took a while to get right
 
-the release itself was a fight too. linux didnt find the vulkan lib and stopped on warnings in a math lib, and the
-newest windows compiler made builds where a ball that gets hit by another one falls through the floor. so windows is
-built with the vs 2022 compiler for now
+waves were the hardest part. normal ocean waves alone looked like a pool. real surf needs a swell that feels the floor,
+gets higher in shallow water, breaks, runs up the sand and pulls back into the next wave, and leaves wet sand. first it
+was shaky bcs every wave started its run up from a slightly different line, and the ball didnt care about the surf at
+all bcs jolts water only slows things down. so the water got its own flow, the broken waves carry the ball in now
+
+more balls and moving them was next. i went with move arrows (imguizmo) instead of grabbing on a spring. with lots of
+balls the fps went down, mostly in debug. the water under every ball was calculated way too often, now its half the
+work and runs on multiple threads
+
+the release itself was a fight too. linux didnt find the vulkan lib and stopped on warnings in glm, and the newest
+windows compiler made builds where a ball that gets hit by another one falls through the floor. so windows is built
+with the vs 2022 compiler for now
