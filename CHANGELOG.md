@@ -24,3 +24,31 @@ The first release: an endless beach by the sea, to look at and to play in.
   speed, ball bounce and field of view.
 - A bar at the bottom to add balls, pause the world, and reset the scene (also R) or the camera.
 - For Windows and Linux, one program file each; it needs a graphics card with Vulkan 1.3.
+
+### The journey so far
+
+**23 Nov: tidy first.** It began as a small program that opened a window and drew a square with Vulkan. Before adding
+anything, it got a structure: an app with create, run and destroy steps, its own window and device classes, a logger,
+CMake presets and one code style.
+
+**24 Nov: from a square to a scene.** The square became a lit cube, seen through a camera you fly with W A S D and the
+mouse. The engine became a library with tests, including tests that draw on the GPU without a window and check the
+pictures. Then GPU buffers, meshes, depth, and coloured lights with a sun and a moon.
+
+**25 Nov: a world.** A computed sky, ground, shadows, physics with a falling ball, and the first UI. *Problem:* Windows
+freezes a program's main thread while you drag or resize its window, so the picture stopped. Drawing moved to its own
+thread.
+
+**26 Nov: the beach.** A settings window and a day and night cycle with stars. The cube scene gave way to water, then
+to an endless beach and sea that reach the horizon.
+
+**27 Nov: water, waves, release.** Reflections, refraction, light patterns on the sea floor, foam, a view from under
+the water; then surf that builds up, breaks, runs up the sand and drains back. *Problems:* reflections looked wrong
+with a low sun; the waves shook, because each wave started its run up the sand from a slightly different line; the
+ball barely reacted to the surf. All three were fixed. Balls can now be added and moved with arrows; with many balls
+the frame rate dropped, mostly in debug builds. Sampling the water got twice as cheap and runs on several threads: 32
+balls went from 12.9 to 1.35 ms per physics step.
+
+**The first release** hit three problems on GitHub: Linux found no Vulkan library to link, Linux also stopped on
+warnings inside a math library, and Windows' newest compiler made optimized builds in which a ball hit by another fell
+through the floor. The Windows release is built with the Visual Studio 2022 compiler until that is fixed.
