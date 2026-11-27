@@ -2,8 +2,6 @@
 
 What changed in Wotah, from the side of the people who use it. Newest first.
 
-## Unreleased
-
 ## 0.1.0 - 2026-11-27
 
 The first release: an endless beach by the sea, to look at and to play in.
